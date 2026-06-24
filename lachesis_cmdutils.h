@@ -82,8 +82,7 @@ void uninit_opts(void);
 int parse_number(const char *context, const char *numstr, enum OptionType type,
                  double min, double max, double *dst);
 
-void show_help_options(const OptionDef *options, const char *msg, int req_flags,
-                       int rej_flags);
+void show_help_options(const OptionDef *options, int req_flags, int rej_flags);
 void show_help_default(const char *opt, const char *arg);
 
 int parse_options(void *optctx, int argc, char **argv, const OptionDef *options,

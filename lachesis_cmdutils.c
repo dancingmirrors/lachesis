@@ -69,10 +69,21 @@ int parse_number(const char *context, const char *numstr, enum OptionType type,
     return AVERROR(EINVAL);
 }
 
-void show_help_options(const OptionDef *options, const char *msg, int req_flags,
+void show_help_options(const OptionDef *options, int req_flags,
                        int rej_flags) {
     const OptionDef *po;
     int first;
+    int max_width = 0;
+
+    for (po = options; po->name; po++) {
+        int width = strlen(po->name) + 1; /* +1 for the leading '-' */
+        if (po->argname) {
+            width += strlen(po->argname) + 3; /* +3 for " <>" */
+        }
+        if (width > max_width) {
+            max_width = width;
+        }
+    }
 
     first = 1;
     for (po = options; po->name; po++) {
@@ -83,7 +94,6 @@ void show_help_options(const OptionDef *options, const char *msg, int req_flags,
         }
 
         if (first) {
-            printf("%s\n", msg);
             first = 0;
         }
         av_strlcpy(buf, po->name, sizeof(buf));
@@ -92,9 +102,8 @@ void show_help_options(const OptionDef *options, const char *msg, int req_flags,
             av_strlcatf(buf, sizeof(buf), " <%s>", po->argname);
         }
 
-        printf("-%-17s  %s\n", buf, po->help);
+        printf("-%-*s  %s\n", max_width, buf, po->help);
     }
-    printf("\n");
 }
 
 int opt_help(void *optctx, const char *opt, const char *arg) {

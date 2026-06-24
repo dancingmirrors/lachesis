@@ -4848,13 +4848,9 @@ static const OptionDef options[] = {
     },
 };
 
-av_unused static void show_usage(void) {
-    printf("Hail Satan!\n");
-}
-
 void show_help_default(const char *opt, const char *arg) {
-    show_help_options(options, "Main options:", 0, OPT_EXPERT);
-    show_help_options(options, "Advanced options:", OPT_EXPERT, 0);
+    show_help_options(options, 0, OPT_EXPERT);
+    show_help_options(options, OPT_EXPERT, 0);
 }
 
 int main(int argc, char **argv) {
