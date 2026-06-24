@@ -4825,8 +4825,6 @@ int main(int argc, char **argv) {
     signal(SIGINT, sigterm_handler);
     signal(SIGTERM, sigterm_handler);
 
-    show_banner(argc, argv, options);
-
     ret = parse_options(NULL, argc, argv, options, opt_input_file);
     if (ret < 0) {
         exit(ret == AVERROR_EXIT ? 0 : 1);

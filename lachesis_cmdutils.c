@@ -32,8 +32,6 @@ AVDictionary *sws_dict;
 AVDictionary *swr_opts;
 AVDictionary *format_opts, *codec_opts;
 
-int hide_banner = 0;
-
 void uninit_opts(void) {
     av_dict_free(&swr_opts);
     av_dict_free(&sws_dict);
@@ -366,19 +364,6 @@ void parse_loglevel(int argc, char **argv, const OptionDef *options) {
     if (idx && argv[idx + 1]) {
         opt_loglevel(NULL, "loglevel", argv[idx + 1]);
     }
-
-    idx = locate_option(argc, argv, options, "hide_banner");
-    if (idx) {
-        hide_banner = 1;
-    }
-}
-
-void show_banner(int argc, char **argv, const OptionDef *options) {
-    if (hide_banner) {
-        return;
-    }
-    av_log(NULL, AV_LOG_INFO, "%s (FFmpeg %s)\n", program_name,
-           av_version_info());
 }
 
 int check_stream_specifier(AVFormatContext *s, AVStream *st, const char *spec) {

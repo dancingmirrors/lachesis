@@ -25,7 +25,6 @@ extern const int program_birth_year;
 extern AVDictionary *sws_dict;
 extern AVDictionary *swr_opts;
 extern AVDictionary *format_opts, *codec_opts;
-extern int hide_banner;
 
 enum OptionType {
     OPT_TYPE_FUNC,
@@ -95,8 +94,6 @@ void parse_loglevel(int argc, char **argv, const OptionDef *options);
 
 int opt_loglevel(void *optctx, const char *opt, const char *arg);
 
-void show_banner(int argc, char **argv, const OptionDef *options);
-
 int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
                       AVFormatContext *s, AVStream *st, const AVCodec *codec,
                       AVDictionary **dst, AVDictionary **opts_used);
@@ -123,8 +120,7 @@ static inline void print_error(const char *filename, int err) {
         {"help", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help", "topic"}, \
         {"-help", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help", "topic"}, \
         {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_loglevel}, "set logging level", "loglevel"}, \
-        {"v", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set logging level", "loglevel"}, \
-        {"hide_banner", OPT_TYPE_BOOL, OPT_EXPERT, {&hide_banner}, "do not show program banner", "hide_banner"},
+        {"v", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set logging level", "loglevel"},
 
 int opt_help(void *optctx, const char *opt, const char *arg);
 
