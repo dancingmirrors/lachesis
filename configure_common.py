@@ -587,4 +587,4 @@ def finish():
     with open(os.path.join(_G.build_dir, "build.ninja"), "w") as f:
         f.write(_generate_ninja_file(sources, cflags_str, ldflags_str))
 
-    print("Done. Run 'ninja -C %s' now." % _G.build_dir)
+    print("Done. You can run 'ninja -C %s' now." % _G.build_dir)
