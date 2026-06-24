@@ -75,7 +75,7 @@ jobs:
           ccache --zero-stats
           mkdir -p $HOME/.ccache
 
-      - name: configure, build, install
+      - name: configure, build, install, test
         run: |
           set -x
 

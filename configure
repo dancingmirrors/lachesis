@@ -32,13 +32,15 @@ if _system == "Linux":
 else:
     add_cflags("-D_FILE_OFFSET_BITS=64", "-Wall")
 
+add_cflags("-fno-strict-aliasing")
+
 check(
-    "-optimize", desc="optimization", fn=lambda: chain(add_cflags("-O2", "-pipe"), True)
+    "-optimize", desc="optimization", fn=lambda: chain(add_cflags("-O3", "-pipe"), True)
 )
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
 
 check(
-    "win32",
+    "Windows",
     fn=lambda: check_cc(
         defined="_WIN32",
         flags=[
@@ -55,20 +57,20 @@ check(
     and chain(set_exe_format("pe"), True),
 )
 check(
-    "osx",
+    "macOS",
     fn=lambda: check_cc(defined="__APPLE__") and chain(set_exe_format("macho"), True),
 )
-check("posix*", fn=lambda: check_cc(include="unistd.h", defined="_POSIX_VERSION"))
+check("POSIX*", fn=lambda: check_cc(include="unistd.h", defined="_POSIX_VERSION"))
 check(
     desc="development environment",
-    deps_any=["posix", "win32"],
+    deps_any=["POSIX", "Windows"],
     required="Unable to find a suitable environment",
 )
 
 check("libm", fn=lambda: check_cc(link="-lm"))
 check(
     "pthreads",
-    deps_neg="win32",
+    deps_neg="Windows",
     fn=lambda: check_cc(
         link="-pthread", flags="-pthread", include="pthread.h", expr="pthread_self();"
     ),
