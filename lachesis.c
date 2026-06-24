@@ -360,7 +360,6 @@ static int64_t start_time = AV_NOPTS_VALUE;
 static int64_t duration = AV_NOPTS_VALUE;
 static int fast = 0;
 static int genpts = 0;
-static int lowres = 0;
 static int decoder_reorder_pts = -1;
 static int autoexit;
 static int exit_on_keydown;
@@ -3093,7 +3092,6 @@ static int stream_component_open(VideoState *is, int stream_index) {
     int sample_rate;
     AVChannelLayout ch_layout = {0};
     int ret = 0;
-    int stream_lowres = lowres;
 
     if (stream_index < 0 || stream_index >= ic->nb_streams) {
         return -1;
@@ -3137,10 +3135,6 @@ static int stream_component_open(VideoState *is, int stream_index) {
     }
 
     avctx->codec_id = codec->id;
-    if (stream_lowres > codec->max_lowres) {
-        stream_lowres = codec->max_lowres;
-    }
-    avctx->lowres = stream_lowres;
 
     if (fast) {
         avctx->flags2 |= AV_CODEC_FLAG2_FAST;
@@ -3159,9 +3153,6 @@ static int stream_component_open(VideoState *is, int stream_index) {
 #else
         av_dict_set(&opts, "threads", "auto", 0);
 #endif
-    }
-    if (stream_lowres) {
-        av_dict_set_int(&opts, "lowres", stream_lowres, 0);
     }
 
     av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);
@@ -4808,7 +4799,6 @@ static const OptionDef options[] = {
     {"fast", OPT_TYPE_BOOL, OPT_EXPERT, {&fast}, "non spec compliant optimizations", ""},
     {"genpts", OPT_TYPE_BOOL, OPT_EXPERT, {&genpts}, "generate pts", ""},
     {"drp", OPT_TYPE_INT, OPT_EXPERT, {&decoder_reorder_pts}, "let decoder reorder pts 0=off 1=on -1=auto", ""},
-    {"lowres", OPT_TYPE_INT, OPT_EXPERT, {&lowres}, "", ""},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_sync}, "set audio-video sync. type (type=audio/video/ext)", "type"},
     {"autoexit", OPT_TYPE_BOOL, OPT_EXPERT, {&autoexit}, "exit at the end", ""},
     {"exitonkeydown", OPT_TYPE_BOOL, OPT_EXPERT, {&exit_on_keydown}, "exit on key down", ""},
