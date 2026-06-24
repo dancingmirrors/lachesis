@@ -77,6 +77,7 @@ jobs:
         run: |
           set -x
 
+          export PKG_CONFIG_PATH="$(brew --prefix libarchive)/lib/pkgconfig:$PKG_CONFIG_PATH"
           ./configure
 
           ninja -C build
