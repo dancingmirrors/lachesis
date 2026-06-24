@@ -107,8 +107,6 @@ void show_help_options(const OptionDef *options, int req_flags,
 }
 
 int opt_help(void *optctx, const char *opt, const char *arg) {
-    /* Only the plain option listing is supported; topic help (e.g.
-     * "-h decoder=h264") is not wired up. */
     show_help_default(arg, NULL);
     return 0;
 }
