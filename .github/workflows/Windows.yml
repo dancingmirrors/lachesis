@@ -1,0 +1,87 @@
+name: lachesis Windows
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Setup ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: msys2/setup-msys2@v2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            base-devel
+            git
+            nasm
+            yasm
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-clang
+            mingw-w64-x86_64-ccache
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkg-config
+            mingw-w64-x86_64-sdl3-ttf
+            mingw-w64-x86_64-libarchive
+            mingw-w64-x86_64-shaderc
+            mingw-w64-x86_64-spirv-headers
+            mingw-w64-x86_64-vulkan-headers
+            mingw-w64-x86_64-vulkan-loader
+            mingw-w64-x86_64-libplacebo
+            mingw-w64-x86_64-x264
+            mingw-w64-x86_64-x265
+            mingw-w64-x86_64-xvidcore
+            mingw-w64-x86_64-aom
+            mingw-w64-x86_64-dav1d
+            mingw-w64-x86_64-libvpx
+            mingw-w64-x86_64-lame
+            mingw-w64-x86_64-twolame
+            mingw-w64-x86_64-libvorbis
+            mingw-w64-x86_64-gnutls
+            mingw-w64-x86_64-fontconfig
+            mingw-w64-x86_64-fribidi
+            mingw-w64-x86_64-libass
+            mingw-w64-x86_64-harfbuzz
+            mingw-w64-x86_64-freetype
+            mingw-w64-x86_64-ffmpeg
+
+      - name: Configure ccache
+        shell: bash
+        run: |
+          ccache --version
+          ccache --set-config=cache_dir=$HOME/.ccache
+          ccache --set-config=max_size=999M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          mkdir -p $HOME/.ccache
+
+      - name: configure, build, install
+        run: |
+          set -x
+
+          ./configure
+
+          ninja -C build
+          ninja -C build install
+
+          lachesis -h

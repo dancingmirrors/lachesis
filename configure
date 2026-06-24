@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from configure_common import *  # noqa: E402,F401,F403
+
+begin()
+
+check(
+    desc="whether the compiler works",
+    fn=lambda: check_program("CC") and check_cc(link=[]),
+    required="C compiler: missing or broken",
+)
+check(
+    desc="pkg-config",
+    fn=lambda: check_program("PKG_CONFIG"),
+    required="pkg-config: missing or not in PATH",
+)
+
+check(
+    fn=lambda: check_cc(flags="-std=c11"),
+    required="C11 compiler: missing, broken, or too old",
+)
+
+import platform as _platform  # noqa: E402
+
+_system = _platform.system()
+if _system == "Linux":
+    add_cflags("-D_GNU_SOURCE", "-D_FILE_OFFSET_BITS=64", "-Wall")
+else:
+    add_cflags("-D_FILE_OFFSET_BITS=64", "-Wall")
+
+check(
+    "-optimize", desc="optimization", fn=lambda: chain(add_cflags("-O2", "-pipe"), True)
+)
+check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
+
+check(
+    "win32",
+    fn=lambda: check_cc(
+        defined="_WIN32",
+        flags=[
+            "-D_WIN32_WINNT=0x0602",
+            "-DUNICODE",
+            "-DCOBJMACROS",
+            "-U__STRICT_ANSI__",
+            "-D__USE_MINGW_ANSI_STDIO=1",
+        ],
+        include="windows.h",
+        link=["-mwindows"],
+    )
+    and check_program("WINDRES")
+    and chain(set_exe_format("pe"), True),
+)
+check(
+    "osx",
+    fn=lambda: check_cc(defined="__APPLE__") and chain(set_exe_format("macho"), True),
+)
+check("posix*", fn=lambda: check_cc(include="unistd.h", defined="_POSIX_VERSION"))
+check(
+    desc="development environment",
+    deps_any=["posix", "win32"],
+    required="Unable to find a suitable environment",
+)
+
+check("libm", fn=lambda: check_cc(link="-lm"))
+check(
+    "pthreads",
+    deps_neg="win32",
+    fn=lambda: check_cc(
+        link="-pthread", flags="-pthread", include="pthread.h", expr="pthread_self();"
+    ),
+)
+check(
+    desc="FFmpeg",
+    fn=lambda: check_pkg_config(
+        "libavutil      >= 60.26.101",
+        "libavcodec     >= 62.28.101",
+        "libavformat    >= 62.12.101",
+        "libswscale     >= 9.5.101",
+        "libavfilter    >= 11.14.101",
+        "libswresample  >= 6.3.101",
+    ),
+    required="FFmpeg libraries: missing, broken, or too old",
+)
+check(
+    "-libavdevice*",
+    desc="libavdevice",
+    fn=lambda: check_pkg_config("libavdevice >= 62.3.102"),
+)
+
+check("-rtsp-demuxer*", desc="RTSP demuxer in libavformat (assumed)", default=True)
+check("-mmsh-protocol*", desc="MMSH protocol in libavformat (assumed)", default=True)
+
+check(
+    desc="SDL3",
+    fn=lambda: check_pkg_config("sdl3 >= 3.0.0"),
+    required="SDL3: missing, broken, or too old",
+)
+check(
+    desc="SDL3_ttf",
+    fn=lambda: check_pkg_config("sdl3-ttf") or check_pkg_config("SDL3_ttf"),
+    required="SDL3_ttf: missing or broken",
+)
+check(
+    "-libarchive*",
+    desc="libarchive",
+    fn=lambda: check_pkg_config("libarchive >= 3.0.0"),
+    required="libarchive: missing, broken, or too old",
+)
+
+check(
+    "-libplacebo*",
+    desc="libplacebo",
+    fn=lambda: check_pkg_config("libplacebo >= 7.360.0") and check_pkg_config("vulkan"),
+    required="libplacebo: missing, broken, or too old",
+)
+
+add_sources(
+    "lachesis.c",
+    "lachesis_archive.c",
+    "lachesis_cmdutils.c",
+    "lachesis_renderer.c",
+)
+
+finish()
