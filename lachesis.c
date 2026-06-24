@@ -389,7 +389,7 @@ static const char *hwaccel = NULL;
 static const char *active_hwaccel = NULL;
 static int no_hwaccel = 0;
 static int fatal_error_pending = 0;
-static int video_unscaled = 1;
+static int video_unscaled = 0;
 static int enable_360sbs = 0;
 static float sbs360_yaw = 0.0f;
 static float sbs360_pitch = 0.0f;
@@ -936,7 +936,7 @@ static void calculate_display_rect(SDL_Rect *rect,
 
     aspect_ratio = av_mul_q(aspect_ratio, av_make_q(pic_width, pic_height));
 
-    if (video_unscaled) {
+    if (!video_unscaled) {
         height = pic_height;
         width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
         if (width > scr_width || height > scr_height) {
