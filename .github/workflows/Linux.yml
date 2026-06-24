@@ -33,6 +33,8 @@ jobs:
                                   libgl1-mesa-dev libgles2-mesa-dev libxtst-dev
           sudo apt-get build-dep -y ffmpeg mpv shaderc
 
+          set -x
+
           git clone --depth 1 https://github.com/libsdl-org/SDL.git
           cd SDL
           mkdir build
@@ -90,7 +92,10 @@ jobs:
 
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git
           cd FFmpeg
-          ./configure --prefix=/usr/local --enable-libplacebo --enable-vulkan
+          ./configure --prefix=/usr/local \
+                      --enable-libplacebo \
+                      --enable-vulkan \
+                      --cc="ccache cc"
           make -j$(nproc)
           sudo make install
 
