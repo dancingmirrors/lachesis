@@ -21,6 +21,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
+      - name: Install and configure ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          ccache --version
+          ccache --set-config=cache_dir=$HOME/.ccache
+          ccache --set-config=max_size=999M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          mkdir -p $HOME/.ccache
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+
       - name: dependencies
         run: |
           sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
@@ -94,19 +106,9 @@ jobs:
           cd FFmpeg
           ./configure --prefix=/usr/local \
                       --enable-libplacebo \
-                      --enable-vulkan \
-                      --cc="ccache cc"
+                      --enable-vulkan
           make -j$(nproc)
           sudo make install
-
-      - name: Configure ccache
-        run: |
-          ccache --version
-          ccache --set-config=cache_dir=$HOME/.ccache
-          ccache --set-config=max_size=999M
-          ccache --set-config=compression=true
-          ccache --zero-stats
-          mkdir -p $HOME/.ccache
 
       - name: configure, build, install, test
         run: |
