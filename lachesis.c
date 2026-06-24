@@ -1024,10 +1024,12 @@ static enum AVColorSpace sdl_supported_color_spaces[] = {
     AVCOL_SPC_SMPTE170M,
 };
 
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 11, 100)
 static enum AVAlphaMode sdl_supported_alpha_modes[] = {
     AVALPHA_MODE_UNSPECIFIED,
     AVALPHA_MODE_STRAIGHT,
 };
+#endif
 
 static void set_sdl_yuv_conversion_mode(AVFrame *frame) {
     /* XXX */
@@ -2277,7 +2279,9 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     par->sample_aspect_ratio = codecpar->sample_aspect_ratio;
     par->color_space = frame->colorspace;
     par->color_range = frame->color_range;
+#if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(11, 8, 100)
     par->alpha_mode = frame->alpha_mode;
+#endif
     par->frame_rate = fr;
     par->hw_frames_ctx = frame->hw_frames_ctx;
     ret = av_buffersrc_parameters_set(filt_src, par);
@@ -2309,11 +2313,13 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
         goto fail;
     }
 
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 11, 100)
     if ((ret = av_opt_set_array(filt_out, "alphamodes", AV_OPT_SEARCH_CHILDREN,
                                 0, FF_ARRAY_ELEMS(sdl_supported_alpha_modes),
                                 AV_OPT_TYPE_INT, sdl_supported_alpha_modes)) < 0) {
         goto fail;
     }
+#endif
 
     ret = avfilter_init_dict(filt_out, NULL);
     if (ret < 0) {
@@ -2442,10 +2448,18 @@ static int configure_audio_filters(VideoState *is, const char *afilters, int for
     }
 
     if ((ret = av_opt_set(filt_asink, "sample_formats", "s16", AV_OPT_SEARCH_CHILDREN)) < 0) {
-        goto end;
+#if LIBAVFILTER_VERSION_INT < AV_VERSION_INT(10, 6, 100)
+        static const enum AVSampleFormat sample_fmts[] = {
+            AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_NONE};
+        ret = av_opt_set_int_list(filt_asink, "sample_fmts", sample_fmts,
+                                  AV_SAMPLE_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
+        if (ret < 0)
+#endif
+            goto end;
     }
 
     if (force_output_format) {
+#if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(10, 6, 100)
         if ((ret = av_opt_set_array(filt_asink, "channel_layouts", AV_OPT_SEARCH_CHILDREN,
                                     0, 1, AV_OPT_TYPE_CHLAYOUT, &is->audio_tgt.ch_layout)) < 0) {
             goto end;
@@ -2454,6 +2468,19 @@ static int configure_audio_filters(VideoState *is, const char *afilters, int for
                                     0, 1, AV_OPT_TYPE_INT, &is->audio_tgt.freq)) < 0) {
             goto end;
         }
+#else
+        char layout[256];
+        int sample_rates[] = {is->audio_tgt.freq, -1};
+        av_channel_layout_describe(&is->audio_tgt.ch_layout, layout, sizeof(layout));
+        if ((ret = av_opt_set(filt_asink, "ch_layouts", layout,
+                              AV_OPT_SEARCH_CHILDREN)) < 0) {
+            goto end;
+        }
+        if ((ret = av_opt_set_int_list(filt_asink, "sample_rates", sample_rates,
+                                       -1, AV_OPT_SEARCH_CHILDREN)) < 0) {
+            goto end;
+        }
+#endif
     }
 
     ret = avfilter_init_dict(filt_asink, NULL);
@@ -2956,6 +2983,24 @@ static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int 
     }
     audio_dev = SDL_GetAudioStreamDevice(audio_stream_dev);
 
+    {
+        VideoState *is = opaque;
+        SDL_AudioSpec dev_spec;
+        int dev_frames = 0;
+        const char *drv = SDL_GetCurrentAudioDriver();
+        fprintf(stderr, "INFO: SDL audio device driver: %s, requested S16 %dch @ %dHz\n",
+                drv ? drv : "(none)", wanted_spec.channels, wanted_spec.freq);
+        if (SDL_GetAudioDeviceFormat(audio_dev, &dev_spec, &dev_frames)) {
+            fprintf(stderr,
+                    "INFO: SDL audio device format: fmt=0x%x %dch @ %dHz, buffer=%d frames\n",
+                    (unsigned)dev_spec.format, dev_spec.channels, dev_spec.freq,
+                    dev_frames);
+        } else {
+            /* XXX */
+            is->av_sync_type = AV_SYNC_VIDEO_MASTER;
+        }
+    }
+
     audio_hw_params->fmt = AV_SAMPLE_FMT_S16;
     audio_hw_params->freq = wanted_spec.freq;
     if (av_channel_layout_copy(&audio_hw_params->ch_layout, wanted_channel_layout) < 0) {
@@ -3107,8 +3152,13 @@ static int stream_component_open(VideoState *is, int stream_index) {
         goto fail;
     }
 
-    if (!av_dict_get(opts, "threads", NULL, 0)) {
+    /* XXX */
+    if (vk_renderer && !no_hwaccel && avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)
+        av_dict_set(&opts, "threads", "1", 0);
+#else
         av_dict_set(&opts, "threads", "auto", 0);
+#endif
     }
     if (stream_lowres) {
         av_dict_set_int(&opts, "lowres", stream_lowres, 0);

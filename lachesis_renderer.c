@@ -115,6 +115,11 @@ static const char sbs360_shader[] =
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
 #include <libavutil/time.h>
+#include <libavutil/version.h>
+
+#ifndef FF_API_VULKAN_SYNC_QUEUES
+#define FF_API_VULKAN_SYNC_QUEUES (LIBAVUTIL_VERSION_MAJOR < 61)
+#endif
 
 #ifndef FF_DISABLE_DEPRECATION_WARNINGS
 #if defined(_MSC_VER)
@@ -445,8 +450,10 @@ static int create_vk_by_placebo(VkRenderer *renderer,
     int decode_index;
     int decode_count;
     int ret;
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     const char **dev_exts;
     int num_dev_exts;
+#endif
 
     ctx->get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
 
@@ -456,13 +463,29 @@ static int create_vk_by_placebo(VkRenderer *renderer,
     }
     ctx->inst = ctx->placebo_instance->instance;
 
+    /* clang-format off */
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     dev_exts = av_vk_get_optional_device_extensions(&num_dev_exts);
     if (!dev_exts) {
         return AVERROR(ENOMEM);
     }
-
-    ctx->placebo_vulkan = pl_vulkan_create(ctx->vk_log, pl_vulkan_params(.instance = ctx->placebo_instance->instance, .get_proc_addr = ctx->placebo_instance->get_proc_addr, .surface = ctx->vk_surface, .allow_software = false, .opt_extensions = dev_exts, .num_opt_extensions = num_dev_exts, .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR, .device_name = select_device(opt), ));
+#endif
+    ctx->placebo_vulkan = pl_vulkan_create(ctx->vk_log,
+                                           pl_vulkan_params(
+                                               .instance = ctx->placebo_instance->instance,
+                                               .get_proc_addr = ctx->placebo_instance->get_proc_addr,
+                                               .surface = ctx->vk_surface,
+                                               .allow_software = false,
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
+                                               .opt_extensions = dev_exts,
+                                               .num_opt_extensions = num_dev_exts,
+#endif
+                                               .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
+                                               .device_name = select_device(opt), ));
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     av_free(dev_exts);
+#endif
+    /* clang-format on */
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
     }
@@ -477,7 +500,7 @@ static int create_vk_by_placebo(VkRenderer *renderer,
     vk_dev_ctx = device_ctx->hwctx;
 #if FF_API_VULKAN_SYNC_QUEUES
     FF_DISABLE_DEPRECATION_WARNINGS
-#ifdef VK_KHR_internally_synchronized_queues
+#if defined(VK_KHR_internally_synchronized_queues) && PL_API_VER >= 365
     {
         int isq = 0;
         for (int i = 0; i < ctx->placebo_vulkan->num_extensions; i++) {
@@ -532,7 +555,6 @@ static int create_vk_by_placebo(VkRenderer *renderer,
         .flags = VK_QUEUE_COMPUTE_BIT,
     };
     nb_qf++;
-
     ret = get_decode_queue(renderer, &decode_index, &decode_count);
     if (ret < 0) {
         return ret;
@@ -543,8 +565,8 @@ static int create_vk_by_placebo(VkRenderer *renderer,
         .num = decode_count,
         .flags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
     };
-    nb_qf++;
 
+    nb_qf++;
     vk_dev_ctx->nb_qf = nb_qf;
 
     ret = av_hwdevice_ctx_init(ctx->hw_device_ref);
@@ -915,7 +937,6 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
         .cone_params = pl_render_default_params.cone_params,
         .color_map_params = pl_render_default_params.color_map_params,
-        /* XXX: User option. */
         .skip_anti_aliasing = ctx->benchmark,
     };
     int ret = 0;
