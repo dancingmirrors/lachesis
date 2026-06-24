@@ -212,8 +212,8 @@ def check(
         if not option_name:
             return
         if required is not None:
-            defaction = "enable"
-        elif default is False:
+            return
+        if default is False:
             defaction = "disable"
         elif deps or deps_any or deps_neg or fn:
             defaction = "autodetect"
@@ -240,6 +240,8 @@ def check(
             use_dep = True
             force_opt = True
         elif val == "no":
+            if required is not None:
+                die("Feature '%s' is required and cannot be disabled." % option_name)
             use_dep = False
             force_opt = False
         elif val == "auto":
@@ -517,11 +519,14 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     prefix = _G.install_paths.get("PREFIX", "/usr/local")
     n += "rule install_rule\n"
     # Just Windows shenanigans..
-    n += "  command = sh -c \"mkdir -p %s/bin && install -v -m 0755 %s %s/bin/lachesis%s\"\n" % (
-        prefix,
-        target,
-        prefix,
-        exesuf,
+    n += (
+        '  command = sh -c "mkdir -p %s/bin && install -v -m 0755 %s %s/bin/lachesis%s"\n'
+        % (
+            prefix,
+            target,
+            prefix,
+            exesuf,
+        )
     )
     n += "  description = INSTALL\n\n"
     n += "build install: install_rule | %s\n\n" % target
