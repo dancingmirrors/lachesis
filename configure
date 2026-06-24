@@ -104,7 +104,7 @@ check(
 )
 check(
     desc="SDL3_ttf",
-    fn=lambda: check_pkg_config("sdl3-ttf") or check_pkg_config("SDL3_ttf"),
+    fn=lambda: check_pkg_config("sdl3-ttf >= 3.0.0") or check_pkg_config("SDL3_ttf >= 3.0.0"),
     required="SDL3_ttf: missing or broken",
 )
 check(
