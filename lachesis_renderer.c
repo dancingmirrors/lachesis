@@ -117,6 +117,15 @@ static const char sbs360_shader[] =
 #include <libavutil/time.h>
 #include <libavutil/version.h>
 
+#if defined(__APPLE__)
+#include <mach-o/dyld.h>
+#define LACHESIS_CAN_ITERATE_LIBS 1
+#elif defined(__linux__) || defined(__GLIBC__) || defined(__FreeBSD__) || \
+    defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
+#include <link.h>
+#define LACHESIS_CAN_ITERATE_LIBS 1
+#endif
+
 #ifndef FF_API_VULKAN_SYNC_QUEUES
 #define FF_API_VULKAN_SYNC_QUEUES (LIBAVUTIL_VERSION_MAJOR < 61)
 #endif
@@ -645,6 +654,117 @@ static VkPresentModeKHR select_present_mode(RendererContext *ctx, const char *na
     return chosen;
 }
 
+static long libplacebo_soversion(const char *path) {
+    const char *base;
+    const char *stem;
+
+    if (!path || !*path) {
+        return -1;
+    }
+
+    base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+#ifdef _WIN32
+    {
+        const char *bslash = strrchr(base, '\\');
+        if (bslash) {
+            base = bslash + 1;
+        }
+    }
+#endif
+
+    stem = strstr(base, "libplacebo");
+    if (!stem) {
+        return -1;
+    }
+    stem += strlen("libplacebo");
+
+    for (; *stem; stem++) {
+        if (*stem >= '0' && *stem <= '9') {
+            return strtol(stem, NULL, 10);
+        }
+    }
+
+    return 0;
+}
+
+#ifdef LACHESIS_CAN_ITERATE_LIBS
+#define LACHESIS_MAX_PLACEBO_LIBS 8
+
+struct placebo_lib_scan {
+    const char *paths[LACHESIS_MAX_PLACEBO_LIBS];
+    long versions[LACHESIS_MAX_PLACEBO_LIBS];
+    int count;
+};
+
+static void placebo_lib_scan_add(struct placebo_lib_scan *scan,
+                                 const char *path, long version) {
+    for (int i = 0; i < scan->count; i++) {
+        if (scan->versions[i] == version) {
+            return;
+        }
+    }
+    if (scan->count < LACHESIS_MAX_PLACEBO_LIBS) {
+        scan->paths[scan->count] = path;
+        scan->versions[scan->count] = version;
+        scan->count++;
+    }
+}
+
+#ifndef __APPLE__
+static int placebo_phdr_cb(struct dl_phdr_info *info, size_t size, void *data) {
+    struct placebo_lib_scan *scan = data;
+    long version;
+    (void)size;
+
+    version = libplacebo_soversion(info->dlpi_name);
+    if (version >= 0) {
+        placebo_lib_scan_add(scan, info->dlpi_name, version);
+    }
+    return 0;
+}
+#endif
+
+static void placebo_scan_loaded_libs(struct placebo_lib_scan *scan) {
+    scan->count = 0;
+#ifdef __APPLE__
+    uint32_t n = _dyld_image_count();
+    for (uint32_t i = 0; i < n; i++) {
+        const char *name = _dyld_get_image_name(i);
+        long version = libplacebo_soversion(name);
+        if (version >= 0) {
+            placebo_lib_scan_add(scan, name, version);
+        }
+    }
+#else
+    dl_iterate_phdr(placebo_phdr_cb, scan);
+#endif
+}
+#endif /* LACHESIS_CAN_ITERATE_LIBS */
+
+static void check_libplacebo_consistency(void) {
+    static int done = 0;
+    if (done) {
+        return;
+    }
+    done = 1;
+
+#ifdef LACHESIS_CAN_ITERATE_LIBS
+    struct placebo_lib_scan scan;
+    placebo_scan_loaded_libs(&scan);
+
+    if (scan.count > 1) {
+        fprintf(stderr,
+                "WARNING: multiple libplacebo versions are loaded into this process.\n");
+    }
+
+    if (scan.count == 1 && scan.versions[0] > 0 &&
+        scan.versions[0] != PL_API_VER) {
+        fprintf(stderr, "WARNING: PL_API_VER mismatch detected.\n");
+    }
+#endif /* LACHESIS_CAN_ITERATE_LIBS */
+}
+
 static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     int ret = 0;
     unsigned num_ext = 0;
@@ -656,6 +776,8 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     };
     RendererContext *ctx = (RendererContext *)renderer;
     AVDictionaryEntry *entry;
+
+    check_libplacebo_consistency();
 
     ctx->vk_log = pl_log_create(PL_API_VER, &vk_log_params);
 
