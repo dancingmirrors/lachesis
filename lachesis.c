@@ -308,7 +308,6 @@ typedef struct VideoState {
     int64_t audio_seek_min;
     int64_t audio_seek_max;
     int audio_seek_flags;
-    int ended_eof;
     int is_still_image;
     int width, height, xleft, ytop;
     int step;
@@ -361,7 +360,7 @@ static int64_t duration = AV_NOPTS_VALUE;
 static int fast = 0;
 static int genpts = 0;
 static int decoder_reorder_pts = -1;
-static int autoexit;
+static int keep_open;
 static int exit_on_keydown;
 static int exit_on_mousedown;
 static int loop = 1;
@@ -3836,9 +3835,13 @@ static int read_thread(void *arg) {
                 SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 100);
                 SDL_UnlockMutex(wait_mutex);
                 continue;
+            } else if (keep_open && playlist_pos + 1 >= playlist_size) {
+                is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
+                SDL_LockMutex(wait_mutex);
+                SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 100);
+                SDL_UnlockMutex(wait_mutex);
+                continue;
             } else {
-                /* Signal a clean EOF so the event loop can auto-advance or exit. */
-                is->ended_eof = 1;
                 ret = AVERROR_EOF;
                 goto fail;
             }
@@ -3858,11 +3861,7 @@ static int read_thread(void *arg) {
                 is->eof = 1;
             }
             if (ic->pb && ic->pb->error) {
-                if (autoexit) {
-                    goto fail;
-                } else {
-                    break;
-                }
+                goto fail;
             }
             SDL_LockMutex(wait_mutex);
             SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 10);
@@ -4560,15 +4559,9 @@ static void event_loop(VideoState **pis) {
             }
             if (fatal_error_pending) {
                 do_exit(*pis);
+                break;
             }
-            int can_advance = playlist_pos + 1 < playlist_size;
-            if (old && old->ended_eof) {
-                if (can_advance) {
-                    playlist_switch(pis, playlist_pos + 1);
-                } else {
-                    do_exit(*pis);
-                }
-            } else if (can_advance) {
+            if (playlist_pos + 1 < playlist_size) {
                 playlist_switch(pis, playlist_pos + 1);
             } else {
                 do_exit(*pis);
@@ -4800,7 +4793,7 @@ static const OptionDef options[] = {
     {"genpts", OPT_TYPE_BOOL, OPT_EXPERT, {&genpts}, "generate pts", ""},
     {"drp", OPT_TYPE_INT, OPT_EXPERT, {&decoder_reorder_pts}, "let decoder reorder pts 0=off 1=on -1=auto", ""},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_sync}, "set audio-video sync. type (type=audio/video/ext)", "type"},
-    {"autoexit", OPT_TYPE_BOOL, OPT_EXPERT, {&autoexit}, "exit at the end", ""},
+    {"keep-open", OPT_TYPE_BOOL, OPT_EXPERT, {&keep_open}, "keep the window open at the end", ""},
     {"exitonkeydown", OPT_TYPE_BOOL, OPT_EXPERT, {&exit_on_keydown}, "exit on key down", ""},
     {"exitonmousedown", OPT_TYPE_BOOL, OPT_EXPERT, {&exit_on_mousedown}, "exit on mouse down", ""},
     {"loop", OPT_TYPE_INT, OPT_EXPERT, {&loop}, "set number of times the playback will be looped", "loop count"},
