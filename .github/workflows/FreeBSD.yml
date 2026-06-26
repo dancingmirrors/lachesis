@@ -38,7 +38,7 @@ jobs:
             set -x
 
             git config --global --add safe.directory "$PWD"
-            export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:$PKG_CONFIG_PATH
+            export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
 
             #export CFLAGS="-DLIBICONV_PLUG"
 
