@@ -35,14 +35,18 @@ else:
 add_cflags("-fno-strict-aliasing")
 
 check(
-    "-optimize", desc="optimization", fn=lambda: chain(add_cflags("-O3", "-fno-trapping-math", "-fno-signed-zeros"), True)
+    "-optimize",
+    desc="optimization",
+    fn=lambda: chain(
+        add_cflags("-O3", "-fno-trapping-math", "-fno-signed-zeros"), True
+    ),
 )
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
 
 check(
     "-increase-stack-size*",
     desc="whether we can increase stack size via PT_GNU_STACK",
-    fn=lambda: chain (add_ldflags("-Wl,-z,stack-size=524288"), True)
+    fn=lambda: chain(add_ldflags("-Wl,-z,stack-size=524288"), True),
 )
 
 check(
@@ -110,7 +114,8 @@ check(
 )
 check(
     desc="SDL3_ttf",
-    fn=lambda: check_pkg_config("sdl3-ttf >= 3.0.0") or check_pkg_config("SDL3_ttf >= 3.0.0"),
+    fn=lambda: check_pkg_config("sdl3-ttf >= 3.0.0")
+    or check_pkg_config("SDL3_ttf >= 3.0.0"),
     required="SDL3_ttf: missing or broken",
 )
 check(
