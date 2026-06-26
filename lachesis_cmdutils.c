@@ -365,9 +365,6 @@ end:
 
 void parse_loglevel(int argc, char **argv, const OptionDef *options) {
     int idx = locate_option(argc, argv, options, "loglevel");
-    if (!idx) {
-        idx = locate_option(argc, argv, options, "v");
-    }
     if (idx && argv[idx + 1]) {
         opt_loglevel(NULL, "loglevel", argv[idx + 1]);
     }

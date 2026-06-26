@@ -28,7 +28,9 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
+#include <libavcodec/avcodec.h>
 #include <libavdevice/avdevice.h>
 #include <libavformat/avformat.h>
 #include <libavutil/attributes.h>
@@ -5112,10 +5114,13 @@ static int opt_codec(void *optctx, const char *opt, const char *arg) {
     return *name ? 0 : AVERROR(ENOMEM);
 }
 
+static int opt_version(void *optctx, const char *opt, const char *arg);
 static int dummy;
 
 static const OptionDef options[] = {
     CMDUTILS_COMMON_OPTIONS /* Just a comment to make clang-format ignore this line. */
+    {"v", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_version}, "show version"},
+    {"version", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_version}, "show version"},
     {"x", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_width}, "force displayed width", "width"},
     {"y", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_height}, "force displayed height", "height"},
     {"fs", OPT_TYPE_BOOL, 0, {&is_fullscreen}, "force fullscreen"},
@@ -5185,6 +5190,50 @@ static const OptionDef options[] = {
     },
 };
 
+/* clang-format off */
+#define PRINT_LIB_VERSION(libname, LIBNAME)                                       \
+    av_log(NULL, AV_LOG_INFO, "  lib%-11s %2d.%3d.%3d / %2d.%3d.%3d\n", #libname, \
+           LIB##LIBNAME##_VERSION_MAJOR, LIB##LIBNAME##_VERSION_MINOR,            \
+           LIB##LIBNAME##_VERSION_MICRO, AV_VERSION_MAJOR(libname##_version()),   \
+           AV_VERSION_MINOR(libname##_version()), AV_VERSION_MICRO(libname##_version()))
+/* clang-format on */
+
+static int opt_version(void *optctx, const char *opt, const char *arg) {
+    int this_year = program_birth_year;
+    time_t t = time(NULL);
+
+    /* Make sure the banner is visible regardless of loglevel. */
+    if (av_log_get_level() < AV_LOG_INFO) {
+        av_log_set_level(AV_LOG_INFO);
+    }
+
+    struct tm *tm = localtime(&t);
+    if (tm && tm->tm_year + 1900 > this_year) {
+        this_year = tm->tm_year + 1900;
+    }
+
+    av_log(NULL, AV_LOG_INFO,
+           "%s, a fork of ffplay\n"
+           "Copyright © 2000-2003 Fabrice Bellard, and the FFmpeg authors\n"
+           "Copyright © %d-%d dancingmirrors\n",
+           program_name, program_birth_year, this_year);
+    av_log(NULL, AV_LOG_INFO,
+           "Special thanks to the mpv and VLC authors.\n");
+
+    av_log(NULL, AV_LOG_INFO, "FFmpeg configuration: %s\n", avutil_configuration());
+    PRINT_LIB_VERSION(avutil, AVUTIL);
+    PRINT_LIB_VERSION(avcodec, AVCODEC);
+    PRINT_LIB_VERSION(avformat, AVFORMAT);
+#if LACHESIS_HAVE_AVDEVICE
+    PRINT_LIB_VERSION(avdevice, AVDEVICE);
+#endif
+    PRINT_LIB_VERSION(avfilter, AVFILTER);
+    PRINT_LIB_VERSION(swscale, SWSCALE);
+    PRINT_LIB_VERSION(swresample, SWRESAMPLE);
+
+    return 0;
+}
+
 void show_help_default(const char *opt, const char *arg) {
     show_help_options(options, 0, OPT_EXPERT);
     show_help_options(options, OPT_EXPERT, 0);
@@ -5223,6 +5272,7 @@ int main(int argc, char **argv) {
     n_pending_dirs = 0;
 
     if (playlist_size == 0) {
+        opt_version(NULL, NULL, NULL);
         fatal_quit("An input file must be specified.\n");
     }
     if (display_disable) {
