@@ -20,6 +20,7 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 
 #include "lachesis_config.h"
+#include "lachesis_log.h"
 #include "lachesis_renderer.h"
 
 #if LACHESIS_HAVE_LIBPLACEBO
@@ -429,7 +430,7 @@ static int create_vk_by_hwcontext(VkRenderer *renderer,
     }
 #elif defined(VK_KHR_internally_synchronized_queues)
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 32, 100)
-    fprintf(stderr, "WARN: VK_KHR_internally_synchronized_queues with libplacebo < 365 hack.\n");
+    log_warn("VK_KHR_internally_synchronized_queues with libplacebo < 365 hack.\n");
 #endif
     for (unsigned i = 0; i < hwctx->nb_enabled_dev_extensions; i++) {
         if (!strcmp(hwctx->enabled_dev_extensions[i],
@@ -829,13 +830,12 @@ static void check_libplacebo_consistency(void) {
     placebo_scan_loaded_libs(&scan);
 
     if (scan.count > 1) {
-        fprintf(stderr,
-                "WARN: multiple libplacebo versions are loaded into this process.\n");
+        log_warn("multiple libplacebo versions are loaded into this process.\n");
     }
 
     if (scan.count == 1 && scan.versions[0] > 0 &&
         scan.versions[0] != PL_API_VER) {
-        fprintf(stderr, "WARN: PL_API_VER mismatch detected.\n");
+        log_warn("PL_API_VER mismatch detected.\n");
     }
 #endif /* LACHESIS_CAN_ITERATE_LIBS */
 }

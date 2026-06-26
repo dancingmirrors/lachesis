@@ -65,19 +65,12 @@
 
 #include "lachesis_archive.h"
 #include "lachesis_cmdutils.h"
+#include "lachesis_log.h"
 #include "lachesis_osd_font.h"
 #include "lachesis_renderer.h"
 
 const char program_name[] = "lachesis";
 const int program_birth_year = 2003;
-
-static void fatal_quit(const char *fmt, ...) {
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    exit(1);
-}
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
 #define MIN_FRAMES 25
@@ -2231,10 +2224,10 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
                     !is->seek_req &&
                     now - is->last_catchup_us > CATCHUP_COOLDOWN_US) {
                     is->last_catchup_us = now;
-                    fprintf(stderr,
-                            "WARN: Video decoder can't keep up (%.1f ms/frame versus %.1f ms "
-                            "real time). Taking evasive maneuvers.\n",
-                            decode_us / 1000.0, interval_us / 1000.0);
+                    log_warn(
+                        "Video decoder can't keep up (%.1f ms/frame versus %.1f ms "
+                        "real time). Taking evasive maneuvers.\n",
+                        decode_us / 1000.0, interval_us / 1000.0);
                     stream_seek(is, (int64_t)(m * AV_TIME_BASE),
                                 (int64_t)((m - v) * AV_TIME_BASE), 0);
                 }
@@ -3071,13 +3064,13 @@ static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int 
         SDL_AudioSpec dev_spec;
         int dev_frames = 0;
         const char *drv = SDL_GetCurrentAudioDriver();
-        fprintf(stderr, "INFO: SDL audio device driver: %s, requested S16 %dch @ %dHz\n",
-                drv ? drv : "(none)", wanted_spec.channels, wanted_spec.freq);
+        log_info("SDL audio device driver: %s, requested S16 %dch @ %dHz\n",
+                 drv ? drv : "(none)", wanted_spec.channels, wanted_spec.freq);
         if (SDL_GetAudioDeviceFormat(audio_dev, &dev_spec, &dev_frames)) {
-            fprintf(stderr,
-                    "INFO: SDL audio device format: fmt=0x%x %dch @ %dHz, buffer=%d frames\n",
-                    (unsigned)dev_spec.format, dev_spec.channels, dev_spec.freq,
-                    dev_frames);
+            log_info(
+                "SDL audio device format: fmt=0x%x %dch @ %dHz, buffer=%d frames\n",
+                (unsigned)dev_spec.format, dev_spec.channels, dev_spec.freq,
+                dev_frames);
         } else {
             /* XXX */
             is->av_sync_type = AV_SYNC_VIDEO_MASTER;
@@ -3138,7 +3131,7 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
 
     if (!vk_renderer) {
         if (hwaccel) {
-            fprintf(stderr, "WARN: -hwaccel %s ignored because it requires the Vulkan renderer.\n", hwaccel);
+            log_warn("-hwaccel %s ignored because it requires the Vulkan renderer.\n", hwaccel);
         }
         return 0;
     }
@@ -3146,8 +3139,7 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     if (hwaccel) {
         ret = try_hwaccel(device_ctx, hwaccel);
         if (ret < 0 && ret != AVERROR(ENOSYS)) {
-            fprintf(stderr, "DEAD: hwaccel %s is not available!\n",
-                    hwaccel);
+            log_dead("hwaccel %s is not available!\n", hwaccel);
         }
         if (ret >= 0) {
             active_hwaccel = hwaccel;
@@ -3831,8 +3823,8 @@ static int read_thread(void *arg) {
     if (is->archive_path && is->entry_name) {
         is->archive_avio = archive_entry_open_avio(is->archive_path, is->entry_name);
         if (!is->archive_avio) {
-            fprintf(stderr, "WARN: Could not open archive entry '%s' in '%s'!\n",
-                    is->entry_name, is->archive_path);
+            log_warn("Could not open archive entry '%s' in '%s'!\n",
+                     is->entry_name, is->archive_path);
             ret = -1;
             goto fail;
         }
@@ -3867,7 +3859,7 @@ static int read_thread(void *arg) {
                     set_ytdl_http_opts(&format_opts);
                 }
             } else {
-                fprintf(stderr, "WARN: yt-dlp failed, so trying direct open.\n");
+                log_warn("yt-dlp failed, so trying direct open.\n");
             }
         }
     }
@@ -4535,7 +4527,7 @@ static void print_current_file(const VideoState *is) {
     if (is) {
         const char *url = is->ytdl_source_url ? is->ytdl_source_url : is->filename;
         if (url) {
-            fprintf(stderr, "INFO: %s\n", url);
+            log_info("%s\n", url);
         }
     }
 }
@@ -4545,8 +4537,8 @@ static void print_stream_info(const VideoState *is) {
         return;
     }
 
-    fprintf(stderr, "INFO: Using hwaccel: %s\n",
-            active_hwaccel ? active_hwaccel : "none (software decoding)");
+    log_info("Using hwaccel: %s\n",
+             active_hwaccel ? active_hwaccel : "none (software decoding)");
 
     if (is->video_st) {
         AVCodecParameters *par = is->video_st->codecpar;
@@ -4564,9 +4556,9 @@ static void print_stream_info(const VideoState *is) {
             snprintf(dar_buf, sizeof(dar_buf), "N/A");
         }
 
-        fprintf(stderr, "INFO: Video: %s, %dx%d, SAR %d:%d DAR %s",
-                avcodec_get_name(par->codec_id), par->width, par->height,
-                sar.num ? sar.num : 0, sar.den ? sar.den : 1, dar_buf);
+        log_info("Video: %s, %dx%d, SAR %d:%d DAR %s",
+                 avcodec_get_name(par->codec_id), par->width, par->height,
+                 sar.num ? sar.num : 0, sar.den ? sar.den : 1, dar_buf);
         if (fr.num && fr.den) {
             fprintf(stderr, ", %.4g fps", av_q2d(fr));
         }
@@ -4578,8 +4570,8 @@ static void print_stream_info(const VideoState *is) {
         char chl[64];
 
         av_channel_layout_describe(&par->ch_layout, chl, sizeof(chl));
-        fprintf(stderr, "INFO: Audio: %s, %d Hz, %s\n",
-                avcodec_get_name(par->codec_id), par->sample_rate, chl);
+        log_info("Audio: %s, %d Hz, %s\n",
+                 avcodec_get_name(par->codec_id), par->sample_rate, chl);
     }
 }
 
@@ -4593,7 +4585,7 @@ static void playlist_switch(VideoState **pis, int new_pos) {
     window_title = NULL;
     VideoState *is = stream_open_playlist_entry(playlist_pos);
     if (!is) {
-        fprintf(stderr, "DEAD: Failed to open playlist entry %d!\n", playlist_pos);
+        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
         do_exit(NULL);
     }
     print_current_file(is);
@@ -4966,7 +4958,7 @@ static int opt_sync(void *optctx, const char *opt, const char *arg) {
     } else if (!strcmp(arg, "ext")) {
         av_sync_type = AV_SYNC_EXTERNAL_CLOCK;
     } else {
-        fatal_quit("DEAD: Unknown value for %s: %s.\n", opt, arg);
+        fatal_quit("Unknown value for %s: %s.\n", opt, arg);
     }
     av_sync_type_explicit = 1;
 
@@ -5227,7 +5219,7 @@ int main(int argc, char **argv) {
     n_pending_dirs = 0;
 
     if (playlist_size == 0) {
-        fatal_quit("DEAD: An input file must be specified.\n");
+        fatal_quit("An input file must be specified.\n");
     }
     if (display_disable) {
         video_disable = 1;
@@ -5250,7 +5242,7 @@ int main(int argc, char **argv) {
         flags &= ~SDL_INIT_VIDEO;
     }
     if (!SDL_Init(flags)) {
-        fatal_quit("DEAD: Could not initialize SDL: %s!\n", SDL_GetError());
+        fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
     }
 
     SDL_SetEventEnabled(SDL_EVENT_USER, false);
@@ -5286,20 +5278,20 @@ int main(int argc, char **argv) {
             enable_vulkan = 1;
         }
         if (enable_360sbs && !enable_vulkan) {
-            fatal_quit("DEAD: -360-sbs requires Vulkan.\n");
+            fatal_quit("-360-sbs requires Vulkan.\n");
         }
         if (enable_vulkan) {
             vk_renderer = vk_get_renderer();
             if (vk_renderer) {
                 flags |= SDL_WINDOW_VULKAN;
             } else {
-                fprintf(stderr, "WARN: Your SDL version doesn't support Vulkan.\n");
+                log_warn("Your SDL version doesn't support Vulkan.\n");
                 enable_vulkan = 0;
             }
         }
         window = SDL_CreateWindow(program_name, default_width, default_height, flags);
         if (!window) {
-            fatal_quit("DEAD: Failed to create window: %s!", SDL_GetError());
+            fatal_quit("Failed to create window: %s!\n", SDL_GetError());
         }
 
         if (vk_renderer) {
@@ -5308,7 +5300,7 @@ int main(int argc, char **argv) {
             if (vulkan_params) {
                 int ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
                 if (ret < 0) {
-                    fatal_quit("DEAD: Failed to parse %s.\n", vulkan_params);
+                    fatal_quit("Failed to parse %s.\n", vulkan_params);
                 }
             }
             if (vulkan_swap_mode) {
@@ -5323,12 +5315,12 @@ int main(int argc, char **argv) {
             ret = vk_renderer_create(vk_renderer, window, dict);
             av_dict_free(&dict);
             if (ret < 0) {
-                fatal_quit("DEAD: Failed to create Vulkan renderer!\n");
+                fatal_quit("Failed to create Vulkan renderer!\n");
             }
             if (enable_360sbs) {
                 ret = vk_renderer_enable_360sbs(vk_renderer, 1);
                 if (ret < 0) {
-                    fatal_quit("DEAD: Failed to enable 360 SBS shader!\n");
+                    fatal_quit("Failed to enable 360 SBS shader!\n");
                 }
             }
         } else {
@@ -5341,7 +5333,7 @@ int main(int argc, char **argv) {
             }
             if (!renderer || !renderer_texture_formats ||
                 renderer_texture_formats[0] == SDL_PIXELFORMAT_UNKNOWN) {
-                fatal_quit("DEAD: Failed to create window or renderer: %s!", SDL_GetError());
+                fatal_quit("Failed to create window or renderer: %s!\n", SDL_GetError());
             }
         }
 
