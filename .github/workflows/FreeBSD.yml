@@ -24,7 +24,7 @@ jobs:
             set -x
             pkg install -y ccache cmake evdev-proto ffmpeg git libarchive \
             libevdev libinput libplacebo libxkbcommon mpv ninja pkgconf python3 \
-            sdl3 sdl3_ttf wayland wayland-protocols
+            sdl3 sdl3_ttf vulkan-headers wayland wayland-protocols
 
             #git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
             #cd SDL_ttf
