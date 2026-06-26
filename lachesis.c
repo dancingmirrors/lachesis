@@ -5141,6 +5141,7 @@ static const OptionDef options[] = {
     {"noborder", OPT_TYPE_BOOL, 0, {&borderless}, "borderless window"},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "window always on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set startup volume 0=min 100=max", "volume"},
+    {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force format", "fmt"},
     {"fast", OPT_TYPE_BOOL, OPT_EXPERT, {&fast}, "non spec compliant optimizations", ""},
     {"genpts", OPT_TYPE_BOOL, OPT_EXPERT, {&genpts}, "generate pts", ""},
