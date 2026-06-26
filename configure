@@ -40,6 +40,12 @@ check(
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
 
 check(
+    "-increase-stack-size*",
+    desc="whether we can increase stack size via PT_GNU_STACK",
+    fn=lambda: chain (add_ldflags("-Wl,-z,stack-size=524288"), True)
+)
+
+check(
     "Windows",
     fn=lambda: check_cc(
         defined="_WIN32",
