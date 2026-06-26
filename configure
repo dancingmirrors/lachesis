@@ -128,9 +128,14 @@ check(
 )
 
 check(
+    desc="vulkan",
+    fn=lambda: check_pkg_config("vulkan") and check_cc(include="vulkan/vulkan.h"),
+)
+
+check(
     "-libplacebo*",
     desc="libplacebo",
-    fn=lambda: check_pkg_config("libplacebo >= 7.349.0") and check_pkg_config("vulkan"),
+    fn=lambda: check_pkg_config("libplacebo >= 7.349.0"),
     required="libplacebo: missing, broken, or too old",
 )
 
