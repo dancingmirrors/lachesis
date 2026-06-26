@@ -752,7 +752,7 @@ static VkPresentModeKHR select_present_mode(RendererContext *ctx, const char *na
     return chosen;
 }
 
-static long libplacebo_soversion(const char *path) {
+av_unused static long libplacebo_soversion(const char *path) {
     const char *base;
     const char *stem;
 
