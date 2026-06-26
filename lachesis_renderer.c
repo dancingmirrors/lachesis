@@ -19,8 +19,8 @@
 #define VK_NO_PROTOTYPES
 #define VK_ENABLE_BETA_EXTENSIONS
 
-#include "lachesis_renderer.h"
 #include "lachesis_config.h"
+#include "lachesis_renderer.h"
 
 #if LACHESIS_HAVE_LIBPLACEBO
 #define HAVE_VULKAN_RENDERER 1
@@ -150,7 +150,10 @@ static const char sbs360_shader[] =
     "    float u   = lon / (2.0 * PI) + 0.5;\n"
     "    float v   = 0.5 - lat / PI;\n"
     "\n"
+#if 0
     "    return sample_catmull_rom(vec2(u, v));\n"
+#endif
+    "    return HOOKED_tex(vec2(u, v));\n"
     "}\n";
 
 #include <libavutil/bprint.h>
@@ -217,6 +220,7 @@ typedef struct RendererContext {
     AVBufferRef *hw_frame_ref;
     enum AVPixelFormat *transfer_formats;
     AVHWFramesConstraints *constraints;
+    unsigned decode_caps;
 
     PFN_vkGetInstanceProcAddr get_proc_addr;
     VkInstance inst;
@@ -329,6 +333,10 @@ static const char *select_device(const AVDictionary *opt) {
     return NULL;
 }
 
+static int create_vk_by_placebo(VkRenderer *renderer,
+                                const char **ext, unsigned num_ext,
+                                const AVDictionary *opt);
+
 static int create_vk_by_hwcontext(VkRenderer *renderer,
                                   const char **ext, unsigned num_ext,
                                   const AVDictionary *opt) {
@@ -419,8 +427,19 @@ static int create_vk_by_hwcontext(VkRenderer *renderer,
             break;
         }
     }
+#elif defined(VK_KHR_internally_synchronized_queues)
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 32, 100)
+    fprintf(stderr, "WARN: VK_KHR_internally_synchronized_queues with libplacebo < 365 hack.\n");
 #endif
-
+    for (unsigned i = 0; i < hwctx->nb_enabled_dev_extensions; i++) {
+        if (!strcmp(hwctx->enabled_dev_extensions[i],
+                    VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
+            av_buffer_unref(&ctx->hw_device_ref);
+            ctx->inst = NULL;
+            return create_vk_by_placebo(renderer, ext, num_ext, opt);
+        }
+    }
+#endif
     ctx->placebo_vulkan = pl_vulkan_import(ctx->vk_log, &import_params);
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
@@ -625,6 +644,20 @@ static int create_vk_by_placebo(VkRenderer *renderer,
         return ret;
     }
 
+    ctx->decode_caps = 0;
+    for (int i = 0; i < ctx->placebo_vulkan->num_extensions; i++) {
+        const char *ext = ctx->placebo_vulkan->extensions[i];
+        if (!strcmp(ext, "VK_KHR_video_decode_h264")) {
+            ctx->decode_caps |= VK_DECODE_CAP_H264;
+        } else if (!strcmp(ext, "VK_KHR_video_decode_h265")) {
+            ctx->decode_caps |= VK_DECODE_CAP_HEVC;
+        } else if (!strcmp(ext, "VK_KHR_video_decode_av1")) {
+            ctx->decode_caps |= VK_DECODE_CAP_AV1;
+        } else if (!strcmp(ext, "VK_KHR_video_decode_vp9")) {
+            ctx->decode_caps |= VK_DECODE_CAP_VP9;
+        }
+    }
+
     return 0;
 }
 
@@ -797,12 +830,12 @@ static void check_libplacebo_consistency(void) {
 
     if (scan.count > 1) {
         fprintf(stderr,
-                "WARNING: multiple libplacebo versions are loaded into this process.\n");
+                "WARN: multiple libplacebo versions are loaded into this process.\n");
     }
 
     if (scan.count == 1 && scan.versions[0] > 0 &&
         scan.versions[0] != PL_API_VER) {
-        fprintf(stderr, "WARNING: PL_API_VER mismatch detected.\n");
+        fprintf(stderr, "WARN: PL_API_VER mismatch detected.\n");
     }
 #endif /* LACHESIS_CAN_ITERATE_LIBS */
 }
@@ -1101,7 +1134,9 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
         .cone_params = pl_render_default_params.cone_params,
         .color_map_params = pl_render_default_params.color_map_params,
-        .skip_anti_aliasing = ctx->benchmark,
+        .disable_linear_scaling = ctx->benchmark || params->disable_linear_scaling,
+        .skip_anti_aliasing = ctx->benchmark || params->skip_anti_aliasing,
+        .preserve_mixing_cache = ctx->benchmark || params->preserve_mixing_cache,
     };
     int ret = 0;
     struct pl_color_space hint = {0};
@@ -1370,4 +1405,16 @@ int vk_renderer_resize(VkRenderer *renderer, int width, int height) {
 
 void vk_renderer_destroy(VkRenderer *renderer) {
     renderer->destroy(renderer);
+}
+
+unsigned vk_renderer_video_decode_caps(VkRenderer *renderer) {
+#if HAVE_VULKAN_RENDERER
+    if (!renderer) {
+        return 0;
+    }
+    return ((RendererContext *)renderer)->decode_caps;
+#else
+    (void)renderer;
+    return 0;
+#endif
 }

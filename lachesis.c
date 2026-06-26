@@ -21,6 +21,7 @@
 
 #include "lachesis_config.h"
 
+#include <inttypes.h>
 #include <limits.h>
 #include <math.h>
 #include <signal.h>
@@ -80,6 +81,10 @@ static void fatal_quit(const char *fmt, ...) {
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
 #define MIN_FRAMES 25
+#define DECODE_BEHIND_SWITCH 20
+#define CATCHUP_BEHIND_SECS 1.0
+/* XXX */
+#define CATCHUP_COOLDOWN_US 18000000
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
 #define EXTERNAL_CLOCK_MAX_FRAMES 10
 
@@ -257,6 +262,10 @@ typedef struct VideoState {
     struct SwrContext *swr_ctx;
     int frame_drops_early;
     int frame_drops_late;
+    int decode_behind_streak;
+    int decode_skip_level;
+    int64_t last_catchup_us;
+    int render_low_quality;
 
     enum ShowMode {
         SHOW_MODE_NONE = -1,
@@ -301,6 +310,8 @@ typedef struct VideoState {
     AVIOContext *archive_avio;
     char *ytdl_source_url;
     char *ytdl_audio_url;
+    struct YtdlChunkedIO *ytdl_vio;
+    struct YtdlChunkedIO *ytdl_aio;
     AVFormatContext *audio_ic;
     SDL_Thread *audio_read_tid;
     volatile int audio_seek_pending;
@@ -308,6 +319,12 @@ typedef struct VideoState {
     int64_t audio_seek_min;
     int64_t audio_seek_max;
     int audio_seek_flags;
+    int64_t diag_t0_us;
+    int diag_first_vpts_logged;
+    int diag_first_apts_logged;
+    int diag_first_vpkt_logged;
+    int diag_first_apkt_logged;
+    int64_t diag_last_pace_us;
     int is_still_image;
     int width, height, xleft, ytop;
     int step;
@@ -355,6 +372,8 @@ static int borderless;
 static int alwaysontop;
 static int startup_volume = 100;
 static int av_sync_type = AV_SYNC_AUDIO_MASTER;
+static int av_sync_type_explicit = 0;
+static int skip_to_keyframe = 0;
 static int64_t start_time = AV_NOPTS_VALUE;
 static int64_t duration = AV_NOPTS_VALUE;
 static int fast = 0;
@@ -366,6 +385,10 @@ static int exit_on_mousedown;
 static int loop = 1;
 static int framedrop = -1;
 static int infinite_buffer = -1;
+static float opt_cache_secs = -1.0f;
+static int opt_cache_size_mb = -1;
+static double read_ahead_secs = 1.0;
+static int64_t max_queue_bytes = MAX_QUEUE_SIZE;
 static enum ShowMode show_mode = SHOW_MODE_NONE;
 static const char *audio_codec_name;
 static const char *subtitle_codec_name;
@@ -402,6 +425,7 @@ static float autofit_larger = 0.85f;
 static int64_t audio_callback_time;
 static int global_muted = 0;
 static int ytdl_disable = 0;
+static int ytdl_chunked_disable = 0;
 static const char *ytdl_path = NULL;
 static const char *ytdl_format = NULL;
 
@@ -429,6 +453,8 @@ static int64_t osd_volume_show_until = 0;
 
 /* Forward declaration for the OSD. */
 static double get_master_clock(VideoState *is);
+
+static void ytdl_chunked_free(struct YtdlChunkedIO **pc);
 
 static const struct TextureFormatEntry {
     enum AVPixelFormat format;
@@ -1083,6 +1109,9 @@ static void video_image_display(VideoState *is) {
         if (enable_360sbs) {
             vk_renderer_update_360sbs(vk_renderer, sbs360_yaw, sbs360_pitch, sbs360_hfov);
         }
+        is->render_params.disable_linear_scaling = is->render_low_quality;
+        is->render_params.skip_anti_aliasing = is->render_low_quality;
+        is->render_params.preserve_mixing_cache = is->render_low_quality;
         vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
         return;
     }
@@ -1408,6 +1437,8 @@ static void stream_close(VideoState *is) {
 
     avformat_close_input(&is->ic);
     avformat_close_input(&is->audio_ic);
+    ytdl_chunked_free(&is->ytdl_vio);
+    ytdl_chunked_free(&is->ytdl_aio);
     av_freep(&is->ytdl_source_url);
     av_freep(&is->ytdl_audio_url);
     archive_entry_close_avio(is->archive_avio);
@@ -2141,8 +2172,23 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     return 0;
 }
 
+static void set_decode_skip_level(VideoState *is, int on) {
+    on = !!on;
+    if (on == is->decode_skip_level) {
+        return;
+    }
+    is->decode_skip_level = on;
+    is->render_low_quality = on;
+    if (is->viddec.avctx) {
+        is->viddec.avctx->skip_loop_filter = on ? AVDISCARD_ALL : AVDISCARD_DEFAULT;
+        is->viddec.avctx->skip_frame = on ? AVDISCARD_NONREF : AVDISCARD_DEFAULT;
+    }
+}
+
 static int get_video_frame(VideoState *is, AVFrame *frame) {
     int got_picture;
+    int had_packets = is->videoq.nb_packets > 0;
+    int64_t decode_t0 = av_gettime_relative();
 
     if ((got_picture = decoder_decode_frame(&is->viddec, frame, NULL)) < 0) {
         return -1;
@@ -2150,6 +2196,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
 
     if (got_picture) {
         double dpts = NAN;
+        int64_t decode_us = av_gettime_relative() - decode_t0;
 
         if (frame->pts != AV_NOPTS_VALUE) {
             dpts = av_q2d(is->video_st->time_base) * frame->pts;
@@ -2157,13 +2204,51 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
 
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
+        if (had_packets) {
+            AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
+            int64_t interval_us =
+                (fr.num > 0 && fr.den > 0) ? (int64_t)(1000000.0 * fr.den / fr.num) : 0;
+            if (interval_us > 0 && decode_us > interval_us) {
+                if (is->decode_behind_streak < DECODE_BEHIND_SWITCH) {
+                    is->decode_behind_streak++;
+                }
+            } else if (is->decode_behind_streak > 0) {
+                is->decode_behind_streak--;
+            }
+            int want = is->decode_skip_level;
+            if (is->decode_behind_streak >= DECODE_BEHIND_SWITCH) {
+                want = 1;
+            } else if (is->decode_behind_streak == 0) {
+                want = 0;
+            }
+            set_decode_skip_level(is, want);
+            if (want > 0 && skip_to_keyframe && !av_sync_type_explicit &&
+                is->audio_st && is->av_sync_type == AV_SYNC_AUDIO_MASTER) {
+                double m = get_master_clock(is);
+                double v = get_clock(&is->vidclk);
+                int64_t now = av_gettime_relative();
+                if (!isnan(m) && !isnan(v) && m - v > CATCHUP_BEHIND_SECS &&
+                    !is->seek_req &&
+                    now - is->last_catchup_us > CATCHUP_COOLDOWN_US) {
+                    is->last_catchup_us = now;
+                    fprintf(stderr,
+                            "WARN: Video decoder can't keep up (%.1f ms/frame versus %.1f ms "
+                            "real time). Taking evasive maneuvers.\n",
+                            decode_us / 1000.0, interval_us / 1000.0);
+                    stream_seek(is, (int64_t)(m * AV_TIME_BASE),
+                                (int64_t)((m - v) * AV_TIME_BASE), 0);
+                }
+            }
+        }
+
         if (framedrop > 0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
             if (frame->pts != AV_NOPTS_VALUE) {
                 double diff = dpts - get_master_clock(is);
                 if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
                     diff - is->frame_last_filter_delay < 0 &&
                     is->viddec.pkt_serial == is->vidclk.serial &&
-                    is->videoq.nb_packets) {
+                    is->videoq.nb_packets &&
+                    frame_queue_nb_remaining(&is->pictq) > 0) {
                     is->frame_drops_early++;
                     av_frame_unref(frame);
                     got_picture = 0;
@@ -3053,7 +3138,7 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
 
     if (!vk_renderer) {
         if (hwaccel) {
-            fprintf(stderr, "-hwaccel %s ignored because it requires the Vulkan renderer.\n", hwaccel);
+            fprintf(stderr, "WARN: -hwaccel %s ignored because it requires the Vulkan renderer.\n", hwaccel);
         }
         return 0;
     }
@@ -3061,7 +3146,7 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     if (hwaccel) {
         ret = try_hwaccel(device_ctx, hwaccel);
         if (ret < 0 && ret != AVERROR(ENOSYS)) {
-            fprintf(stderr, "hwaccel %s is not available!\n",
+            fprintf(stderr, "DEAD: hwaccel %s is not available!\n",
                     hwaccel);
         }
         if (ret >= 0) {
@@ -3267,7 +3352,7 @@ static int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *q
     return stream_id < 0 ||
         queue->abort_request ||
         (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
-        ((queue->nb_packets > MIN_FRAMES && (!queue->duration)) || (av_q2d(st->time_base) * queue->duration > 1.0));
+        ((queue->nb_packets > MIN_FRAMES && (!queue->duration)) || (av_q2d(st->time_base) * queue->duration > read_ahead_secs));
 }
 
 static int is_realtime(AVFormatContext *s) {
@@ -3348,11 +3433,241 @@ static const AVInputFormat *guess_archive_entry_format(const char *entry_name) {
     return NULL;
 }
 
+static char *build_default_ytdl_format(void) {
+    unsigned caps = vk_renderer_video_decode_caps(vk_renderer);
+    char sel[512];
+    size_t off = 0;
+
+    /* clang-format off */
+#define ADD_SEL(codec)                                    \
+    do {                                                  \
+        int n = snprintf(sel + off, sizeof(sel) - off,    \
+                         "bv*[vcodec^=%s]+ba/", (codec)); \
+        if (n > 0 && (size_t)n < sizeof(sel) - off) {     \
+            off += (size_t)n;                             \
+        }                                                 \
+    } while (0)
+    /* clang-format on */
+
+    sel[0] = '\0';
+    if (caps & VK_DECODE_CAP_AV1) {
+        ADD_SEL("av01");
+    }
+    if (caps & VK_DECODE_CAP_VP9) {
+        ADD_SEL("vp09");
+        ADD_SEL("vp9");
+    }
+    if (caps & VK_DECODE_CAP_HEVC) {
+        ADD_SEL("hev1");
+        ADD_SEL("hvc1");
+    }
+    ADD_SEL("avc1");
+    ADD_SEL("h264");
+#undef ADD_SEL
+
+    return av_asprintf("%sb", sel);
+}
+
+static void set_ytdl_http_opts(AVDictionary **opts) {
+    av_dict_set(opts, "reconnect", "1", 0);
+    av_dict_set(opts, "reconnect_streamed", "1", 0);
+    av_dict_set(opts, "reconnect_on_network_error", "1", 0);
+    av_dict_set(opts, "reconnect_on_http_error", "4xx,5xx", 0);
+    av_dict_set(opts, "reconnect_delay_max", "7", 0);
+    av_dict_set(opts, "multiple_requests", "1", 0);
+}
+
+#define YTDL_CHUNK_BYTES ((int64_t)10 * 1024 * 1024)
+#define YTDL_AVIO_BUFSZ (64 * 1024)
+#define YTDL_CHUNK_MAX_RETRIES 5
+
+struct YtdlChunkedIO {
+    char *url;
+    int64_t pos; /* The current logical byte position. */
+    int64_t size; /* The total resource size, or -1 if unknown. */
+    int64_t chunk; /* The request size in bytes. */
+    int64_t inner_read; /* The bytes consumed from the current inner request. */
+    AVIOContext *inner; /* The current chunk's HTTP context, or NULL. */
+    AVIOContext *pb; /* The wrapper context handed to the demuxer. */
+    VideoState *is;
+};
+
+static int ytdl_chunked_interrupt(void *arg) {
+    VideoState *is = arg;
+    return is && is->abort_request;
+}
+
+static int ytdl_chunked_open_inner(struct YtdlChunkedIO *c) {
+    AVDictionary *opts = NULL;
+    set_ytdl_http_opts(&opts);
+    AVIOInterruptCB cb = {ytdl_chunked_interrupt, c->is};
+    int ret = avio_open2(&c->inner, c->url, AVIO_FLAG_READ, &cb, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        c->inner = NULL;
+        return ret;
+    }
+    if (c->size < 0) {
+        int64_t sz = avio_size(c->inner);
+        if (sz > 0) {
+            c->size = sz;
+        }
+    }
+    /* This should work with any lavf version. */
+    if (c->pos > 0 && avio_seek(c->inner, c->pos, SEEK_SET) < 0) {
+        avio_closep(&c->inner);
+        return AVERROR(EIO);
+    }
+    c->inner_read = 0;
+
+    return 0;
+}
+
+static int ytdl_chunked_read(void *opaque, uint8_t *buf, int size) {
+    struct YtdlChunkedIO *c = opaque;
+    int retries = 0;
+
+    for (;;) {
+        if (c->is && c->is->abort_request) {
+            return AVERROR_EXIT;
+        }
+        if (!c->inner) {
+            if (c->size >= 0 && c->pos >= c->size) {
+                return AVERROR_EOF;
+            }
+            if (ytdl_chunked_open_inner(c) < 0) {
+                if (++retries > YTDL_CHUNK_MAX_RETRIES) {
+                    return AVERROR(EIO);
+                }
+                continue;
+            }
+        }
+        int want = size;
+        if (c->chunk > 0) {
+            int64_t rem = c->chunk - c->inner_read;
+            if (rem <= 0) {
+                avio_closep(&c->inner);
+                continue;
+            }
+            if (want > rem) {
+                want = (int)rem;
+            }
+        }
+        int r = avio_read(c->inner, buf, want);
+        if (r > 0) {
+            c->pos += r;
+            return r;
+        }
+        avio_closep(&c->inner);
+        if (r == AVERROR_EOF) {
+            if (c->size > 0 && c->pos < c->size) {
+                continue;
+            }
+            return AVERROR_EOF;
+        }
+        if (++retries > YTDL_CHUNK_MAX_RETRIES) {
+            return r < 0 ? r : AVERROR(EIO);
+        }
+    }
+}
+
+static int64_t ytdl_chunked_seek(void *opaque, int64_t offset, int whence) {
+    struct YtdlChunkedIO *c = opaque;
+    int64_t newpos;
+
+    whence &= ~AVSEEK_FORCE;
+    if (whence == AVSEEK_SIZE) {
+        return c->size >= 0 ? c->size : AVERROR(ENOSYS);
+    }
+    if (whence == SEEK_SET) {
+        newpos = offset;
+    } else if (whence == SEEK_CUR) {
+        newpos = c->pos + offset;
+    } else if (whence == SEEK_END) {
+        if (c->size < 0) {
+            return AVERROR(EINVAL);
+        }
+        newpos = c->size + offset;
+    } else {
+        return AVERROR(EINVAL);
+    }
+    if (newpos < 0) {
+        return AVERROR(EINVAL);
+    }
+    avio_closep(&c->inner);
+    c->pos = newpos;
+
+    return newpos;
+}
+
+static struct YtdlChunkedIO *ytdl_chunked_create(const char *url, VideoState *is) {
+    struct YtdlChunkedIO *c = av_mallocz(sizeof(*c));
+    if (!c) {
+        return NULL;
+    }
+    c->url = av_strdup(url);
+    c->pos = 0;
+    c->size = -1;
+    c->chunk = YTDL_CHUNK_BYTES;
+    c->is = is;
+    if (!c->url) {
+        av_free(c);
+        return NULL;
+    }
+    if (ytdl_chunked_open_inner(c) < 0) {
+        av_free(c->url);
+        av_free(c);
+        return NULL;
+    }
+    /* XXX */
+    if (c->size <= 0) {
+        avio_closep(&c->inner);
+        av_free(c->url);
+        av_free(c);
+        return NULL;
+    }
+    unsigned char *buffer = av_malloc(YTDL_AVIO_BUFSZ);
+    if (!buffer) {
+        avio_closep(&c->inner);
+        av_free(c->url);
+        av_free(c);
+        return NULL;
+    }
+    c->pb = avio_alloc_context(buffer, YTDL_AVIO_BUFSZ, 0, c, ytdl_chunked_read,
+                               NULL, ytdl_chunked_seek);
+    if (!c->pb) {
+        av_free(buffer);
+        avio_closep(&c->inner);
+        av_free(c->url);
+        av_free(c);
+        return NULL;
+    }
+    c->pb->seekable = c->size > 0 ? AVIO_SEEKABLE_NORMAL : 0;
+
+    return c;
+}
+
+static void ytdl_chunked_free(struct YtdlChunkedIO **pc) {
+    struct YtdlChunkedIO *c = pc ? *pc : NULL;
+    if (!c) {
+        return;
+    }
+    avio_closep(&c->inner);
+    if (c->pb) {
+        av_freep(&c->pb->buffer);
+        avio_context_free(&c->pb);
+    }
+    av_free(c->url);
+    av_freep(pc);
+}
+
 static int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
     *video_url = NULL;
     *audio_url = NULL;
     const char *path = ytdl_path ? ytdl_path : "yt-dlp";
-    const char *fmt = ytdl_format ? ytdl_format : "bestvideo+bestaudio/best";
+    char *auto_fmt = ytdl_format ? NULL : build_default_ytdl_format();
+    const char *fmt = ytdl_format ? ytdl_format
+                                  : (auto_fmt ? auto_fmt : "bestvideo+bestaudio/best");
 
 #if defined(_WIN32)
     /* XXX: %VARS% */
@@ -3362,6 +3677,7 @@ static int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
     char *cmd = av_asprintf("%s -g --no-warnings --no-playlist -f '%s' -- '%s' 2>/dev/null",
                             path, fmt, url);
 #endif
+    av_free(auto_fmt);
     if (!cmd) {
         return 0;
     }
@@ -3402,6 +3718,7 @@ static int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
         av_freep(audio_url);
         return 0;
     }
+
     return n;
 }
 
@@ -3436,26 +3753,28 @@ static int audio_read_thread(void *arg) {
             continue;
         }
 
-        if (sent_eof) {
-            SDL_Delay(50);
-            continue;
-        }
-
-        if (!infinite_buffer &&
+        if (!sent_eof && infinite_buffer < 1 &&
             stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq)) {
             SDL_Delay(10);
             continue;
         }
-
         int ret = av_read_frame(ic, pkt);
         if (ret < 0) {
             if (ret == AVERROR_EOF || avio_feof(ic->pb)) {
-                packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
-                sent_eof = 1;
+                if (!sent_eof) {
+                    packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
+                    sent_eof = 1;
+                }
+                SDL_Delay(50);
             } else if (!is->audio_seek_pending && !is->abort_request) {
                 SDL_Delay(10);
             }
             continue;
+        }
+
+        if (sent_eof) {
+            packet_queue_flush(&is->audioq);
+            sent_eof = 0;
         }
 
         if (pkt->stream_index == is->audio_stream) {
@@ -3512,7 +3831,7 @@ static int read_thread(void *arg) {
     if (is->archive_path && is->entry_name) {
         is->archive_avio = archive_entry_open_avio(is->archive_path, is->entry_name);
         if (!is->archive_avio) {
-            fprintf(stderr, "Could not open archive entry '%s' in '%s'!\n",
+            fprintf(stderr, "WARN: Could not open archive entry '%s' in '%s'!\n",
                     is->entry_name, is->archive_path);
             ret = -1;
             goto fail;
@@ -3538,11 +3857,17 @@ static int read_thread(void *arg) {
                 av_free(is->filename);
                 is->filename = vurl;
                 is->ytdl_audio_url = aurl;
-                av_dict_set(&format_opts, "reconnect", "1", 0);
-                av_dict_set(&format_opts, "reconnect_streamed", "1", 0);
-                av_dict_set(&format_opts, "reconnect_on_network_error", "1", 0);
+                if (!ytdl_chunked_disable) {
+                    is->ytdl_vio = ytdl_chunked_create(is->filename, is);
+                }
+                if (is->ytdl_vio) {
+                    ic->pb = is->ytdl_vio->pb;
+                    ic->flags |= AVFMT_FLAG_CUSTOM_IO;
+                } else {
+                    set_ytdl_http_opts(&format_opts);
+                }
             } else {
-                fprintf(stderr, "yt-dlp failed, so trying direct open.\n");
+                fprintf(stderr, "WARN: yt-dlp failed, so trying direct open.\n");
             }
         }
     }
@@ -3634,6 +3959,20 @@ static int read_thread(void *arg) {
 
     is->realtime = is_realtime(ic);
 
+    {
+        int network = is->realtime || is->ytdl_source_url ||
+            (is->filename &&
+             (!strncmp(is->filename, "http://", 7) ||
+              !strncmp(is->filename, "https://", 8)));
+        read_ahead_secs = opt_cache_secs >= 0.0f
+            ? opt_cache_secs
+            : (network ? 30.0 : 1.0);
+        max_queue_bytes = opt_cache_size_mb >= 0
+            ? (int64_t)opt_cache_size_mb * 1024 * 1024
+            : (network ? (int64_t)128 * 1024 * 1024
+                       : (int64_t)MAX_QUEUE_SIZE);
+    }
+
     for (i = 0; i < ic->nb_streams; i++) {
         AVStream *st = ic->streams[i];
         enum AVMediaType type = st->codecpar->codec_type;
@@ -3709,12 +4048,20 @@ static int read_thread(void *arg) {
         if (aic) {
             aic->interrupt_callback.callback = audio_interrupt_cb;
             aic->interrupt_callback.opaque = is;
-            AVDictionary *audio_opts = NULL;
-            av_dict_set(&audio_opts, "reconnect", "1", 0);
-            av_dict_set(&audio_opts, "reconnect_streamed", "1", 0);
-            av_dict_set(&audio_opts, "reconnect_on_network_error", "1", 0);
-            int audio_open_ret = avformat_open_input(&aic, is->ytdl_audio_url, NULL, &audio_opts);
-            av_dict_free(&audio_opts);
+            int audio_open_ret;
+            if (!ytdl_chunked_disable) {
+                is->ytdl_aio = ytdl_chunked_create(is->ytdl_audio_url, is);
+            }
+            if (is->ytdl_aio) {
+                aic->pb = is->ytdl_aio->pb;
+                aic->flags |= AVFMT_FLAG_CUSTOM_IO;
+                audio_open_ret = avformat_open_input(&aic, is->ytdl_audio_url, NULL, NULL);
+            } else {
+                AVDictionary *audio_opts = NULL;
+                set_ytdl_http_opts(&audio_opts);
+                audio_open_ret = avformat_open_input(&aic, is->ytdl_audio_url, NULL, &audio_opts);
+                av_dict_free(&audio_opts);
+            }
             if (audio_open_ret >= 0 &&
                 avformat_find_stream_info(aic, NULL) >= 0) {
                 int aidx = av_find_best_stream(aic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
@@ -3728,12 +4075,15 @@ static int read_thread(void *arg) {
                                                           "audio_read", is);
                     if (!is->audio_read_tid) {
                         avformat_close_input(&is->audio_ic);
+                        ytdl_chunked_free(&is->ytdl_aio);
                     }
                 } else {
                     avformat_close_input(&aic);
+                    ytdl_chunked_free(&is->ytdl_aio);
                 }
             } else {
                 avformat_close_input(&aic);
+                ytdl_chunked_free(&is->ytdl_aio);
             }
         }
     }
@@ -3817,7 +4167,10 @@ static int read_thread(void *arg) {
         }
 
         if (infinite_buffer < 1 &&
-            (is->audioq.size + is->videoq.size + is->subtitleq.size > MAX_QUEUE_SIZE || (stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq) && stream_has_enough_packets(is->video_st, is->video_stream, &is->videoq) && stream_has_enough_packets(is->subtitle_st, is->subtitle_stream, &is->subtitleq)))) {
+            (is->audioq.size + is->videoq.size + is->subtitleq.size > max_queue_bytes ||
+             (stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq) &&
+              stream_has_enough_packets(is->video_st, is->video_stream, &is->videoq) &&
+              stream_has_enough_packets(is->subtitle_st, is->subtitle_stream, &is->subtitleq)))) {
             SDL_LockMutex(wait_mutex);
             SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 10);
             SDL_UnlockMutex(wait_mutex);
@@ -4240,7 +4593,7 @@ static void playlist_switch(VideoState **pis, int new_pos) {
     window_title = NULL;
     VideoState *is = stream_open_playlist_entry(playlist_pos);
     if (!is) {
-        fprintf(stderr, "Failed to open playlist entry %d!\n", playlist_pos);
+        fprintf(stderr, "DEAD: Failed to open playlist entry %d!\n", playlist_pos);
         do_exit(NULL);
     }
     print_current_file(is);
@@ -4613,8 +4966,9 @@ static int opt_sync(void *optctx, const char *opt, const char *arg) {
     } else if (!strcmp(arg, "ext")) {
         av_sync_type = AV_SYNC_EXTERNAL_CLOCK;
     } else {
-        fatal_quit("Unknown value for %s: %s.\n", opt, arg);
+        fatal_quit("DEAD: Unknown value for %s: %s.\n", opt, arg);
     }
+    av_sync_type_explicit = 1;
 
     return 0;
 }
@@ -4793,12 +5147,15 @@ static const OptionDef options[] = {
     {"genpts", OPT_TYPE_BOOL, OPT_EXPERT, {&genpts}, "generate pts", ""},
     {"drp", OPT_TYPE_INT, OPT_EXPERT, {&decoder_reorder_pts}, "let decoder reorder pts 0=off 1=on -1=auto", ""},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_sync}, "set audio-video sync. type (type=audio/video/ext)", "type"},
+    {"skip-to-keyframe", OPT_TYPE_BOOL, OPT_EXPERT, {&skip_to_keyframe}, "skip video forward to keyframes instead of slowing down (drops content)", ""},
     {"keep-open", OPT_TYPE_BOOL, OPT_EXPERT, {&keep_open}, "keep the window open at the end", ""},
     {"exitonkeydown", OPT_TYPE_BOOL, OPT_EXPERT, {&exit_on_keydown}, "exit on key down", ""},
     {"exitonmousedown", OPT_TYPE_BOOL, OPT_EXPERT, {&exit_on_mousedown}, "exit on mouse down", ""},
     {"loop", OPT_TYPE_INT, OPT_EXPERT, {&loop}, "set number of times the playback will be looped", "loop count"},
     {"framedrop", OPT_TYPE_BOOL, OPT_EXPERT, {&framedrop}, "drop frames when cpu is too slow", ""},
     {"infbuf", OPT_TYPE_BOOL, OPT_EXPERT, {&infinite_buffer}, "don't limit the input buffer size (useful with realtime streams)", ""},
+    {"cache-secs", OPT_TYPE_FLOAT, OPT_EXPERT, {&opt_cache_secs}, "stream read-ahead in seconds (-1 = auto: 30 for network, 1 local)", "seconds"},
+    {"cache-size", OPT_TYPE_INT, OPT_EXPERT, {&opt_cache_size_mb}, "max read-ahead buffer in MB (-1 = auto: 128 for network, 15 local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "set window title", "window title"},
     {"left", OPT_TYPE_INT, OPT_EXPERT, {&screen_left}, "set the x position for the left of the window", "x pos"},
     {"top", OPT_TYPE_INT, OPT_EXPERT, {&screen_top}, "set the y position for the top of the window", "y pos"},
@@ -4826,6 +5183,7 @@ static const OptionDef options[] = {
     {"no-ytdl", OPT_TYPE_BOOL, 0, {&ytdl_disable}, "disable yt-dlp integration"},
     {"ytdl-path", OPT_TYPE_STRING, 0, {&ytdl_path}, "path to yt-dlp binary", "path"},
     {"ytdl-format", OPT_TYPE_STRING, 0, {&ytdl_format}, "yt-dlp format selection string", "format"},
+    {"no-ytdl-chunked", OPT_TYPE_BOOL, OPT_EXPERT, {&ytdl_chunked_disable}, "disable chunked resumable HTTP for yt-dlp"},
     {
         NULL,
     },
@@ -4869,7 +5227,7 @@ int main(int argc, char **argv) {
     n_pending_dirs = 0;
 
     if (playlist_size == 0) {
-        fatal_quit("An input file must be specified.\n");
+        fatal_quit("DEAD: An input file must be specified.\n");
     }
     if (display_disable) {
         video_disable = 1;
@@ -4892,7 +5250,7 @@ int main(int argc, char **argv) {
         flags &= ~SDL_INIT_VIDEO;
     }
     if (!SDL_Init(flags)) {
-        fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
+        fatal_quit("DEAD: Could not initialize SDL: %s!\n", SDL_GetError());
     }
 
     SDL_SetEventEnabled(SDL_EVENT_USER, false);
@@ -4928,20 +5286,20 @@ int main(int argc, char **argv) {
             enable_vulkan = 1;
         }
         if (enable_360sbs && !enable_vulkan) {
-            fatal_quit("-360-sbs requires Vulkan.\n");
+            fatal_quit("DEAD: -360-sbs requires Vulkan.\n");
         }
         if (enable_vulkan) {
             vk_renderer = vk_get_renderer();
             if (vk_renderer) {
                 flags |= SDL_WINDOW_VULKAN;
             } else {
-                fprintf(stderr, "Your SDL version doesn't support Vulkan.\n");
+                fprintf(stderr, "WARN: Your SDL version doesn't support Vulkan.\n");
                 enable_vulkan = 0;
             }
         }
         window = SDL_CreateWindow(program_name, default_width, default_height, flags);
         if (!window) {
-            fatal_quit("Failed to create window: %s!", SDL_GetError());
+            fatal_quit("DEAD: Failed to create window: %s!", SDL_GetError());
         }
 
         if (vk_renderer) {
@@ -4950,7 +5308,7 @@ int main(int argc, char **argv) {
             if (vulkan_params) {
                 int ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
                 if (ret < 0) {
-                    fatal_quit("Failed to parse %s.\n", vulkan_params);
+                    fatal_quit("DEAD: Failed to parse %s.\n", vulkan_params);
                 }
             }
             if (vulkan_swap_mode) {
@@ -4965,12 +5323,12 @@ int main(int argc, char **argv) {
             ret = vk_renderer_create(vk_renderer, window, dict);
             av_dict_free(&dict);
             if (ret < 0) {
-                fatal_quit("Failed to create Vulkan renderer!\n");
+                fatal_quit("DEAD: Failed to create Vulkan renderer!\n");
             }
             if (enable_360sbs) {
                 ret = vk_renderer_enable_360sbs(vk_renderer, 1);
                 if (ret < 0) {
-                    fatal_quit("Failed to enable 360 SBS shader!\n");
+                    fatal_quit("DEAD: Failed to enable 360 SBS shader!\n");
                 }
             }
         } else {
@@ -4983,7 +5341,7 @@ int main(int argc, char **argv) {
             }
             if (!renderer || !renderer_texture_formats ||
                 renderer_texture_formats[0] == SDL_PIXELFORMAT_UNKNOWN) {
-                fatal_quit("Failed to create window or renderer: %s!", SDL_GetError());
+                fatal_quit("DEAD: Failed to create window or renderer: %s!", SDL_GetError());
             }
         }
 

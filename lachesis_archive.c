@@ -241,7 +241,6 @@ static int archive_io_open(ArchiveIO *io) {
 
     int r = archive_read_open_filename(arch, io->archive_path, ARCHIVE_IO_BUFSIZE);
     if (r != ARCHIVE_OK && r != ARCHIVE_WARN) {
-        fprintf(stderr, "Cannot open archive '%s': %s!\n", io->archive_path, archive_error_string(arch));
         archive_read_free(arch);
         return -1;
     }

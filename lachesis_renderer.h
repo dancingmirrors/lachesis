@@ -41,9 +41,19 @@ typedef struct RenderParams {
     int osd_width;
     int osd_height;
     int osd_stride;
+    int disable_linear_scaling;
+    int skip_anti_aliasing;
+    int preserve_mixing_cache;
 } RenderParams;
 
+#define VK_DECODE_CAP_H264 (1u << 0)
+#define VK_DECODE_CAP_HEVC (1u << 1)
+#define VK_DECODE_CAP_AV1 (1u << 2)
+#define VK_DECODE_CAP_VP9 (1u << 3)
+
 VkRenderer *vk_get_renderer(void);
+
+unsigned vk_renderer_video_decode_caps(VkRenderer *renderer);
 
 int vk_renderer_create(VkRenderer *renderer, SDL_Window *window,
                        AVDictionary *opt);
