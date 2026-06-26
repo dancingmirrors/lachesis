@@ -41,7 +41,10 @@
 #include <libplacebo/filters.h>
 #include <libplacebo/shaders/custom.h>
 #include <libplacebo/utils/frame_queue.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wswitch"
 #include <libplacebo/utils/libav.h>
+#pragma GCC diagnostic pop
 #include <libplacebo/vulkan.h>
 
 static const char sbs360_shader[] =
