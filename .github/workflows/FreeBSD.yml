@@ -1,0 +1,47 @@
+name: lachesis FreeBSD
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            set -x
+            pkg install -y ccache cmake evdev-proto ffmpeg git libarchive \
+            libevdev libinput libplacebo libxkbcommon mpv ninja pkgconf sdl3 \
+            sdl3_ttf wayland wayland-protocols
+
+            #git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
+            #cd SDL_ttf
+            #mkdir build
+            #cd build
+            #cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
+            #make install
+            #ln -sf "$(ls /usr/local/lib/libSDL3_ttf.so.* | sort -V | tail -1)" /usr/local/lib/libSDL3_ttf.so
+
+          run: |
+            set -x
+
+            git config --global --add safe.directory "$PWD"
+            export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig:$PKG_CONFIG_PATH
+
+            #export CFLAGS="-DLIBICONV_PLUG"
+
+            ./configure
+            ninja -C build
+            ./build/lachesis -h
