@@ -44,12 +44,6 @@ check(
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
 
 check(
-    "-increase-stack-size*",
-    desc="whether we can increase stack size via PT_GNU_STACK",
-    fn=lambda: chain(add_ldflags("-Wl,-z,stack-size=524288"), True),
-)
-
-check(
     "Windows",
     fn=lambda: check_cc(
         defined="_WIN32",
@@ -75,6 +69,13 @@ check(
     desc="development environment",
     deps_any=["POSIX", "Windows"],
     required="Unable to find a suitable environment",
+)
+
+check(
+    "-increase-stack-size*",
+    desc="whether we can increase stack size via PT_GNU_STACK",
+    deps="POSIX",
+    fn=lambda: chain(add_ldflags("-Wl,-z,stack-size=524288"), True),
 )
 
 check("libm", fn=lambda: check_cc(link="-lm"))
