@@ -399,7 +399,7 @@ static int enable_vulkan = 1;
 static int disable_vulkan = 0;
 static char *vulkan_params = NULL;
 static char *vulkan_swap_mode = NULL;
-static int shader_cache = 1;
+static int no_shader_cache = 0;
 static char *shader_cache_dir = NULL;
 static char *video_background = NULL;
 static const char *hwaccel = NULL;
@@ -5142,7 +5142,7 @@ static const OptionDef options[] = {
     {"drp", OPT_TYPE_INT, OPT_EXPERT, {&decoder_reorder_pts}, "let decoder reorder pts 0=off 1=on -1=auto", ""},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_sync}, "set audio-video sync. type (type=audio/video/ext)", "type"},
     {"skip-to-keyframe", OPT_TYPE_BOOL, OPT_EXPERT, {&skip_to_keyframe}, "skip video forward to keyframes instead of slowing down (drops content)", ""},
-    {"shader-cache", OPT_TYPE_BOOL, OPT_EXPERT, {&shader_cache}, "cache compiled shaders on disk", ""},
+    {"no-shader-cache", OPT_TYPE_BOOL, OPT_EXPERT, {&no_shader_cache}, "disable caching compiled shaders on disk", ""},
     {"shader-cache-dir", OPT_TYPE_STRING, OPT_EXPERT, {&shader_cache_dir}, "directory for the shader cache", "dir"},
     {"keep-open", OPT_TYPE_BOOL, OPT_EXPERT, {&keep_open}, "keep the window open at the end", ""},
     {"exitonkeydown", OPT_TYPE_BOOL, OPT_EXPERT, {&exit_on_keydown}, "exit on key down", ""},
@@ -5316,10 +5316,10 @@ int main(int argc, char **argv) {
                 av_dict_set(&dict, "present_mode", "immediate", 0);
                 av_dict_set(&dict, "benchmark", "1", 0);
             }
-            if (!shader_cache) {
+            if (no_shader_cache) {
                 av_dict_set(&dict, "cache", "0", 0);
             }
-            if (shader_cache_dir) {
+            if (shader_cache_dir && !no_shader_cache) {
                 av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
             }
             ret = vk_renderer_create(vk_renderer, window, dict);
