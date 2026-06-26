@@ -26,21 +26,11 @@ jobs:
             libevdev libinput libplacebo libxkbcommon mpv ninja pkgconf python3 \
             sdl3 sdl3_ttf vulkan-headers wayland wayland-protocols
 
-            #git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
-            #cd SDL_ttf
-            #mkdir build
-            #cd build
-            #cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
-            #make install
-            #ln -sf "$(ls /usr/local/lib/libSDL3_ttf.so.* | sort -V | tail -1)" /usr/local/lib/libSDL3_ttf.so
-
           run: |
             set -x
 
             git config --global --add safe.directory "$PWD"
             export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
-
-            #export CFLAGS="-DLIBICONV_PLUG"
 
             ./configure
             ninja -C build
