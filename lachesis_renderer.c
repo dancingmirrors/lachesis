@@ -19,9 +19,11 @@
 #define VK_NO_PROTOTYPES
 #define VK_ENABLE_BETA_EXTENSIONS
 
+/* clang-format off */
 #include "lachesis_config.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
+/* clang-format on */
 
 #if LACHESIS_HAVE_LIBPLACEBO
 #define HAVE_VULKAN_RENDERER 1
@@ -163,6 +165,18 @@ static const char sbs360_shader[] =
 #include <libavutil/time.h>
 #include <libavutil/version.h>
 
+#define LACHESIS_HAVE_PL_CACHE 1
+#include <libplacebo/cache.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#ifdef _WIN32
+#include <direct.h>
+#define LACHESIS_PATH_SEP "\\"
+#else
+#define LACHESIS_PATH_SEP "/"
+#endif
+#define LACHESIS_SHADER_CACHE_LIMIT (64u << 20)
+
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #define LACHESIS_CAN_ITERATE_LIBS 1
@@ -237,6 +251,11 @@ typedef struct RendererContext {
     int benchmark;
 
     pl_tex osd_tex;
+
+#if LACHESIS_HAVE_PL_CACHE
+    pl_cache shader_cache;
+    char *cache_path;
+#endif
 } RendererContext;
 
 static inline int enable_debug(const AVDictionary *opt) {
@@ -830,7 +849,7 @@ static void check_libplacebo_consistency(void) {
     placebo_scan_loaded_libs(&scan);
 
     if (scan.count > 1) {
-        log_warn("multiple libplacebo versions are loaded into this process.\n");
+        log_warn("Multiple libplacebo versions are loaded into this process.\n");
     }
 
     if (scan.count == 1 && scan.versions[0] > 0 &&
@@ -839,6 +858,120 @@ static void check_libplacebo_consistency(void) {
     }
 #endif /* LACHESIS_CAN_ITERATE_LIBS */
 }
+
+#if LACHESIS_HAVE_PL_CACHE
+static int lachesis_mkdir(const char *path) {
+#ifdef _WIN32
+    return _mkdir(path);
+#else
+    return mkdir(path, 0755);
+#endif
+}
+
+static void lachesis_mkdir_p(char *path) {
+    for (char *p = path + 1; *p; p++) {
+        if (*p == '/'
+#ifdef _WIN32
+            || *p == '\\'
+#endif
+        ) {
+            char c = *p;
+            *p = '\0';
+            lachesis_mkdir(path);
+            *p = c;
+        }
+    }
+    lachesis_mkdir(path);
+}
+
+static int resolve_cache_dir(const AVDictionary *opt, char *buf, size_t size) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "cache_dir", NULL, 0);
+    const char *base;
+
+    if (entry && entry->value && entry->value[0]) {
+        snprintf(buf, size, "%s", entry->value);
+        return 0;
+    }
+#ifdef _WIN32
+    base = getenv("LOCALAPPDATA");
+    if (base && base[0]) {
+        snprintf(buf, size, "%s\\lachesis", base);
+        return 0;
+    }
+#elif defined(__APPLE__)
+    base = getenv("HOME");
+    if (base && base[0]) {
+        snprintf(buf, size, "%s/Library/Caches/lachesis", base);
+        return 0;
+    }
+#else
+    base = getenv("XDG_CACHE_HOME");
+    if (base && base[0]) {
+        snprintf(buf, size, "%s/lachesis", base);
+        return 0;
+    }
+    base = getenv("HOME");
+    if (base && base[0]) {
+        snprintf(buf, size, "%s/.cache/lachesis", base);
+        return 0;
+    }
+#endif
+    return -1;
+}
+
+/* Any failure simply leaves rendering uncached. */
+static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
+    char dir[4096];
+    const AVDictionaryEntry *entry = av_dict_get(opt, "cache", NULL, 0);
+    int enabled = entry && entry->value ? strtol(entry->value, NULL, 10) : 1;
+    size_t need;
+    FILE *f;
+
+    if (!enabled || !ctx->placebo_vulkan) {
+        return;
+    }
+    if (resolve_cache_dir(opt, dir, sizeof(dir)) < 0) {
+        return;
+    }
+    lachesis_mkdir_p(dir);
+
+    need = strlen(dir) + strlen(LACHESIS_PATH_SEP "shaders.bin") + 1;
+    ctx->cache_path = av_malloc(need);
+    if (!ctx->cache_path) {
+        return;
+    }
+    snprintf(ctx->cache_path, need, "%s%s", dir, LACHESIS_PATH_SEP "shaders.bin");
+
+    ctx->shader_cache = pl_cache_create(pl_cache_params(
+            .log = ctx->vk_log,
+            .max_total_size = LACHESIS_SHADER_CACHE_LIMIT));
+    if (!ctx->shader_cache) {
+        av_freep(&ctx->cache_path);
+        return;
+    }
+
+    f = fopen(ctx->cache_path, "rb");
+    if (f) {
+        pl_cache_load_file(ctx->shader_cache, f);
+        fclose(f);
+    }
+
+    pl_gpu_set_cache(ctx->placebo_vulkan->gpu, ctx->shader_cache);
+}
+
+static void cache_save(RendererContext *ctx) {
+    FILE *f;
+
+    if (!ctx->shader_cache || !ctx->cache_path) {
+        return;
+    }
+    f = fopen(ctx->cache_path, "wb");
+    if (f) {
+        pl_cache_save_file(ctx->shader_cache, f);
+        fclose(f);
+    }
+}
+#endif /* LACHESIS_HAVE_PL_CACHE */
 
 static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     int ret = 0;
@@ -910,6 +1043,10 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
 
     SDL_GetWindowSizeInPixels(window, &w, &h);
     pl_swapchain_resize(ctx->swapchain, &w, &h);
+
+#if LACHESIS_HAVE_PL_CACHE
+    cache_setup(ctx, opt);
+#endif
 
     ctx->renderer = pl_renderer_create(ctx->vk_log, ctx->placebo_vulkan->gpu);
     if (!ctx->renderer) {
@@ -1299,6 +1436,12 @@ static void destroy(VkRenderer *renderer) {
     }
 
     if (ctx->placebo_vulkan) {
+#if LACHESIS_HAVE_PL_CACHE
+        cache_save(ctx);
+        pl_gpu_set_cache(ctx->placebo_vulkan->gpu, NULL);
+        pl_cache_destroy(&ctx->shader_cache);
+        av_freep(&ctx->cache_path);
+#endif
         pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
         for (int i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
             pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->tex[i]);
