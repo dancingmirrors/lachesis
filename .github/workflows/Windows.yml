@@ -81,7 +81,7 @@ jobs:
 
           ./configure
 
-          ninja -C build
+          ninja -v -C build
           ninja -C build install
 
           lachesis -h

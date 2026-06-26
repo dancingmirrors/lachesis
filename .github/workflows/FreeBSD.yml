@@ -33,5 +33,5 @@ jobs:
             export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
 
             ./configure
-            ninja -C build
+            ninja -v -C build
             ./build/lachesis -h

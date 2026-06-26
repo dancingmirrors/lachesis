@@ -99,7 +99,7 @@ jobs:
           git clone --depth 1 --recursive https://github.com/haasn/libplacebo.git
           cd libplacebo
           meson setup --prefix=/usr/local -Dlibdir=lib build
-          ninja -C build
+          ninja -v -C build
           sudo ninja -C build install
 
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git
@@ -118,7 +118,7 @@ jobs:
 
           ./configure
            
-          ninja -C build
+          ninja -v -C build
           sudo ninja -C build install
 
           # ?
@@ -129,7 +129,7 @@ jobs:
                       
           ./configure
 
-          ninja -C build
+          ninja -v -C build
           sudo ninja -C build install
 
           # ?

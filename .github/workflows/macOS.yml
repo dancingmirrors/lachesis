@@ -50,7 +50,7 @@ jobs:
           git clone --depth 1 --recursive https://github.com/haasn/libplacebo.git
           cd libplacebo
           meson setup --prefix=/usr/local -Dlibdir=lib build
-          ninja -C build
+          ninja -v -C build
           sudo ninja -C build install
           cd ..
 
@@ -80,7 +80,7 @@ jobs:
           export PKG_CONFIG_PATH="$(brew --prefix libarchive)/lib/pkgconfig:$PKG_CONFIG_PATH"
           ./configure
 
-          ninja -C build
+          ninja -v -C build
           sudo ninja -C build install
 
           lachesis -h
