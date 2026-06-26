@@ -35,7 +35,7 @@ else:
 add_cflags("-fno-strict-aliasing")
 
 check(
-    "-optimize", desc="optimization", fn=lambda: chain(add_cflags("-O3", "-pipe", "-fno-trapping-math", "-fno-signed-zeros"), True)
+    "-optimize", desc="optimization", fn=lambda: chain(add_cflags("-O3", "-fno-trapping-math", "-fno-signed-zeros"), True)
 )
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
 
