@@ -472,6 +472,32 @@ def add_sources(*sources):
     _G.sources += list(sources)
 
 
+def dedup_ldflags(flags):
+    seen = set()
+    out = []
+    i = 0
+    n = len(flags)
+    while i < n:
+        f = flags[i]
+        if f in ("-framework", "-rpath") and i + 1 < n:
+            unit, key, i = [f, flags[i + 1]], (f, flags[i + 1]), i + 2
+        elif f == "-Wl,-rpath" and i + 1 < n and flags[i + 1].startswith("-Wl,"):
+            unit, key, i = [f, flags[i + 1]], ("rpath", flags[i + 1][4:]), i + 2
+        elif f.startswith("-Wl,-rpath,"):
+            unit, key, i = [f], ("rpath", f[len("-Wl,-rpath,") :]), i + 1
+        elif f.startswith("-l") or f.startswith("-L"):
+            unit, key, i = [f], f, i + 1
+        else:
+            # Leave anything we don't understand untouched.
+            out.append(f)
+            i += 1
+            continue
+        if key not in seen:
+            seen.add(key)
+            out.extend(unit)
+    return out
+
+
 def _generate_ninja_file(sources, cflags_str, ldflags_str):
     cc = _G.programs.get("CC", "cc")
     build_dir = os.path.abspath(_G.build_dir)
@@ -556,6 +582,8 @@ def finish():
             fatal = True
     if fatal:
         die("Unknown feature was force-enabled.")
+
+    _G.ldflags = dedup_ldflags(_G.ldflags)
 
     add_config_h_define("CONFIGURATION", " ".join(sys.argv))
     enabled = sorted(k for k, v in _G.dep_enabled.items() if v)
