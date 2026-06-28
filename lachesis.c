@@ -5296,6 +5296,9 @@ int main(int argc, char **argv) {
     if (display_disable) {
         flags &= ~SDL_INIT_VIDEO;
     }
+    if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
+        SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
+    }
     if (!SDL_Init(flags)) {
         fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
     }
