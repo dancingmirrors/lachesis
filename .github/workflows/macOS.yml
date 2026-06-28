@@ -30,6 +30,7 @@ jobs:
           set -x
 
           brew update
+          brew untap aws/tap || true
           brew install \
             ccache \
             cmake \
