@@ -76,7 +76,7 @@ check(
     desc="whether we can increase stack size via PT_GNU_STACK",
     deps="POSIX",
     deps_neg="macOS",
-    fn=lambda: chain(add_ldflags("-Wl,-z,stack-size=524288"), True),
+    fn=lambda: check_ldflags("-Wl,-z,stack-size=524288", fatal_warnings=True),
 )
 
 check("libm", fn=lambda: check_cc(link="-lm"))

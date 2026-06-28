@@ -364,6 +364,18 @@ def check_cc(
     return True
 
 
+# Some linkers accept unsupported options.
+def check_ldflags(*flags, fatal_warnings=False):
+    test_flags = list(flags)
+    if fatal_warnings:
+        test_flags += ["-Wl,--fatal-warnings"]
+    if not check_cc(link=test_flags):
+        return False
+    if fatal_warnings:
+        _G.ldflags = [f for f in _G.ldflags if f != "-Wl,--fatal-warnings"]
+    return True
+
+
 def check_pkg_config(*args):
     args = list(args)
     pkg = [get_program("PKG_CONFIG")]
