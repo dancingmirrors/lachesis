@@ -473,19 +473,29 @@ def add_sources(*sources):
 
 
 def dedup_ldflags(flags):
+    last_lib = {}
+    for idx, f in enumerate(flags):
+        if f.startswith("-l"):
+            last_lib[f] = idx
+
     seen = set()
     out = []
     i = 0
     n = len(flags)
     while i < n:
         f = flags[i]
+        if f.startswith("-l"):
+            if last_lib[f] == i:
+                out.append(f)
+            i += 1
+            continue
         if f in ("-framework", "-rpath") and i + 1 < n:
             unit, key, i = [f, flags[i + 1]], (f, flags[i + 1]), i + 2
         elif f == "-Wl,-rpath" and i + 1 < n and flags[i + 1].startswith("-Wl,"):
             unit, key, i = [f, flags[i + 1]], ("rpath", flags[i + 1][4:]), i + 2
         elif f.startswith("-Wl,-rpath,"):
             unit, key, i = [f], ("rpath", f[len("-Wl,-rpath,") :]), i + 1
-        elif f.startswith("-l") or f.startswith("-L"):
+        elif f.startswith("-L"):
             unit, key, i = [f], f, i + 1
         else:
             # Leave anything we don't understand untouched.
