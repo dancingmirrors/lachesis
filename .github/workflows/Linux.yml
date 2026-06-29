@@ -106,7 +106,9 @@ jobs:
           cd FFmpeg
           ./configure --prefix=/usr/local \
                       --enable-libplacebo \
-                      --enable-vulkan
+                      --enable-vulkan \
+                      --disable-doc \
+                      --disable-programs
           make -j$(nproc)
           sudo make install
 
