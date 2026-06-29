@@ -6099,6 +6099,7 @@ int main(int argc, char **argv) {
                     ":lang=ko",
                     ":lang=zh-cn",
                     ":lang=zh-tw",
+                    ":lang=th",
                     NULL,
                 };
                 for (int pi = 0; cjk_patterns[pi] &&
