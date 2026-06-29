@@ -6094,7 +6094,7 @@ int main(int argc, char **argv) {
                     }
                 }
 
-                static const char *const cjk_patterns[] = {
+                static const char *const fallback_patterns[] = {
                     ":lang=ja",
                     ":lang=ko",
                     ":lang=zh-cn",
@@ -6102,13 +6102,13 @@ int main(int argc, char **argv) {
                     ":lang=th",
                     NULL,
                 };
-                for (int pi = 0; cjk_patterns[pi] &&
+                for (int pi = 0; fallback_patterns[pi] &&
                      osd_num_fallback_fonts < OSD_MAX_FALLBACK_FONTS;
                      pi++) {
                     char cmd[128];
                     snprintf(cmd, sizeof(cmd),
                              "fc-match --format=%%{file} \"%s\" 2>/dev/null",
-                             cjk_patterns[pi]);
+                             fallback_patterns[pi]);
                     FILE *fp = popen(cmd, "r");
                     if (!fp) {
                         continue;
