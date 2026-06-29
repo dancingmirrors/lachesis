@@ -314,6 +314,15 @@ typedef struct VideoState {
     int64_t audio_seek_min;
     int64_t audio_seek_max;
     int audio_seek_flags;
+
+    AVFormatContext *sub_ic;
+    SDL_Thread *sub_read_tid;
+    int sub_ext_stream;
+    volatile int sub_seek_pending;
+    int64_t sub_seek_pos;
+    int64_t sub_seek_min;
+    int64_t sub_seek_max;
+    int sub_seek_flags;
     int64_t diag_t0_us;
     int diag_first_vpts_logged;
     int diag_first_apts_logged;
@@ -1117,7 +1126,9 @@ static void video_image_display(VideoState *is) {
         if (frame_queue_nb_remaining(&is->subpq) > 0) {
             sp = frame_queue_peek(&is->subpq);
 
-            if (vp->pts >= sp->pts + ((float)sp->sub.start_display_time / 1000)) {
+            if (sp->sub.format != 0) {
+                sp = NULL;
+            } else if (vp->pts >= sp->pts + ((float)sp->sub.start_display_time / 1000)) {
                 if (!sp->uploaded) {
                     uint8_t *pixels[4];
                     int pitch[4];
@@ -1414,6 +1425,10 @@ static void stream_close(VideoState *is) {
     if (is->audio_read_tid) {
         SDL_WaitThread(is->audio_read_tid, NULL);
     }
+    if (is->sub_read_tid) {
+        SDL_WaitThread(is->sub_read_tid, NULL);
+        is->sub_read_tid = NULL;
+    }
 
     if (is->audio_stream >= 0) {
         if (is->audio_ic) {
@@ -1430,10 +1445,15 @@ static void stream_close(VideoState *is) {
     }
     if (is->subtitle_stream >= 0) {
         stream_component_close(is, is->subtitle_stream);
+    } else if (is->sub_ic) {
+        decoder_abort(&is->subdec, &is->subpq);
+        decoder_destroy(&is->subdec);
+        is->subtitle_st = NULL;
     }
 
     avformat_close_input(&is->ic);
     avformat_close_input(&is->audio_ic);
+    avformat_close_input(&is->sub_ic);
     ytdl_chunked_free(&is->ytdl_vio);
     ytdl_chunked_free(&is->ytdl_aio);
     av_freep(&is->ytdl_source_url);
@@ -1610,6 +1630,170 @@ static void osd_text(SDL_Renderer *r, const char *text, int x, int y, SDL_Color 
     SDL_DestroySurface(surf);
 }
 
+static void subtitle_strip_ass(const char *in, char *out, size_t outsz) {
+    if (outsz == 0) {
+        return;
+    }
+    out[0] = '\0';
+    if (!in) {
+        return;
+    }
+
+    const char *p = in;
+    int skip = 8; /* ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect */
+    if (!strncmp(p, "Dialogue:", 9)) {
+        p += 9;
+        skip = 9; /* Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect */
+    }
+    for (int i = 0; i < skip && *p; i++) {
+        const char *c = strchr(p, ',');
+        if (!c) {
+            break;
+        }
+        p = c + 1;
+    }
+
+    size_t o = 0;
+    while (*p && o + 1 < outsz) {
+        if (*p == '{') {
+            const char *e = strchr(p, '}');
+            if (e) {
+                p = e + 1;
+                continue;
+            }
+        }
+        if (p[0] == '\\' && (p[1] == 'N' || p[1] == 'n')) {
+            out[o++] = '\n';
+            p += 2;
+            continue;
+        }
+        if (p[0] == '\\' && p[1] == 'h') {
+            out[o++] = ' ';
+            p += 2;
+            continue;
+        }
+        out[o++] = *p++;
+    }
+    out[o] = '\0';
+    while (o > 0 && (out[o - 1] == '\n' || out[o - 1] == '\r' || out[o - 1] == ' ')) {
+        out[--o] = '\0';
+    }
+}
+
+static Frame *active_text_subtitle(VideoState *is) {
+    if (!is->subtitle_st || frame_queue_nb_remaining(&is->subpq) <= 0) {
+        return NULL;
+    }
+    Frame *sp = frame_queue_peek(&is->subpq);
+    if (sp->sub.format == 0) {
+        return NULL;
+    }
+    double clock = get_master_clock(is);
+    if (isnan(clock)) {
+        return NULL;
+    }
+    double start = sp->pts + sp->sub.start_display_time / 1000.0;
+    double end = sp->pts + sp->sub.end_display_time / 1000.0;
+    if (clock < start || clock > end) {
+        return NULL;
+    }
+    return sp;
+}
+
+static int has_active_subtitle(VideoState *is) {
+    return active_text_subtitle(is) != NULL;
+}
+
+static void render_subtitle_osd(SDL_Renderer *r, VideoState *is) {
+    Frame *sp = active_text_subtitle(is);
+    if (!sp || !osd_font) {
+        return;
+    }
+
+    char text[2048];
+    size_t used = 0;
+    text[0] = '\0';
+    for (unsigned i = 0; i < sp->sub.num_rects; i++) {
+        AVSubtitleRect *rect = sp->sub.rects[i];
+        char line[1024];
+        if (rect->ass) {
+            subtitle_strip_ass(rect->ass, line, sizeof(line));
+        } else if (rect->text) {
+            snprintf(line, sizeof(line), "%s", rect->text);
+        } else {
+            line[0] = '\0';
+        }
+        if (!line[0]) {
+            continue;
+        }
+        if (used && used + 1 < sizeof(text)) {
+            text[used++] = '\n';
+        }
+        int n = snprintf(text + used, sizeof(text) - used, "%s", line);
+        if (n < 0) {
+            break;
+        }
+        used += (size_t)n;
+        if (used >= sizeof(text)) {
+            used = sizeof(text) - 1;
+            break;
+        }
+    }
+    text[used] = '\0';
+    if (!text[0]) {
+        return;
+    }
+
+    SDL_Color fg = {255, 255, 255, 255};
+    SDL_Color outline = {0, 0, 0, 255};
+    int wrap = is->width > 0 ? is->width * 9 / 10 : 0;
+
+    TTF_SetFontWrapAlignment(osd_font, TTF_HORIZONTAL_ALIGN_CENTER);
+    SDL_Surface *fill = TTF_RenderText_Blended_Wrapped(osd_font, text, 0, fg, wrap);
+    SDL_Surface *shadow = TTF_RenderText_Blended_Wrapped(osd_font, text, 0, outline, wrap);
+    TTF_SetFontWrapAlignment(osd_font, TTF_HORIZONTAL_ALIGN_LEFT);
+    if (!fill) {
+        SDL_DestroySurface(shadow);
+        return;
+    }
+
+    int tw = fill->w;
+    int th = fill->h;
+    int x = (is->width - tw) / 2;
+    int y = is->height - th - is->height / 12;
+    if (x < 0) {
+        x = 0;
+    }
+    if (y < 0) {
+        y = 0;
+    }
+
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 110);
+    SDL_FRect bg = {x - 6, y - 4, tw + 12, th + 8};
+    SDL_RenderFillRect(r, &bg);
+
+    if (shadow) {
+        SDL_Texture *stex = SDL_CreateTextureFromSurface(r, shadow);
+        if (stex) {
+            const int off[4][2] = {{-2, 0}, {2, 0}, {0, -2}, {0, 2}};
+            for (int k = 0; k < 4; k++) {
+                SDL_FRect d = {x + off[k][0], y + off[k][1], tw, th};
+                SDL_RenderTexture(r, stex, NULL, &d);
+            }
+            SDL_DestroyTexture(stex);
+        }
+        SDL_DestroySurface(shadow);
+    }
+    SDL_Texture *ftex = SDL_CreateTextureFromSurface(r, fill);
+    if (ftex) {
+        SDL_FRect d = {x, y, tw, th};
+        SDL_RenderTexture(r, ftex, NULL, &d);
+        SDL_DestroyTexture(ftex);
+    }
+    SDL_DestroySurface(fill);
+}
+
 static void osd_draw_to(SDL_Renderer *r, VideoState *is) {
     int64_t now = (int64_t)SDL_GetTicks();
     int show_status = (now < osd_status_show_until);
@@ -1619,6 +1803,8 @@ static void osd_draw_to(SDL_Renderer *r, VideoState *is) {
     SDL_Color fg = {255, 255, 255, 255};
     SDL_Color bar_bg = {80, 80, 80, 200};
     SDL_Color bar_fg = {210, 210, 210, 255};
+
+    render_subtitle_osd(r, is);
 
     if (show_status) {
         double pos = get_master_clock(is);
@@ -1801,7 +1987,8 @@ static void osd_draw(VideoState *is) {
         return;
     }
     int64_t now = (int64_t)SDL_GetTicks();
-    if (now >= osd_status_show_until && now >= osd_seek_show_until && now >= osd_volume_show_until) {
+    if (now >= osd_status_show_until && now >= osd_seek_show_until &&
+        now >= osd_volume_show_until && !has_active_subtitle(is)) {
         return;
     }
     osd_draw_to(renderer, is);
@@ -1815,7 +2002,8 @@ static void video_display(VideoState *is) {
     is->render_params.osd_pixels = NULL;
     if (vk_renderer && osd_font) {
         int64_t now = (int64_t)SDL_GetTicks();
-        if (now < osd_status_show_until || now < osd_seek_show_until || now < osd_volume_show_until) {
+        if (now < osd_status_show_until || now < osd_seek_show_until ||
+            now < osd_volume_show_until || has_active_subtitle(is)) {
             osd_prepare_vulkan(is);
         }
     }
@@ -2793,7 +2981,7 @@ static int subtitle_thread(void *arg) {
 
         pts = 0;
 
-        if (got_subtitle && sp->sub.format == 0) {
+        if (got_subtitle) {
             if (sp->sub.pts != AV_NOPTS_VALUE) {
                 pts = sp->sub.pts / (double)AV_TIME_BASE;
             }
@@ -2805,8 +2993,6 @@ static int subtitle_thread(void *arg) {
 
             /* Now we can update the picture count. */
             frame_queue_push(&is->subpq);
-        } else if (got_subtitle) {
-            avsubtitle_free(&sp->sub);
         }
     }
 
@@ -3784,6 +3970,184 @@ static int audio_read_thread(void *arg) {
     return 0;
 }
 
+static int sub_interrupt_cb(void *ctx) {
+    VideoState *is = ctx;
+    return is->abort_request || is->sub_seek_pending;
+}
+
+static int sub_read_thread(void *arg) {
+    VideoState *is = arg;
+    AVFormatContext *ic = is->sub_ic;
+    AVPacket *pkt = av_packet_alloc();
+    int sent_eof = 0;
+
+    if (!pkt) {
+        return AVERROR(ENOMEM);
+    }
+
+    for (;;) {
+        if (is->abort_request) {
+            break;
+        }
+
+        if (is->sub_seek_pending) {
+            avformat_seek_file(ic, -1,
+                               is->sub_seek_min,
+                               is->sub_seek_pos,
+                               is->sub_seek_max,
+                               is->sub_seek_flags);
+            is->sub_seek_pending = 0;
+            sent_eof = 0;
+            continue;
+        }
+
+        if (!sent_eof &&
+            stream_has_enough_packets(is->subtitle_st, is->sub_ext_stream, &is->subtitleq)) {
+            SDL_Delay(10);
+            continue;
+        }
+
+        int ret = av_read_frame(ic, pkt);
+        if (ret < 0) {
+            if (ret == AVERROR_EOF || avio_feof(ic->pb)) {
+                sent_eof = 1;
+                SDL_Delay(50);
+            } else if (!is->sub_seek_pending && !is->abort_request) {
+                SDL_Delay(10);
+            }
+            continue;
+        }
+
+        if (sent_eof) {
+            sent_eof = 0;
+        }
+
+        if (pkt->stream_index == is->sub_ext_stream) {
+            packet_queue_put(&is->subtitleq, pkt);
+        } else {
+            av_packet_unref(pkt);
+        }
+    }
+    av_packet_free(&pkt);
+
+    return 0;
+}
+
+static int open_external_subtitle(VideoState *is) {
+    static const char *const sub_exts[] = {
+        "srt", "ass", "ssa", "vtt", "sub", NULL};
+
+    if (!is->filename || is->subtitle_st || subtitle_disable) {
+        return -1;
+    }
+    /* XXX */
+    if (is->archive_path || strstr(is->filename, "://")) {
+        return -1;
+    }
+
+    const char *dot = strrchr(is->filename, '.');
+    const char *slash = strrchr(is->filename, '/');
+    if (dot && slash && dot < slash) {
+        dot = NULL;
+    }
+    size_t base_len = dot ? (size_t)(dot - is->filename) : strlen(is->filename);
+
+    char path[4096];
+    int found = 0;
+    for (int i = 0; sub_exts[i]; i++) {
+        snprintf(path, sizeof(path), "%.*s.%s", (int)base_len, is->filename, sub_exts[i]);
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        return -1;
+    }
+
+    AVFormatContext *sic = avformat_alloc_context();
+    if (!sic) {
+        return AVERROR(ENOMEM);
+    }
+    sic->interrupt_callback.callback = sub_interrupt_cb;
+    sic->interrupt_callback.opaque = is;
+
+    int ret = avformat_open_input(&sic, path, NULL, NULL);
+    if (ret < 0) {
+        log_warn("Could not open external subtitle '%s'!\n", path);
+        return ret;
+    }
+    if ((ret = avformat_find_stream_info(sic, NULL)) < 0) {
+        goto fail;
+    }
+
+    int idx = av_find_best_stream(sic, AVMEDIA_TYPE_SUBTITLE, -1, -1, NULL, 0);
+    if (idx < 0) {
+        ret = idx;
+        goto fail;
+    }
+
+    AVStream *st = sic->streams[idx];
+    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
+    if (subtitle_codec_name) {
+        codec = avcodec_find_decoder_by_name(subtitle_codec_name);
+    }
+    if (!codec) {
+        ret = AVERROR_DECODER_NOT_FOUND;
+        goto fail;
+    }
+
+    AVCodecContext *avctx = avcodec_alloc_context3(NULL);
+    if (!avctx) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    ret = avcodec_parameters_to_context(avctx, st->codecpar);
+    if (ret < 0) {
+        avcodec_free_context(&avctx);
+        goto fail;
+    }
+    avctx->pkt_timebase = st->time_base;
+    if ((ret = avcodec_open2(avctx, codec, NULL)) < 0) {
+        avcodec_free_context(&avctx);
+        goto fail;
+    }
+
+    if ((ret = decoder_init(&is->subdec, avctx, &is->subtitleq, is->continue_read_thread)) < 0) {
+        avcodec_free_context(&avctx);
+        goto fail;
+    }
+
+    is->sub_ic = sic;
+    is->sub_ext_stream = idx;
+    is->subtitle_st = st;
+
+    if ((ret = decoder_start(&is->subdec, subtitle_thread, "subtitle_decoder", is)) < 0) {
+        decoder_destroy(&is->subdec);
+        is->subtitle_st = NULL;
+        is->sub_ic = NULL;
+        goto fail;
+    }
+
+    is->sub_read_tid = SDL_CreateThread(sub_read_thread, "sub_reader", is);
+    if (!is->sub_read_tid) {
+        decoder_abort(&is->subdec, &is->subpq);
+        decoder_destroy(&is->subdec);
+        is->subtitle_st = NULL;
+        is->sub_ic = NULL;
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+
+    log_info("Loaded external subtitle: %s\n", path);
+    return 0;
+
+fail:
+    avformat_close_input(&sic);
+    return ret;
+}
+
 static void print_stream_info(const VideoState *is);
 
 /* This thread gets the stream from disk or the network. */
@@ -4037,6 +4401,10 @@ static int read_thread(void *arg) {
         stream_component_open(is, st_index[AVMEDIA_TYPE_SUBTITLE]);
     }
 
+    if (!is->subtitle_st) {
+        open_external_subtitle(is);
+    }
+
     print_stream_info(is);
 
     if (is->ytdl_audio_url && !audio_disable && is->audio_stream < 0) {
@@ -4142,6 +4510,14 @@ static int read_thread(void *arg) {
                     is->audio_seek_max = seek_max;
                     is->audio_seek_flags = is->seek_flags;
                     is->audio_seek_pending = 1;
+                }
+                if (is->sub_ic) {
+                    packet_queue_flush(&is->subtitleq);
+                    is->sub_seek_min = seek_min;
+                    is->sub_seek_pos = seek_target;
+                    is->sub_seek_max = seek_max;
+                    is->sub_seek_flags = is->seek_flags;
+                    is->sub_seek_pending = 1;
                 }
             }
             is->seek_req = 0;
