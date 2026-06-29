@@ -451,6 +451,10 @@ static VkRenderer *vk_renderer;
 
 static TTF_Font *osd_font = NULL;
 static TTF_Font *osd_sym_font = NULL;
+#define OSD_MAX_FALLBACK_FONTS 8
+static TTF_Font *osd_fallback_fonts[OSD_MAX_FALLBACK_FONTS];
+static int osd_num_fallback_fonts = 0;
+static TTF_Font *osd_emoji_font = NULL;
 static SDL_Surface *osd_surface = NULL;
 static SDL_Renderer *osd_sw_renderer = NULL;
 static int64_t osd_status_show_until = 0;
@@ -1527,8 +1531,22 @@ static void do_exit(VideoState *is) {
     SDL_DestroySurface(osd_surface);
     osd_surface = NULL;
     if (osd_font) {
+        if (osd_num_fallback_fonts) {
+            TTF_ClearFallbackFonts(osd_font);
+        }
         TTF_CloseFont(osd_font);
         osd_font = NULL;
+    }
+    for (int fi = 0; fi < osd_num_fallback_fonts; fi++) {
+        if (osd_fallback_fonts[fi]) {
+            TTF_CloseFont(osd_fallback_fonts[fi]);
+            osd_fallback_fonts[fi] = NULL;
+        }
+    }
+    osd_num_fallback_fonts = 0;
+    if (osd_emoji_font) {
+        TTF_CloseFont(osd_emoji_font);
+        osd_emoji_font = NULL;
     }
     if (osd_sym_font) {
         TTF_CloseFont(osd_sym_font);
@@ -1704,6 +1722,121 @@ static int has_active_subtitle(VideoState *is) {
     return active_text_subtitle(is) != NULL;
 }
 
+static uint32_t osd_utf8_next(const char *text, size_t len, size_t *pos) {
+    unsigned char c = (unsigned char)text[*pos];
+    uint32_t cp;
+    int extra;
+    if (c < 0x80) {
+        cp = c;
+        extra = 0;
+    } else if ((c & 0xE0) == 0xC0) {
+        cp = c & 0x1F;
+        extra = 1;
+    } else if ((c & 0xF0) == 0xE0) {
+        cp = c & 0x0F;
+        extra = 2;
+    } else if ((c & 0xF8) == 0xF0) {
+        cp = c & 0x07;
+        extra = 3;
+    } else {
+        (*pos)++;
+        return 0xFFFD;
+    }
+    if (*pos + (size_t)extra >= len) {
+        *pos = len;
+        return 0xFFFD;
+    }
+    for (int k = 1; k <= extra; k++) {
+        unsigned char cc = (unsigned char)text[*pos + k];
+        if ((cc & 0xC0) != 0x80) {
+            (*pos)++;
+            return 0xFFFD;
+        }
+        cp = (cp << 6) | (cc & 0x3F);
+    }
+    *pos += (size_t)extra + 1;
+    return cp;
+}
+
+static int osd_cp_is_emoji(uint32_t cp) {
+    if (!osd_emoji_font || cp < 0x80) {
+        return 0;
+    }
+    if (TTF_FontHasGlyph(osd_font, cp)) {
+        return 0;
+    }
+    return TTF_FontHasGlyph(osd_emoji_font, cp);
+}
+
+static int osd_cp_is_emoji_join(uint32_t cp) {
+    return cp == 0x200D || cp == 0xFE0F || cp == 0x20E3 ||
+        (cp >= 0x1F3FB && cp <= 0x1F3FF);
+}
+
+/* XXX: We need to do this downscaling because SDL_ttf doesn't seem to. */
+static SDL_Surface *osd_render_emoji_scaled(const char *s, size_t len,
+                                            int target_h) {
+    SDL_Color white = {255, 255, 255, 255};
+    SDL_Surface *raw = TTF_RenderText_Blended(osd_emoji_font, s, len, white);
+    if (!raw) {
+        return NULL;
+    }
+    if (raw->h <= 0 || raw->w <= 0) {
+        SDL_DestroySurface(raw);
+        return NULL;
+    }
+    if (raw->h == target_h) {
+        return raw;
+    }
+    int tw = (int)((double)raw->w * target_h / raw->h + 0.5);
+    if (tw < 1) {
+        tw = 1;
+    }
+    SDL_Surface *cur = raw;
+    while (cur->w >= tw * 2 && cur->h >= target_h * 2) {
+        int hw = cur->w / 2;
+        int hh = cur->h / 2;
+        SDL_Surface *half =
+            SDL_CreateSurface(hw, hh, SDL_PIXELFORMAT_ARGB8888);
+        if (!half) {
+            break;
+        }
+        SDL_SetSurfaceBlendMode(cur, SDL_BLENDMODE_NONE);
+        SDL_BlitSurfaceScaled(cur, NULL, half, NULL, SDL_SCALEMODE_LINEAR);
+        if (cur != raw) {
+            SDL_DestroySurface(cur);
+        }
+        cur = half;
+    }
+    SDL_Surface *dst = SDL_CreateSurface(tw, target_h, SDL_PIXELFORMAT_ARGB8888);
+    if (!dst) {
+        if (cur != raw) {
+            SDL_DestroySurface(cur);
+        }
+        SDL_DestroySurface(raw);
+        return NULL;
+    }
+    SDL_SetSurfaceBlendMode(cur, SDL_BLENDMODE_NONE);
+    SDL_BlitSurfaceScaled(cur, NULL, dst, NULL, SDL_SCALEMODE_LINEAR);
+    if (cur != raw) {
+        SDL_DestroySurface(cur);
+    }
+    SDL_DestroySurface(raw);
+    return dst;
+}
+
+#define OSD_SUB_MAX_TOKENS 512
+#define OSD_SUB_MAX_LINES 32
+
+typedef struct {
+    SDL_Surface *surf;
+    int w, h;
+    int relx;
+    int line;
+    int newline;
+    int space;
+} OsdSubToken;
+
 static void render_subtitle_osd(SDL_Renderer *r, VideoState *is) {
     Frame *sp = active_text_subtitle(is);
     if (!sp || !osd_font) {
@@ -1744,23 +1877,153 @@ static void render_subtitle_osd(SDL_Renderer *r, VideoState *is) {
         return;
     }
 
-    SDL_Color fg = {255, 255, 255, 255};
-    SDL_Color outline = {0, 0, 0, 255};
+    SDL_Color white = {255, 255, 255, 255};
     int wrap = is->width > 0 ? is->width * 9 / 10 : 0;
+    int line_h = TTF_GetFontHeight(osd_font);
+    if (line_h <= 0) {
+        return;
+    }
+    int emoji_h = line_h;
+    int max_w = wrap > 0 ? wrap : (is->width > 0 ? is->width : (1 << 30));
 
-    TTF_SetFontWrapAlignment(osd_font, TTF_HORIZONTAL_ALIGN_CENTER);
-    SDL_Surface *fill = TTF_RenderText_Blended_Wrapped(osd_font, text, 0, fg, wrap);
-    SDL_Surface *shadow = TTF_RenderText_Blended_Wrapped(osd_font, text, 0, outline, wrap);
-    TTF_SetFontWrapAlignment(osd_font, TTF_HORIZONTAL_ALIGN_LEFT);
+    /* This is done for proper size of color bitmap emoji. */
+    OsdSubToken toks[OSD_SUB_MAX_TOKENS];
+    int nalloc = 0;
+    size_t pos = 0;
+    while (pos < used && nalloc < OSD_SUB_MAX_TOKENS) {
+        size_t start = pos;
+        uint32_t cp = osd_utf8_next(text, used, &pos);
+        if (cp == '\n') {
+            toks[nalloc++] = (OsdSubToken){.newline = 1};
+            continue;
+        }
+        if (cp == ' ' || cp == '\t') {
+            SDL_Surface *s = TTF_RenderText_Blended(osd_font, " ", 1, white);
+            if (s) {
+                toks[nalloc++] = (OsdSubToken){
+                    .surf = s, .w = s->w, .h = s->h, .space = 1};
+            }
+            continue;
+        }
+        if (osd_cp_is_emoji(cp)) {
+            for (;;) {
+                size_t save = pos;
+                if (pos >= used) {
+                    break;
+                }
+                uint32_t n = osd_utf8_next(text, used, &pos);
+                if (osd_cp_is_emoji(n) || osd_cp_is_emoji_join(n)) {
+                    continue;
+                }
+                pos = save;
+                break;
+            }
+            SDL_Surface *s =
+                osd_render_emoji_scaled(text + start, pos - start, emoji_h);
+            if (s) {
+                toks[nalloc++] = (OsdSubToken){.surf = s, .w = s->w, .h = s->h};
+            }
+            continue;
+        }
+        for (;;) {
+            size_t save = pos;
+            if (pos >= used) {
+                break;
+            }
+            uint32_t n = osd_utf8_next(text, used, &pos);
+            if (n == '\n' || n == ' ' || n == '\t' || osd_cp_is_emoji(n)) {
+                pos = save;
+                break;
+            }
+        }
+        SDL_Surface *s =
+            TTF_RenderText_Blended(osd_font, text + start, pos - start, white);
+        if (s) {
+            toks[nalloc++] = (OsdSubToken){.surf = s, .w = s->w, .h = s->h};
+        }
+    }
+    if (nalloc == 0) {
+        return;
+    }
+    for (int i = 0; i < nalloc; i++) {
+        toks[i].line = -1;
+    }
+
+    int line_w[OSD_SUB_MAX_LINES] = {0};
+    int line_hgt[OSD_SUB_MAX_LINES] = {0};
+    int nlines = 0;
+    int cur_w = 0, cur_h = line_h;
+    for (int i = 0; i < nalloc && nlines < OSD_SUB_MAX_LINES; i++) {
+        if (toks[i].newline) {
+            line_w[nlines] = cur_w;
+            line_hgt[nlines] = cur_h;
+            nlines++;
+            cur_w = 0;
+            cur_h = line_h;
+            continue;
+        }
+        if (cur_w > 0 && !toks[i].space && cur_w + toks[i].w > max_w) {
+            line_w[nlines] = cur_w;
+            line_hgt[nlines] = cur_h;
+            nlines++;
+            cur_w = 0;
+            cur_h = line_h;
+            if (nlines >= OSD_SUB_MAX_LINES) {
+                break;
+            }
+        }
+        toks[i].line = nlines;
+        toks[i].relx = cur_w;
+        cur_w += toks[i].w;
+        if (toks[i].h > cur_h) {
+            cur_h = toks[i].h;
+        }
+    }
+    if (nlines < OSD_SUB_MAX_LINES) {
+        line_w[nlines] = cur_w;
+        line_hgt[nlines] = cur_h;
+        nlines++;
+    }
+
+    int total_w = 0, total_h = 0;
+    int line_y[OSD_SUB_MAX_LINES] = {0};
+    for (int l = 0; l < nlines; l++) {
+        if (line_w[l] > total_w) {
+            total_w = line_w[l];
+        }
+        line_y[l] = total_h;
+        total_h += line_hgt[l];
+    }
+
+    SDL_Surface *fill = (total_w > 0 && total_h > 0)
+        ? SDL_CreateSurface(total_w, total_h, SDL_PIXELFORMAT_ARGB8888)
+        : NULL;
+    if (fill) {
+        SDL_ClearSurface(fill, 0.0f, 0.0f, 0.0f, 0.0f);
+        for (int i = 0; i < nalloc; i++) {
+            if (!toks[i].surf || toks[i].line < 0) {
+                continue;
+            }
+            int l = toks[i].line;
+            int line_x0 = (total_w - line_w[l]) / 2;
+            SDL_Rect d = {line_x0 + toks[i].relx,
+                          line_y[l] + (line_hgt[l] - toks[i].h) / 2,
+                          toks[i].w, toks[i].h};
+            SDL_SetSurfaceBlendMode(toks[i].surf, SDL_BLENDMODE_NONE);
+            SDL_BlitSurface(toks[i].surf, NULL, fill, &d);
+        }
+    }
+    for (int i = 0; i < nalloc; i++) {
+        if (toks[i].surf) {
+            SDL_DestroySurface(toks[i].surf);
+        }
+    }
     if (!fill) {
-        SDL_DestroySurface(shadow);
         return;
     }
 
-    int tw = fill->w;
-    int th = fill->h;
-    int x = (is->width - tw) / 2;
-    int y = is->height - th - is->height / 12;
+    int x = (is->width - total_w) / 2;
+    int y = is->height - total_h - is->height / 12;
     if (x < 0) {
         x = 0;
     }
@@ -1770,28 +2033,23 @@ static void render_subtitle_osd(SDL_Renderer *r, VideoState *is) {
 
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r, 0, 0, 0, 110);
-    SDL_FRect bg = {x - 6, y - 4, tw + 12, th + 8};
+    SDL_FRect bg = {x - 6, y - 4, total_w + 12, total_h + 8};
     SDL_RenderFillRect(r, &bg);
 
-    if (shadow) {
-        SDL_Texture *stex = SDL_CreateTextureFromSurface(r, shadow);
-        if (stex) {
-            const int off[4][2] = {{-2, 0}, {2, 0}, {0, -2}, {0, 2}};
-            for (int k = 0; k < 4; k++) {
-                SDL_FRect d = {x + off[k][0], y + off[k][1], tw, th};
-                SDL_RenderTexture(r, stex, NULL, &d);
-            }
-            SDL_DestroyTexture(stex);
-        }
-        SDL_DestroySurface(shadow);
-    }
-    SDL_Texture *ftex = SDL_CreateTextureFromSurface(r, fill);
-    if (ftex) {
-        SDL_FRect d = {x, y, tw, th};
-        SDL_RenderTexture(r, ftex, NULL, &d);
-        SDL_DestroyTexture(ftex);
-    }
+    SDL_Texture *tex = SDL_CreateTextureFromSurface(r, fill);
     SDL_DestroySurface(fill);
+    if (tex) {
+        static const int off[8][2] = {{-1, -1}, {0, -1}, {1, -1}, {-1, 0}, {1, 0}, {-1, 1}, {0, 1}, {1, 1}};
+        SDL_SetTextureColorMod(tex, 0, 0, 0);
+        for (int k = 0; k < 8; k++) {
+            SDL_FRect d = {x + off[k][0], y + off[k][1], total_w, total_h};
+            SDL_RenderTexture(r, tex, NULL, &d);
+        }
+        SDL_SetTextureColorMod(tex, 255, 255, 255);
+        SDL_FRect d = {x, y, total_w, total_h};
+        SDL_RenderTexture(r, tex, NULL, &d);
+        SDL_DestroyTexture(tex);
+    }
 }
 
 static void osd_draw_to(SDL_Renderer *r, VideoState *is) {
@@ -5814,6 +6072,73 @@ int main(int argc, char **argv) {
                     osd_font = TTF_OpenFont(fallbacks[fi], 18);
                 }
             }
+
+#if !defined(_WIN32) && !defined(__APPLE__)
+            if (osd_font) {
+                char seen_paths[OSD_MAX_FALLBACK_FONTS][512];
+                int num_seen = 0;
+
+                {
+                    FILE *fp = popen("fc-match --format=%{file} emoji 2>/dev/null",
+                                     "r");
+                    if (fp) {
+                        char path[512] = {0};
+                        if (fgets(path, sizeof(path), fp) && path[0]) {
+                            osd_emoji_font = TTF_OpenFont(path, 64.0f);
+                            if (osd_emoji_font) {
+                                snprintf(seen_paths[num_seen++],
+                                         sizeof(seen_paths[0]), "%s", path);
+                            }
+                        }
+                        pclose(fp);
+                    }
+                }
+
+                static const char *const cjk_patterns[] = {
+                    ":lang=ja",
+                    ":lang=ko",
+                    ":lang=zh-cn",
+                    ":lang=zh-tw",
+                    NULL,
+                };
+                for (int pi = 0; cjk_patterns[pi] &&
+                     osd_num_fallback_fonts < OSD_MAX_FALLBACK_FONTS;
+                     pi++) {
+                    char cmd[128];
+                    snprintf(cmd, sizeof(cmd),
+                             "fc-match --format=%%{file} \"%s\" 2>/dev/null",
+                             cjk_patterns[pi]);
+                    FILE *fp = popen(cmd, "r");
+                    if (!fp) {
+                        continue;
+                    }
+                    char path[512] = {0};
+                    if (fgets(path, sizeof(path), fp) && path[0]) {
+                        int dup = 0;
+                        for (int si = 0; si < num_seen; si++) {
+                            if (!strcmp(seen_paths[si], path)) {
+                                dup = 1;
+                                break;
+                            }
+                        }
+                        if (!dup) {
+                            TTF_Font *fb = TTF_OpenFont(path, 18.0f);
+                            if (fb) {
+                                if (TTF_AddFallbackFont(osd_font, fb)) {
+                                    snprintf(seen_paths[num_seen++],
+                                             sizeof(seen_paths[0]), "%s", path);
+                                    osd_fallback_fonts[osd_num_fallback_fonts++] =
+                                        fb;
+                                } else {
+                                    TTF_CloseFont(fb);
+                                }
+                            }
+                        }
+                    }
+                    pclose(fp);
+                }
+            }
+#endif
         }
 
         /* Show the window early so the swapchain is fully initialized. */
