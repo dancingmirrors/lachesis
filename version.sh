@@ -14,8 +14,8 @@ for ac_option do
     ;;
   --versionh=*)
     case "$ac_arg" in
-      /*) version_h="$ac_arg" ;;
-      *)  version_h="$(pwd)/$ac_arg" ;;
+      /* | ?:/* | ?:\\*) version_h="$ac_arg" ;;
+      *)                 version_h="$(pwd)/$ac_arg" ;;
     esac
     ;;
   --cwd=*)
