@@ -1272,23 +1272,18 @@ static int next_screenshot_path(VideoState *is, char *out, size_t out_size) {
     return -1;
 }
 
-static int encode_png(const char *path, AVFrame *src) {
+static int encode_png(const char *path, AVFrame *src, const uint8_t bg[3]) {
     const AVCodec *enc = avcodec_find_encoder(AV_CODEC_ID_PNG);
     AVCodecContext *ctx = NULL;
+    AVFrame *rgba = NULL;
     AVFrame *rgb = NULL;
     AVPacket *pkt = NULL;
     struct SwsContext *sws = NULL;
-    const AVPixFmtDescriptor *desc;
-    enum AVPixelFormat out_fmt = AV_PIX_FMT_RGB24;
     FILE *f = NULL;
     int ret;
 
     if (!enc) {
         return AVERROR_ENCODER_NOT_FOUND;
-    }
-    desc = av_pix_fmt_desc_get(src->format);
-    if (desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA)) {
-        out_fmt = AV_PIX_FMT_RGBA;
     }
 
     ctx = avcodec_alloc_context3(enc);
@@ -1298,9 +1293,22 @@ static int encode_png(const char *path, AVFrame *src) {
     }
     ctx->width = src->width;
     ctx->height = src->height;
-    ctx->pix_fmt = out_fmt;
+    ctx->pix_fmt = AV_PIX_FMT_RGB24;
     ctx->time_base = (AVRational){1, 25};
     ret = avcodec_open2(ctx, enc, NULL);
+    if (ret < 0) {
+        goto end;
+    }
+
+    rgba = av_frame_alloc();
+    if (!rgba) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    rgba->format = AV_PIX_FMT_RGBA;
+    rgba->width = src->width;
+    rgba->height = src->height;
+    ret = av_frame_get_buffer(rgba, 0);
     if (ret < 0) {
         goto end;
     }
@@ -1310,7 +1318,7 @@ static int encode_png(const char *path, AVFrame *src) {
         ret = AVERROR(ENOMEM);
         goto end;
     }
-    rgb->format = out_fmt;
+    rgb->format = AV_PIX_FMT_RGB24;
     rgb->width = src->width;
     rgb->height = src->height;
     ret = av_frame_get_buffer(rgb, 0);
@@ -1319,7 +1327,7 @@ static int encode_png(const char *path, AVFrame *src) {
     }
 
     sws = sws_getContext(src->width, src->height, src->format,
-                         src->width, src->height, out_fmt,
+                         src->width, src->height, AV_PIX_FMT_RGBA,
                          SWS_BILINEAR, NULL, NULL, NULL);
     if (!sws) {
         ret = AVERROR(ENOMEM);
@@ -1340,7 +1348,19 @@ static int encode_png(const char *path, AVFrame *src) {
     }
 
     sws_scale(sws, (const uint8_t *const *)src->data, src->linesize, 0,
-              src->height, rgb->data, rgb->linesize);
+              src->height, rgba->data, rgba->linesize);
+
+    for (int y = 0; y < rgb->height; y++) {
+        const uint8_t *s = rgba->data[0] + (ptrdiff_t)y * rgba->linesize[0];
+        uint8_t *d = rgb->data[0] + (ptrdiff_t)y * rgb->linesize[0];
+        for (int x = 0; x < rgb->width; x++) {
+            unsigned a = s[4 * x + 3];
+            unsigned ia = 255 - a;
+            d[3 * x + 0] = (s[4 * x + 0] * a + bg[0] * ia + 127) / 255;
+            d[3 * x + 1] = (s[4 * x + 1] * a + bg[1] * ia + 127) / 255;
+            d[3 * x + 2] = (s[4 * x + 2] * a + bg[2] * ia + 127) / 255;
+        }
+    }
 
     pkt = av_packet_alloc();
     if (!pkt) {
@@ -1375,8 +1395,20 @@ end:
     sws_freeContext(sws);
     av_packet_free(&pkt);
     av_frame_free(&rgb);
+    av_frame_free(&rgba);
     avcodec_free_context(&ctx);
     return ret;
+}
+
+/* Flatten to opaque black or -video_bg. */
+static void screenshot_bg_color(VideoState *is, uint8_t bg[3]) {
+    if (is->render_params.video_background_type == VIDEO_BACKGROUND_COLOR) {
+        bg[0] = is->render_params.video_background_color[0];
+        bg[1] = is->render_params.video_background_color[1];
+        bg[2] = is->render_params.video_background_color[2];
+    } else {
+        bg[0] = bg[1] = bg[2] = 0;
+    }
 }
 
 static AVFrame *frame_to_cpu(AVFrame *frame) {
@@ -1401,7 +1433,9 @@ static int screenshot_window(VideoState *is, const char *path) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
     int w = 0, h = 0;
     int ret;
+    uint8_t bg[3];
 
+    screenshot_bg_color(is, bg);
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (w <= 0 || h <= 0) {
         return AVERROR(EINVAL);
@@ -1426,7 +1460,7 @@ static int screenshot_window(VideoState *is, const char *path) {
         ret = vk_renderer_capture(vk_renderer, vp->frame, &is->render_params,
                                   w, h, rgba->data[0], rgba->linesize[0]);
         if (ret >= 0) {
-            ret = encode_png(path, rgba);
+            ret = encode_png(path, rgba, bg);
         }
         av_frame_free(&rgba);
         return ret;
@@ -1454,7 +1488,7 @@ static int screenshot_window(VideoState *is, const char *path) {
     frame->height = conv->h;
     frame->data[0] = conv->pixels;
     frame->linesize[0] = conv->pitch;
-    ret = encode_png(path, frame);
+    ret = encode_png(path, frame, bg);
     av_frame_free(&frame);
     SDL_DestroySurface(conv);
     return ret;
@@ -1481,12 +1515,14 @@ static void take_screenshot(VideoState *is, int capture_window) {
     if (capture_window) {
         ret = screenshot_window(is, path);
     } else {
+        uint8_t bg[3];
         AVFrame *cpu = frame_to_cpu(vp->frame);
         if (!cpu) {
             log_warn("Couldn't read back the video frame.\n");
             return;
         }
-        ret = encode_png(path, cpu);
+        screenshot_bg_color(is, bg);
+        ret = encode_png(path, cpu, bg);
         av_frame_free(&cpu);
     }
 
