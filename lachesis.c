@@ -20,6 +20,7 @@
  */
 
 #include "lachesis_config.h"
+#include "version.h"
 
 #include <inttypes.h>
 #include <limits.h>
@@ -5895,10 +5896,10 @@ static int opt_version(void *optctx, const char *opt, const char *arg) {
     }
 
     av_log(NULL, AV_LOG_INFO,
-           "%s, a fork of ffplay\n"
+           "%s %s, a fork of ffplay\n"
            "Copyright © 2000-2003 Fabrice Bellard, and the FFmpeg authors\n"
            "Copyright © %d-%d dancingmirrors\n",
-           program_name, program_birth_year, this_year);
+           program_name, VERSION, program_birth_year, this_year);
     av_log(NULL, AV_LOG_INFO,
            "Special thanks to the mpv and VLC authors.\n");
 

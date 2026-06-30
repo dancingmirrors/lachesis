@@ -543,6 +543,14 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     n += "  rspfile = $out.rsp\n"
     n += "  rspfile_content = $in\n\n"
 
+    version_h = "$builddir/version.h"
+    n += "rule genversion\n"
+    n += "  command = sh $root/version.sh --versionh=$out --cwd=$root\n"
+    n += "  description = VERSION $out\n"
+    n += "  restat = 1\n\n"
+    n += "build always_run: phony\n"
+    n += "build %s: genversion always_run\n\n" % version_h
+
     objects = []
     n += "# Object files\n"
     for src in sources:
@@ -557,7 +565,7 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
             "$(BUILD)/", "$builddir/"
         )
         objects.append(obj_path)
-        n += "build %s: cc %s\n" % (obj_path, src_path)
+        n += "build %s: cc %s || %s\n" % (obj_path, src_path, version_h)
     n += "\n"
 
     target = "$builddir/lachesis$exesuf"
