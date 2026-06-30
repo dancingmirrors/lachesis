@@ -361,6 +361,8 @@ static int default_height = 480;
 static int screen_width = 0;
 static int screen_height = 0;
 static float display_scale = 1.0f;
+static float display_pan_x = 0.0f;
+static float display_pan_y = 0.0f;
 static int cmd_width = 0;
 static int cmd_height = 0;
 static int screen_left = SDL_WINDOWPOS_CENTERED;
@@ -995,6 +997,24 @@ static void calculate_display_rect(SDL_Rect *rect,
     height = (int64_t)(height * display_scale);
     x = (scr_width - width) / 2;
     y = (scr_height - height) / 2;
+
+    {
+        int64_t margin_x = scr_width / 8;
+        int64_t margin_y = scr_height / 8;
+        int64_t max_pan_x = (width + scr_width) / 2 - margin_x;
+        int64_t max_pan_y = (height + scr_height) / 2 - margin_y;
+        if (max_pan_x < 0) {
+            max_pan_x = 0;
+        }
+        if (max_pan_y < 0) {
+            max_pan_y = 0;
+        }
+        display_pan_x = av_clipf(display_pan_x, (float)-max_pan_x, (float)max_pan_x);
+        display_pan_y = av_clipf(display_pan_y, (float)-max_pan_y, (float)max_pan_y);
+        x += (int64_t)display_pan_x;
+        y += (int64_t)display_pan_y;
+    }
+
     rect->x = scr_xleft + x;
     rect->y = scr_ytop + y;
     rect->w = FFMAX((int)width, 1);
@@ -5304,6 +5324,27 @@ static void event_loop(VideoState **pis) {
                     break;
                 } else if (sc == SDL_SCANCODE_MINUS) {
                     display_scale = FFMAX(display_scale - 0.1f, 0.1f);
+                    cur_stream->force_refresh = 1;
+                    break;
+                } else if (sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT ||
+                           sc == SDL_SCANCODE_UP || sc == SDL_SCANCODE_DOWN) {
+                    float step_x = FFMAX(cur_stream->width, 1) * 0.1f;
+                    float step_y = FFMAX(cur_stream->height, 1) * 0.1f;
+                    if (sc == SDL_SCANCODE_LEFT) {
+                        display_pan_x += step_x;
+                    } else if (sc == SDL_SCANCODE_RIGHT) {
+                        display_pan_x -= step_x;
+                    } else if (sc == SDL_SCANCODE_UP) {
+                        display_pan_y += step_y;
+                    } else {
+                        display_pan_y -= step_y;
+                    }
+                    cur_stream->force_refresh = 1;
+                    break;
+                } else if (sc == SDL_SCANCODE_BACKSPACE) {
+                    display_scale = 1.0f;
+                    display_pan_x = 0.0f;
+                    display_pan_y = 0.0f;
                     cur_stream->force_refresh = 1;
                     break;
                 }
