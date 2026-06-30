@@ -215,6 +215,9 @@ struct VkRenderer {
 
     int (*display)(VkRenderer *renderer, AVFrame *frame, RenderParams *params);
 
+    int (*capture)(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
+                   int width, int height, uint8_t *out, int out_stride);
+
     int (*resize)(VkRenderer *renderer, int width, int height);
 
     void (*destroy)(VkRenderer *renderer);
@@ -1260,8 +1263,95 @@ static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
     return ret;
 }
 
-static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
+static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
+                         struct pl_frame *target, struct pl_render_params *pl_params,
+                         RenderParams *params, struct pl_overlay *osd_overlay,
+                         struct pl_overlay_part *osd_part) {
     SDL_Rect *rect = &params->target_rect;
+    target->crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
+    switch (params->video_background_type) {
+    case VIDEO_BACKGROUND_TILES:
+        pl_params->background = PL_CLEAR_TILES;
+        pl_params->tile_size = VIDEO_BACKGROUND_TILE_SIZE * 2;
+        break;
+    case VIDEO_BACKGROUND_COLOR:
+        pl_params->background = PL_CLEAR_COLOR;
+        for (int i = 0; i < 3; i++) {
+            pl_params->background_color[i] = params->video_background_color[i] / 255.0;
+        }
+        pl_params->background_transparency = (255 - params->video_background_color[3]) / 255.0;
+        break;
+    case VIDEO_BACKGROUND_NONE:
+        pl_frame->repr.alpha = PL_ALPHA_NONE;
+        break;
+    }
+
+    if (ctx->sbs360_enabled && ctx->sbs360_hook) {
+        for (int i = 0; i < ctx->sbs360_hook->num_parameters; i++) {
+            struct pl_hook_par *par = (struct pl_hook_par *)&ctx->sbs360_hook->parameters[i];
+            if (!strcmp(par->name, "yaw")) {
+                par->data->f = ctx->sbs360_yaw;
+            }
+            if (!strcmp(par->name, "pitch")) {
+                par->data->f = ctx->sbs360_pitch;
+            }
+            if (!strcmp(par->name, "hfov")) {
+                par->data->f = ctx->sbs360_hfov;
+            }
+        }
+        pl_params->hooks = &ctx->sbs360_hook;
+        pl_params->num_hooks = 1;
+    }
+
+    if (params->osd_pixels && params->osd_width > 0 && params->osd_height > 0) {
+        bool tex_ok = ctx->osd_tex &&
+            (int)ctx->osd_tex->params.w == params->osd_width &&
+            (int)ctx->osd_tex->params.h == params->osd_height;
+        if (!tex_ok) {
+            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
+            pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
+            if (fmt) {
+                struct pl_tex_params tp = {
+                    .w = params->osd_width,
+                    .h = params->osd_height,
+                    .format = fmt,
+                    .sampleable = true,
+                    .host_writable = true,
+                };
+                ctx->osd_tex = pl_tex_create(ctx->placebo_vulkan->gpu, &tp);
+            }
+        }
+        if (ctx->osd_tex) {
+            struct pl_tex_transfer_params xfer = {
+                .tex = ctx->osd_tex,
+                .ptr = params->osd_pixels,
+                .row_pitch = params->osd_stride,
+            };
+            pl_tex_upload(ctx->placebo_vulkan->gpu, &xfer);
+            *osd_part = (struct pl_overlay_part){
+                .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
+                .dst = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
+            };
+            *osd_overlay = (struct pl_overlay){
+                .tex = ctx->osd_tex,
+                .mode = PL_OVERLAY_NORMAL,
+                .coords = PL_OVERLAY_COORDS_DST_FRAME,
+                .repr = {
+                    .sys = PL_COLOR_SYSTEM_RGB,
+                    .levels = PL_COLOR_LEVELS_FULL,
+                    .alpha = PL_ALPHA_INDEPENDENT,
+                },
+                .color = pl_color_space_srgb,
+                .parts = osd_part,
+                .num_parts = 1,
+            };
+            target->overlays = osd_overlay;
+            target->num_overlays = 1;
+        }
+    }
+}
+
+static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     struct pl_swapchain_frame swap_frame = {0};
     struct pl_frame pl_frame = {0};
     struct pl_frame target = {0};
@@ -1305,89 +1395,10 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
 
     pl_frame_from_swapchain(&target, &swap_frame);
 
-    target.crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
-    switch (params->video_background_type) {
-    case VIDEO_BACKGROUND_TILES:
-        pl_params.background = PL_CLEAR_TILES;
-        pl_params.tile_size = VIDEO_BACKGROUND_TILE_SIZE * 2;
-        break;
-    case VIDEO_BACKGROUND_COLOR:
-        pl_params.background = PL_CLEAR_COLOR;
-        for (int i = 0; i < 3; i++) {
-            pl_params.background_color[i] = params->video_background_color[i] / 255.0;
-        }
-        pl_params.background_transparency = (255 - params->video_background_color[3]) / 255.0;
-        break;
-    case VIDEO_BACKGROUND_NONE:
-        pl_frame.repr.alpha = PL_ALPHA_NONE;
-        break;
-    }
-
-    if (ctx->sbs360_enabled && ctx->sbs360_hook) {
-        for (int i = 0; i < ctx->sbs360_hook->num_parameters; i++) {
-            struct pl_hook_par *par = (struct pl_hook_par *)&ctx->sbs360_hook->parameters[i];
-            if (!strcmp(par->name, "yaw")) {
-                par->data->f = ctx->sbs360_yaw;
-            }
-            if (!strcmp(par->name, "pitch")) {
-                par->data->f = ctx->sbs360_pitch;
-            }
-            if (!strcmp(par->name, "hfov")) {
-                par->data->f = ctx->sbs360_hfov;
-            }
-        }
-        pl_params.hooks = &ctx->sbs360_hook;
-        pl_params.num_hooks = 1;
-    }
-
     struct pl_overlay osd_overlay;
     struct pl_overlay_part osd_part;
-    if (params->osd_pixels && params->osd_width > 0 && params->osd_height > 0) {
-        bool tex_ok = ctx->osd_tex &&
-            (int)ctx->osd_tex->params.w == params->osd_width &&
-            (int)ctx->osd_tex->params.h == params->osd_height;
-        if (!tex_ok) {
-            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
-            pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
-            if (fmt) {
-                struct pl_tex_params tp = {
-                    .w = params->osd_width,
-                    .h = params->osd_height,
-                    .format = fmt,
-                    .sampleable = true,
-                    .host_writable = true,
-                };
-                ctx->osd_tex = pl_tex_create(ctx->placebo_vulkan->gpu, &tp);
-            }
-        }
-        if (ctx->osd_tex) {
-            struct pl_tex_transfer_params xfer = {
-                .tex = ctx->osd_tex,
-                .ptr = params->osd_pixels,
-                .row_pitch = params->osd_stride,
-            };
-            pl_tex_upload(ctx->placebo_vulkan->gpu, &xfer);
-            osd_part = (struct pl_overlay_part){
-                .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
-                .dst = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
-            };
-            osd_overlay = (struct pl_overlay){
-                .tex = ctx->osd_tex,
-                .mode = PL_OVERLAY_NORMAL,
-                .coords = PL_OVERLAY_COORDS_DST_FRAME,
-                .repr = {
-                    .sys = PL_COLOR_SYSTEM_RGB,
-                    .levels = PL_COLOR_LEVELS_FULL,
-                    .alpha = PL_ALPHA_INDEPENDENT,
-                },
-                .color = pl_color_space_srgb,
-                .parts = &osd_part,
-                .num_parts = 1,
-            };
-            target.overlays = &osd_overlay;
-            target.num_overlays = 1;
-        }
-    }
+
+    setup_render(ctx, &pl_frame, &target, &pl_params, params, &osd_overlay, &osd_part);
 
     int64_t _ts2 = av_gettime_relative();
     if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
@@ -1412,6 +1423,92 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     }
 
 out:
+    pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_frame);
+    return ret;
+}
+
+static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
+                   int width, int height, uint8_t *out, int out_stride) {
+    RendererContext *ctx = (RendererContext *)renderer;
+    struct pl_frame pl_frame = {0};
+    struct pl_frame target = {0};
+    struct pl_render_params pl_params = {
+        .upscaler = &pl_filter_bilinear,
+        .downscaler = &pl_filter_bilinear,
+        .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
+        .color_adjustment = pl_render_default_params.color_adjustment,
+        .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
+        .cone_params = pl_render_default_params.cone_params,
+        .color_map_params = pl_render_default_params.color_map_params,
+        .disable_linear_scaling = params->disable_linear_scaling,
+        .skip_anti_aliasing = params->skip_anti_aliasing,
+    };
+    pl_tex cap_tex = NULL;
+    int ret = 0;
+
+    ret = convert_frame(renderer, frame);
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+        return AVERROR_EXTERNAL;
+    }
+
+    pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
+    if (!fmt) {
+        ret = AVERROR_EXTERNAL;
+        goto out;
+    }
+    struct pl_tex_params cap_params = {
+        .w = width,
+        .h = height,
+        .format = fmt,
+        .renderable = true,
+        .host_readable = true,
+    };
+    cap_tex = pl_tex_create(ctx->placebo_vulkan->gpu, &cap_params);
+    if (!cap_tex) {
+        ret = AVERROR_EXTERNAL;
+        goto out;
+    }
+
+    target.num_planes = 1;
+    target.planes[0] = (struct pl_plane){
+        .texture = cap_tex,
+        .components = 4,
+        .component_mapping = {0, 1, 2, 3},
+    };
+    target.repr = (struct pl_color_repr){
+        .sys = PL_COLOR_SYSTEM_RGB,
+        .levels = PL_COLOR_LEVELS_FULL,
+        .alpha = PL_ALPHA_INDEPENDENT,
+    };
+    target.color = pl_color_space_srgb;
+
+    struct pl_overlay osd_overlay;
+    struct pl_overlay_part osd_part;
+    setup_render(ctx, &pl_frame, &target, &pl_params, params, &osd_overlay, &osd_part);
+
+    if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
+        ret = AVERROR_EXTERNAL;
+        goto out;
+    }
+
+    struct pl_tex_transfer_params xfer = {
+        .tex = cap_tex,
+        .ptr = out,
+        .row_pitch = out_stride,
+    };
+    if (!pl_tex_download(ctx->placebo_vulkan->gpu, &xfer)) {
+        ret = AVERROR_EXTERNAL;
+        goto out;
+    }
+
+out:
+    if (cap_tex) {
+        pl_tex_destroy(ctx->placebo_vulkan->gpu, &cap_tex);
+    }
     pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_frame);
     return ret;
 }
@@ -1486,6 +1583,7 @@ VkRenderer *vk_get_renderer(void) {
     renderer->get_hw_dev = get_hw_dev;
     renderer->create = create;
     renderer->display = display;
+    renderer->capture = capture;
     renderer->resize = resize;
     renderer->destroy = destroy;
 
@@ -1543,6 +1641,14 @@ int vk_renderer_get_hw_dev(VkRenderer *renderer, AVBufferRef **dev) {
 
 int vk_renderer_display(VkRenderer *renderer, AVFrame *frame, RenderParams *render_params) {
     return renderer->display(renderer, frame, render_params);
+}
+
+int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *render_params,
+                        int width, int height, uint8_t *out, int out_stride) {
+    if (!renderer->capture) {
+        return AVERROR(ENOSYS);
+    }
+    return renderer->capture(renderer, frame, render_params, width, height, out, out_stride);
 }
 
 int vk_renderer_resize(VkRenderer *renderer, int width, int height) {

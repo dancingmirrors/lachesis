@@ -22,6 +22,7 @@
 #include "lachesis_config.h"
 #include "version.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <math.h>
@@ -40,6 +41,7 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
 #include <libavutil/fifo.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
@@ -1228,6 +1230,270 @@ static void video_image_display(VideoState *is) {
             SDL_RenderTexture(renderer, is->sub_texture, &srcf, &target);
         }
 #endif
+    }
+}
+
+static void screenshot_dir(VideoState *is, char *dir, size_t dir_size) {
+    const char *fn = is ? is->filename : NULL;
+    const char *slash;
+    size_t len;
+
+    if (!fn || is->archive_path || strstr(fn, "://")) {
+        av_strlcpy(dir, ".", dir_size);
+        return;
+    }
+    slash = strrchr(fn, '/');
+    if (!slash) {
+        av_strlcpy(dir, ".", dir_size);
+        return;
+    }
+    len = (size_t)(slash - fn);
+    if (len == 0) {
+        len = 1;
+    }
+    if (len >= dir_size) {
+        len = dir_size - 1;
+    }
+    memcpy(dir, fn, len);
+    dir[len] = '\0';
+}
+
+static int next_screenshot_path(VideoState *is, char *out, size_t out_size) {
+    char dir[4096];
+
+    screenshot_dir(is, dir, sizeof(dir));
+    for (int i = 1; i <= 9999; i++) {
+        struct stat st;
+        snprintf(out, out_size, "%s/lachesis-%04d.png", dir, i);
+        if (stat(out, &st) != 0) {
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int encode_png(const char *path, AVFrame *src) {
+    const AVCodec *enc = avcodec_find_encoder(AV_CODEC_ID_PNG);
+    AVCodecContext *ctx = NULL;
+    AVFrame *rgb = NULL;
+    AVPacket *pkt = NULL;
+    struct SwsContext *sws = NULL;
+    const AVPixFmtDescriptor *desc;
+    enum AVPixelFormat out_fmt = AV_PIX_FMT_RGB24;
+    FILE *f = NULL;
+    int ret;
+
+    if (!enc) {
+        return AVERROR_ENCODER_NOT_FOUND;
+    }
+    desc = av_pix_fmt_desc_get(src->format);
+    if (desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA)) {
+        out_fmt = AV_PIX_FMT_RGBA;
+    }
+
+    ctx = avcodec_alloc_context3(enc);
+    if (!ctx) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    ctx->width = src->width;
+    ctx->height = src->height;
+    ctx->pix_fmt = out_fmt;
+    ctx->time_base = (AVRational){1, 25};
+    ret = avcodec_open2(ctx, enc, NULL);
+    if (ret < 0) {
+        goto end;
+    }
+
+    rgb = av_frame_alloc();
+    if (!rgb) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    rgb->format = out_fmt;
+    rgb->width = src->width;
+    rgb->height = src->height;
+    ret = av_frame_get_buffer(rgb, 0);
+    if (ret < 0) {
+        goto end;
+    }
+
+    sws = sws_getContext(src->width, src->height, src->format,
+                         src->width, src->height, out_fmt,
+                         SWS_BILINEAR, NULL, NULL, NULL);
+    if (!sws) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    {
+        int *inv_table, *table, src_range, dst_range;
+        int brightness, contrast, saturation;
+        if (sws_getColorspaceDetails(sws, &inv_table, &src_range, &table,
+                                     &dst_range, &brightness, &contrast,
+                                     &saturation) >= 0) {
+            const int *coeffs = sws_getCoefficients(src->colorspace);
+            sws_setColorspaceDetails(sws, coeffs,
+                                     src->color_range == AVCOL_RANGE_JPEG,
+                                     table, dst_range, brightness, contrast,
+                                     saturation);
+        }
+    }
+
+    sws_scale(sws, (const uint8_t *const *)src->data, src->linesize, 0,
+              src->height, rgb->data, rgb->linesize);
+
+    pkt = av_packet_alloc();
+    if (!pkt) {
+        ret = AVERROR(ENOMEM);
+        goto end;
+    }
+    ret = avcodec_send_frame(ctx, rgb);
+    if (ret < 0) {
+        goto end;
+    }
+    avcodec_send_frame(ctx, NULL);
+    ret = avcodec_receive_packet(ctx, pkt);
+    if (ret < 0) {
+        goto end;
+    }
+
+    f = fopen(path, "wb");
+    if (!f) {
+        ret = AVERROR(errno);
+        goto end;
+    }
+    if (fwrite(pkt->data, 1, pkt->size, f) != (size_t)pkt->size) {
+        ret = AVERROR(EIO);
+        goto end;
+    }
+    ret = 0;
+
+end:
+    if (f) {
+        fclose(f);
+    }
+    sws_freeContext(sws);
+    av_packet_free(&pkt);
+    av_frame_free(&rgb);
+    avcodec_free_context(&ctx);
+    return ret;
+}
+
+static AVFrame *frame_to_cpu(AVFrame *frame) {
+    AVFrame *sw;
+
+    if (!frame->hw_frames_ctx) {
+        return av_frame_clone(frame);
+    }
+    sw = av_frame_alloc();
+    if (!sw) {
+        return NULL;
+    }
+    if (av_hwframe_transfer_data(sw, frame, 0) < 0) {
+        av_frame_free(&sw);
+        return NULL;
+    }
+    av_frame_copy_props(sw, frame);
+    return sw;
+}
+
+static int screenshot_window(VideoState *is, const char *path) {
+    Frame *vp = frame_queue_peek_last(&is->pictq);
+    int w = 0, h = 0;
+    int ret;
+
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) {
+        return AVERROR(EINVAL);
+    }
+
+    if (vk_renderer) {
+        AVFrame *rgba = av_frame_alloc();
+        if (!rgba) {
+            return AVERROR(ENOMEM);
+        }
+        rgba->format = AV_PIX_FMT_RGBA;
+        rgba->width = w;
+        rgba->height = h;
+        ret = av_frame_get_buffer(rgba, 0);
+        if (ret < 0) {
+            av_frame_free(&rgba);
+            return ret;
+        }
+        calculate_display_rect(&is->render_params.target_rect, is->xleft,
+                               is->ytop, is->width, is->height, vp->width,
+                               vp->height, vp->sar);
+        ret = vk_renderer_capture(vk_renderer, vp->frame, &is->render_params,
+                                  w, h, rgba->data[0], rgba->linesize[0]);
+        if (ret >= 0) {
+            ret = encode_png(path, rgba);
+        }
+        av_frame_free(&rgba);
+        return ret;
+    }
+
+    SDL_Surface *surf = SDL_RenderReadPixels(renderer, NULL);
+    SDL_Surface *conv;
+    AVFrame *frame;
+
+    if (!surf) {
+        return AVERROR_EXTERNAL;
+    }
+    conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGBA32);
+    SDL_DestroySurface(surf);
+    if (!conv) {
+        return AVERROR_EXTERNAL;
+    }
+    frame = av_frame_alloc();
+    if (!frame) {
+        SDL_DestroySurface(conv);
+        return AVERROR(ENOMEM);
+    }
+    frame->format = AV_PIX_FMT_RGBA;
+    frame->width = conv->w;
+    frame->height = conv->h;
+    frame->data[0] = conv->pixels;
+    frame->linesize[0] = conv->pitch;
+    ret = encode_png(path, frame);
+    av_frame_free(&frame);
+    SDL_DestroySurface(conv);
+    return ret;
+}
+
+static void take_screenshot(VideoState *is, int capture_window) {
+    Frame *vp;
+    char path[4096];
+    int ret;
+
+    if (!is) {
+        return;
+    }
+    vp = frame_queue_peek_last(&is->pictq);
+    if (!vp || !vp->frame || !vp->width || !vp->height) {
+        log_warn("No video frame to capture.\n");
+        return;
+    }
+    if (next_screenshot_path(is, path, sizeof(path)) < 0) {
+        log_warn("Couldn't find a free screenshot filename.\n");
+        return;
+    }
+
+    if (capture_window) {
+        ret = screenshot_window(is, path);
+    } else {
+        AVFrame *cpu = frame_to_cpu(vp->frame);
+        if (!cpu) {
+            log_warn("Couldn't read back the video frame.\n");
+            return;
+        }
+        ret = encode_png(path, cpu);
+        av_frame_free(&cpu);
+    }
+
+    if (ret < 0) {
+        log_warn("Failed to write screenshot %s.\n", path);
+    } else {
+        log_info("Saved screenshot %s\n", path);
     }
 }
 
@@ -5386,8 +5652,11 @@ static void event_loop(VideoState **pis) {
                 osd_status_show_until = (int64_t)SDL_GetTicks() + OSD_STATUS_DURATION_MS;
                 cur_stream->force_refresh = 1;
                 break;
-            case SDLK_S:
+            case SDLK_N:
                 step_to_next_frame(cur_stream);
+                break;
+            case SDLK_S:
+                take_screenshot(cur_stream, (event.key.mod & SDL_KMOD_CTRL) != 0);
                 break;
             case SDLK_PERIOD:
             case SDLK_GREATER:
