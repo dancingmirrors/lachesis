@@ -242,6 +242,10 @@ int parse_options(void *optctx, int argc, char **argv, const OptionDef *options,
             }
             opt++;
 
+            if (opt[0] == '-' && opt[1] != '\0') {
+                opt++;
+            }
+
             if ((ret = parse_option(optctx, opt, argv[optindex], options)) < 0) {
                 return ret;
             }
@@ -271,6 +275,10 @@ static int locate_option(int argc, char **argv, const OptionDef *options,
             continue;
         }
         cur_opt++;
+
+        if (cur_opt[0] == '-' && cur_opt[1] != '\0') {
+            cur_opt++;
+        }
 
         po = find_option(options, cur_opt);
         if (!po->name && cur_opt[0] == 'n' && cur_opt[1] == 'o') {
