@@ -1260,7 +1260,7 @@ static void screenshot_dir(VideoState *is, char *dir, size_t dir_size) {
 }
 
 static int next_screenshot_path(VideoState *is, char *out, size_t out_size) {
-    char dir[4096];
+    char dir[4078];
 
     screenshot_dir(is, dir, sizeof(dir));
     for (int i = 1; i <= 9999; i++) {
