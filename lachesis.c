@@ -1590,6 +1590,42 @@ static void set_default_window_size(int width, int height, AVRational sar) {
     }
 }
 
+static const char *file_basename(const char *path) {
+    const char *slash = strrchr(path, '/');
+    return (slash && slash[1]) ? slash + 1 : path;
+}
+
+static char *make_default_window_title(const char *path,
+                                       const char *archive_path,
+                                       const char *entry_name) {
+    const char *display;
+    char *owned = NULL;
+
+    if (archive_path && entry_name) {
+        owned = av_asprintf("%s | %s", file_basename(archive_path), entry_name);
+        display = owned ? owned : entry_name;
+    } else {
+        if (!path) {
+            path = input_filename;
+        }
+        if (!path) {
+            return NULL;
+        }
+        display = strstr(path, "://") ? path : file_basename(path);
+    }
+
+    char *title;
+    if (playlist_size > 1) {
+        title = av_asprintf("%s - %s [%d/%d]", program_name, display,
+                            playlist_pos + 1, playlist_size);
+    } else {
+        title = av_asprintf("%s - %s", program_name, display);
+    }
+
+    av_free(owned);
+    return title;
+}
+
 static int video_open(VideoState *is) {
     int w, h;
 
@@ -1597,15 +1633,21 @@ static int video_open(VideoState *is) {
     h = cmd_height ? cmd_height : default_height;
 
     if (!window_title) {
-        window_title = input_filename;
+        const char *path = is->ytdl_source_url ? is->ytdl_source_url
+                                               : is->filename;
+        window_title = make_default_window_title(path, is->archive_path,
+                                                 is->entry_name);
     }
 
-    SDL_SetWindowTitle(window, window_title);
     SDL_SetWindowSize(window, w, h);
     SDL_SetWindowPosition(window, screen_left, screen_top);
     SDL_SetWindowFullscreen(window, is_fullscreen);
     SDL_ShowWindow(window);
     SDL_SyncWindow(window);
+
+    if (window_title) {
+        SDL_SetWindowTitle(window, window_title);
+    }
 
     is->width = w;
     is->height = h;
@@ -4562,7 +4604,12 @@ static int read_thread(void *arg) {
     is->max_frame_duration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
 
     if (!window_title && (t = av_dict_get(ic->metadata, "title", NULL, 0))) {
-        window_title = av_asprintf("%s - %s", t->value, input_filename);
+        if (playlist_size > 1) {
+            window_title = av_asprintf("%s - %s [%d/%d]", program_name,
+                                       t->value, playlist_pos + 1, playlist_size);
+        } else {
+            window_title = av_asprintf("%s - %s", program_name, t->value);
+        }
     }
 
     if (start_time != AV_NOPTS_VALUE) {
@@ -6140,6 +6187,27 @@ int main(int argc, char **argv) {
                 }
             }
 #endif
+        }
+
+        {
+            const char *initial_title = window_title;
+            char *initial_title_alloc = NULL;
+            if (!initial_title) {
+                if (playlist_size > 0) {
+                    PlaylistEntry *e = &playlist_entries[playlist_pos];
+                    initial_title = initial_title_alloc =
+                        make_default_window_title(e->display_path,
+                                                  e->archive_path,
+                                                  e->entry_name);
+                } else {
+                    initial_title = initial_title_alloc =
+                        make_default_window_title(input_filename, NULL, NULL);
+                }
+            }
+            if (initial_title) {
+                SDL_SetWindowTitle(window, initial_title);
+            }
+            av_free(initial_title_alloc);
         }
 
         /* Show the window early so the swapchain is fully initialized. */
