@@ -961,6 +961,7 @@ static int realloc_texture(SDL_Texture **texture, Uint32 new_format, int new_wid
             SDL_UnlockTexture(*texture);
         }
     }
+
     return 0;
 }
 
@@ -1269,6 +1270,7 @@ static int next_screenshot_path(VideoState *is, char *out, size_t out_size) {
             return 0;
         }
     }
+
     return -1;
 }
 
@@ -1397,6 +1399,7 @@ end:
     av_frame_free(&rgb);
     av_frame_free(&rgba);
     avcodec_free_context(&ctx);
+
     return ret;
 }
 
@@ -1426,6 +1429,7 @@ static AVFrame *frame_to_cpu(AVFrame *frame) {
         return NULL;
     }
     av_frame_copy_props(sw, frame);
+
     return sw;
 }
 
@@ -1491,6 +1495,7 @@ static int screenshot_window(VideoState *is, const char *path) {
     ret = encode_png(path, frame, bg);
     av_frame_free(&frame);
     SDL_DestroySurface(conv);
+
     return ret;
 }
 
@@ -1944,8 +1949,8 @@ static char *make_default_window_title(const char *path,
     } else {
         title = av_asprintf("%s - %s", program_name, display);
     }
-
     av_free(owned);
+
     return title;
 }
 
@@ -2080,6 +2085,7 @@ static Frame *active_text_subtitle(VideoState *is) {
     if (clock < start || clock > end) {
         return NULL;
     }
+
     return sp;
 }
 
@@ -2120,6 +2126,7 @@ static uint32_t osd_utf8_next(const char *text, size_t len, size_t *pos) {
         cp = (cp << 6) | (cc & 0x3F);
     }
     *pos += (size_t)extra + 1;
+
     return cp;
 }
 
@@ -2130,6 +2137,7 @@ static int osd_cp_is_emoji(uint32_t cp) {
     if (TTF_FontHasGlyph(osd_font, cp)) {
         return 0;
     }
+
     return TTF_FontHasGlyph(osd_emoji_font, cp);
 }
 
@@ -2187,6 +2195,7 @@ static SDL_Surface *osd_render_emoji_scaled(const char *s, size_t len,
         SDL_DestroySurface(cur);
     }
     SDL_DestroySurface(raw);
+
     return dst;
 }
 
@@ -2614,6 +2623,7 @@ static void osd_draw(VideoState *is) {
         now >= osd_volume_show_until && !has_active_subtitle(is)) {
         return;
     }
+
     osd_draw_to(renderer, is);
 }
 
@@ -3903,6 +3913,7 @@ static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int 
 
     buffer_frames = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE,
                           2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
+
     return buffer_frames * audio_hw_params->frame_size;
 }
 
