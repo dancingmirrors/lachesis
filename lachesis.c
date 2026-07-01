@@ -477,6 +477,9 @@ static int64_t osd_volume_show_until = 0;
 static char osd_message[1024];
 static int64_t osd_message_show_until = 0;
 
+static double ab_loop_a = NAN;
+static double ab_loop_b = NAN;
+
 /* Forward declaration for the OSD. */
 static double get_master_clock(VideoState *is);
 
@@ -2809,6 +2812,68 @@ static void toggle_pause(VideoState *is) {
     stream_toggle_pause(is);
     is->step = 0;
     osd_status_show_until = (int64_t)SDL_GetTicks() + OSD_STATUS_DURATION_MS;
+}
+
+static void ab_loop_fmt_time(double t, char *buf, size_t size) {
+    if (isnan(t) || t < 0) {
+        t = 0;
+    }
+    int total = (int)(t + 0.5);
+    int h = total / 3600;
+    int m = (total % 3600) / 60;
+    int s = total % 60;
+    if (h > 0) {
+        snprintf(buf, size, "%d:%02d:%02d", h, m, s);
+    } else {
+        snprintf(buf, size, "%d:%02d", m, s);
+    }
+}
+
+static void ab_loop_reset(void) {
+    ab_loop_a = NAN;
+    ab_loop_b = NAN;
+}
+
+static void ab_loop_toggle(VideoState *is) {
+    char a_buf[32], b_buf[32];
+    double pos = get_master_clock(is);
+    if (isnan(pos)) {
+        pos = (double)is->seek_pos / AV_TIME_BASE;
+    }
+    if (isnan(pos) || pos < 0) {
+        pos = 0;
+    }
+
+    if (isnan(ab_loop_a)) {
+        ab_loop_a = pos;
+        ab_loop_fmt_time(ab_loop_a, a_buf, sizeof(a_buf));
+        osd_show_message("A-B loop: A = %s", a_buf);
+    } else if (isnan(ab_loop_b)) {
+        if (pos <= ab_loop_a) {
+            ab_loop_b = ab_loop_a;
+            ab_loop_a = pos;
+        } else {
+            ab_loop_b = pos;
+        }
+        ab_loop_fmt_time(ab_loop_a, a_buf, sizeof(a_buf));
+        ab_loop_fmt_time(ab_loop_b, b_buf, sizeof(b_buf));
+        osd_show_message("A-B loop: %s - %s", a_buf, b_buf);
+    } else {
+        ab_loop_reset();
+        osd_show_message("A-B loop: cleared");
+    }
+}
+
+static void ab_loop_check(VideoState *is) {
+    if (isnan(ab_loop_a) || isnan(ab_loop_b) || is->paused || is->seek_req) {
+        return;
+    }
+    double pos = get_master_clock(is);
+    if (isnan(pos) || pos < ab_loop_b) {
+        return;
+    }
+    stream_seek(is, (int64_t)(ab_loop_a * AV_TIME_BASE),
+                (int64_t)((ab_loop_a - pos) * AV_TIME_BASE), 0);
 }
 
 static void toggle_mute(VideoState *is) {
@@ -5522,6 +5587,7 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             av_usleep((int64_t)(remaining_time * 1000000.0));
         }
         remaining_time = REFRESH_RATE;
+        ab_loop_check(is);
         if (is->show_mode != SHOW_MODE_NONE && (!is->paused || is->force_refresh)) {
             video_refresh(is, &remaining_time);
         }
@@ -5634,6 +5700,7 @@ static void playlist_switch(VideoState **pis, int new_pos) {
     }
     stream_close(*pis);
     *pis = NULL;
+    ab_loop_reset();
     playlist_pos = new_pos;
     window_title = NULL;
     VideoState *is = stream_open_playlist_entry(playlist_pos);
@@ -5852,7 +5919,10 @@ static void event_loop(VideoState **pis) {
                 }
                 break;
             case SDLK_L:
-                if (enable_360sbs) {
+                if (event.key.mod & SDL_KMOD_SHIFT) {
+                    ab_loop_toggle(cur_stream);
+                    cur_stream->force_refresh = 1;
+                } else if (enable_360sbs) {
                     sbs360_yaw += 5.0f;
                     cur_stream->force_refresh = 1;
                 }
