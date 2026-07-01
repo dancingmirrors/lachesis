@@ -954,7 +954,11 @@ static inline void fill_rectangle(int x, int y, int w, int h) {
     }
 }
 
-static int realloc_texture(SDL_Texture **texture, Uint32 new_format, int new_width, int new_height, SDL_BlendMode blendmode, int init_texture) {
+/* clang-format off */
+static int realloc_texture(SDL_Texture **texture, Uint32 new_format,
+                           int new_width, int new_height,
+                           SDL_BlendMode blendmode, int init_texture) {
+    /* clang-format on */
     Uint32 format = SDL_PIXELFORMAT_UNKNOWN;
     float w = 0, h = 0;
     if (*texture) {
@@ -1068,7 +1072,13 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame) {
     Uint32 sdl_pix_fmt;
     SDL_BlendMode sdl_blendmode;
     get_sdl_pix_fmt_and_blendmode(frame->format, &sdl_pix_fmt, &sdl_blendmode);
-    if (realloc_texture(tex, sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN ? SDL_PIXELFORMAT_ARGB8888 : sdl_pix_fmt, frame->width, frame->height, sdl_blendmode, 0) < 0) {
+    /* clang-format off */
+    if (realloc_texture(tex,
+                        sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN
+                            ? SDL_PIXELFORMAT_ARGB8888
+                            : sdl_pix_fmt,
+                        frame->width, frame->height, sdl_blendmode, 0) < 0) {
+        /* clang-format on */
         return -1;
     }
     switch (sdl_pix_fmt) {
@@ -1078,16 +1088,30 @@ static int upload_texture(SDL_Texture **tex, AVFrame *frame) {
                                        frame->data[1], frame->linesize[1],
                                        frame->data[2], frame->linesize[2]);
         } else if (frame->linesize[0] < 0 && frame->linesize[1] < 0 && frame->linesize[2] < 0) {
-            ret = SDL_UpdateYUVTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height - 1), -frame->linesize[0],
-                                       frame->data[1] + frame->linesize[1] * (AV_CEIL_RSHIFT(frame->height, 1) - 1), -frame->linesize[1],
-                                       frame->data[2] + frame->linesize[2] * (AV_CEIL_RSHIFT(frame->height, 1) - 1), -frame->linesize[2]);
+            /* clang-format off */
+            ret = SDL_UpdateYUVTexture(
+                *tex, NULL,
+                frame->data[0] + frame->linesize[0] * (frame->height - 1),
+                -frame->linesize[0],
+                frame->data[1] +
+                    frame->linesize[1] * (AV_CEIL_RSHIFT(frame->height, 1) - 1),
+                -frame->linesize[1],
+                frame->data[2] +
+                    frame->linesize[2] * (AV_CEIL_RSHIFT(frame->height, 1) - 1),
+                -frame->linesize[2]);
+            /* clang-format on */
         } else {
             return -1;
         }
         break;
     default:
         if (frame->linesize[0] < 0) {
-            ret = SDL_UpdateTexture(*tex, NULL, frame->data[0] + frame->linesize[0] * (frame->height - 1), -frame->linesize[0]);
+            /* clang-format off */
+            ret = SDL_UpdateTexture(
+                *tex, NULL,
+                frame->data[0] + frame->linesize[0] * (frame->height - 1),
+                -frame->linesize[0]);
+            /* clang-format on */
         } else {
             ret = SDL_UpdateTexture(*tex, NULL, frame->data[0], frame->linesize[0]);
         }
@@ -3032,7 +3056,13 @@ static void video_refresh(void *opaque, double *remaining_time) {
             if (frame_queue_nb_remaining(&is->pictq) > 1) {
                 Frame *nextvp = frame_queue_peek_next(&is->pictq);
                 duration = vp_duration(is, vp, nextvp) / playback_speed;
-                if (!benchmark && !is->step && (framedrop > 0 || playback_speed > 1.0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && time > is->frame_timer + duration) {
+                /* clang-format off */
+                if (!benchmark && !is->step &&
+                    (framedrop > 0 || playback_speed > 1.0 ||
+                     (framedrop &&
+                      get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) &&
+                    time > is->frame_timer + duration) {
+                    /* clang-format on */
                     is->frame_drops_late++;
                     frame_queue_next(&is->pictq);
                     goto retry;
@@ -3049,8 +3079,15 @@ static void video_refresh(void *opaque, double *remaining_time) {
                         sp2 = NULL;
                     }
 
-                    if (sp->serial != is->subtitleq.serial || (is->vidclk.pts > (sp->pts + ((float)sp->sub.end_display_time / 1000))) ||
-                        (sp2 && is->vidclk.pts > (sp2->pts + ((float)sp2->sub.start_display_time / 1000)))) {
+                    /* clang-format off */
+                    if (sp->serial != is->subtitleq.serial ||
+                        (is->vidclk.pts >
+                         (sp->pts + ((float)sp->sub.end_display_time / 1000))) ||
+                        (sp2 &&
+                         is->vidclk.pts >
+                             (sp2->pts +
+                              ((float)sp2->sub.start_display_time / 1000)))) {
+                        /* clang-format on */
                         if (sp->uploaded) {
                             int i;
                             for (i = 0; i < sp->sub.num_rects; i++) {
@@ -3708,7 +3745,12 @@ static int video_thread(void *arg) {
             continue;
         }
 
-        if (last_w != frame->width || last_h != frame->height || last_format != frame->format || last_serial != is->viddec.pkt_serial || last_vfilter_idx != is->vfilter_idx) {
+        /* clang-format off */
+        if (last_w != frame->width || last_h != frame->height ||
+            last_format != frame->format ||
+            last_serial != is->viddec.pkt_serial ||
+            last_vfilter_idx != is->vfilter_idx) {
+            /* clang-format on */
             avfilter_graph_free(&graph);
             graph = avfilter_graph_alloc();
             if (!graph) {
@@ -3928,8 +3970,14 @@ static int audio_decode_frame(VideoState *is) {
             return -1;
         }
         if (wanted_nb_samples != af->frame->nb_samples) {
-            if (swr_set_compensation(is->swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_tgt.freq / af->frame->sample_rate,
-                                     wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate) < 0) {
+            /* clang-format off */
+            if (swr_set_compensation(
+                    is->swr_ctx,
+                    (wanted_nb_samples - af->frame->nb_samples) *
+                        is->audio_tgt.freq / af->frame->sample_rate,
+                    wanted_nb_samples * is->audio_tgt.freq /
+                        af->frame->sample_rate) < 0) {
+                /* clang-format on */
                 return -1;
             }
         }
@@ -4017,7 +4065,12 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         } else {
             memset(stream, 0, len1);
             if (!is->muted && is->audio_buf) {
-                SDL_MixAudio(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, SDL_AUDIO_S16, len1, is->audio_volume / (float)FFP_MIX_MAXVOLUME);
+                /* clang-format off */
+                SDL_MixAudio(stream,
+                             (uint8_t *)is->audio_buf + is->audio_buf_index,
+                             SDL_AUDIO_S16, len1,
+                             is->audio_volume / (float)FFP_MIX_MAXVOLUME);
+                /* clang-format on */
             }
         }
         len -= len1;
@@ -4027,7 +4080,15 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
     /* Let's assume the audio driver that is used by SDL has two periods. */
     if (!isnan(is->audio_clock)) {
-        set_clock_at(&is->audclk, is->audio_clock - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec, is->audio_clock_serial, audio_callback_time / 1000000.0);
+        /* clang-format off */
+        set_clock_at(&is->audclk,
+                     is->audio_clock -
+                         (double)(2 * is->audio_hw_buf_size +
+                                  is->audio_write_buf_size) /
+                             is->audio_tgt.bytes_per_sec,
+                     is->audio_clock_serial,
+                     audio_callback_time / 1000000.0);
+        /* clang-format on */
         sync_clock_to_slave(&is->extclk, &is->audclk);
     }
 }
@@ -4087,8 +4148,15 @@ static int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int 
     if (av_channel_layout_copy(&audio_hw_params->ch_layout, wanted_channel_layout) < 0) {
         return -1;
     }
-    audio_hw_params->frame_size = av_samples_get_buffer_size(NULL, audio_hw_params->ch_layout.nb_channels, 1, audio_hw_params->fmt, 1);
-    audio_hw_params->bytes_per_sec = av_samples_get_buffer_size(NULL, audio_hw_params->ch_layout.nb_channels, audio_hw_params->freq, audio_hw_params->fmt, 1);
+    /* clang-format off */
+    audio_hw_params->frame_size =
+        av_samples_get_buffer_size(NULL, audio_hw_params->ch_layout.nb_channels,
+                                   1, audio_hw_params->fmt, 1);
+    audio_hw_params->bytes_per_sec =
+        av_samples_get_buffer_size(NULL, audio_hw_params->ch_layout.nb_channels,
+                                   audio_hw_params->freq, audio_hw_params->fmt,
+                                   1);
+    /* clang-format on */
     if (audio_hw_params->bytes_per_sec <= 0 || audio_hw_params->frame_size <= 0) {
         return -1;
     }
@@ -5429,7 +5497,10 @@ static int read_thread(void *arg) {
                 ((double)duration / 1000000);
         if (pkt->stream_index == is->audio_stream && pkt_in_play_range && !is->audio_ic) {
             packet_queue_put(&is->audioq, pkt);
-        } else if (pkt->stream_index == is->video_stream && pkt_in_play_range && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            /* clang-format off */
+        } else if (pkt->stream_index == is->video_stream && pkt_in_play_range &&
+                   !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            /* clang-format on */
             packet_queue_put(&is->videoq, pkt);
         } else if (pkt->stream_index == is->subtitle_stream && pkt_in_play_range) {
             packet_queue_put(&is->subtitleq, pkt);
