@@ -24,15 +24,13 @@ check(
     required="C11 compiler: missing, broken, or too old",
 )
 
+add_cflags("-D_FILE_OFFSET_BITS=64", "-Wall", "-fno-strict-aliasing")
+
 import platform as _platform  # noqa: E402
 
 _system = _platform.system()
 if _system == "Linux":
-    add_cflags("-D_GNU_SOURCE", "-D_FILE_OFFSET_BITS=64", "-Wall")
-else:
-    add_cflags("-D_FILE_OFFSET_BITS=64", "-Wall")
-
-add_cflags("-fno-strict-aliasing")
+    add_cflags("-D_GNU_SOURCE")
 
 check(
     "-optimize",
