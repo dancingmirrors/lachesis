@@ -453,6 +453,7 @@ static VkRenderer *vk_renderer;
 
 #define OSD_STATUS_DURATION_MS 1000
 #define OSD_SEEK_DURATION_MS 1000
+#define OSD_MESSAGE_DURATION_MS 3000
 
 static TTF_Font *osd_font = NULL;
 static TTF_Font *osd_sym_font = NULL;
@@ -465,6 +466,8 @@ static SDL_Renderer *osd_sw_renderer = NULL;
 static int64_t osd_status_show_until = 0;
 static int64_t osd_seek_show_until = 0;
 static int64_t osd_volume_show_until = 0;
+static char osd_message[1024];
+static int64_t osd_message_show_until = 0;
 
 /* Forward declaration for the OSD. */
 static double get_master_clock(VideoState *is);
@@ -1234,38 +1237,10 @@ static void video_image_display(VideoState *is) {
     }
 }
 
-static void screenshot_dir(VideoState *is, char *dir, size_t dir_size) {
-    const char *fn = is ? is->filename : NULL;
-    const char *slash;
-    size_t len;
-
-    if (!fn || is->archive_path || strstr(fn, "://")) {
-        av_strlcpy(dir, ".", dir_size);
-        return;
-    }
-    slash = strrchr(fn, '/');
-    if (!slash) {
-        av_strlcpy(dir, ".", dir_size);
-        return;
-    }
-    len = (size_t)(slash - fn);
-    if (len == 0) {
-        len = 1;
-    }
-    if (len >= dir_size) {
-        len = dir_size - 1;
-    }
-    memcpy(dir, fn, len);
-    dir[len] = '\0';
-}
-
-static int next_screenshot_path(VideoState *is, char *out, size_t out_size) {
-    char dir[4078];
-
-    screenshot_dir(is, dir, sizeof(dir));
+static int next_screenshot_path(char *out, size_t out_size) {
     for (int i = 1; i <= 9999; i++) {
         struct stat st;
-        snprintf(out, out_size, "%s/lachesis-%04d.png", dir, i);
+        snprintf(out, out_size, "lachesis-%04d.png", i);
         if (stat(out, &st) != 0) {
             return 0;
         }
@@ -1499,9 +1474,17 @@ static int screenshot_window(VideoState *is, const char *path) {
     return ret;
 }
 
+static void osd_show_message(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(osd_message, sizeof(osd_message), fmt, ap);
+    va_end(ap);
+    osd_message_show_until = (int64_t)SDL_GetTicks() + OSD_MESSAGE_DURATION_MS;
+}
+
 static void take_screenshot(VideoState *is, int capture_window) {
     Frame *vp;
-    char path[4096];
+    char path[4078];
     int ret;
 
     if (!is) {
@@ -1512,7 +1495,7 @@ static void take_screenshot(VideoState *is, int capture_window) {
         log_warn("No video frame to capture.\n");
         return;
     }
-    if (next_screenshot_path(is, path, sizeof(path)) < 0) {
+    if (next_screenshot_path(path, sizeof(path)) < 0) {
         log_warn("Couldn't find a free screenshot filename.\n");
         return;
     }
@@ -1533,8 +1516,16 @@ static void take_screenshot(VideoState *is, int capture_window) {
 
     if (ret < 0) {
         log_warn("Failed to write screenshot %s.\n", path);
+        osd_show_message("Failed to save screenshot");
     } else {
-        log_info("Saved screenshot %s\n", path);
+        char abspath[PATH_MAX];
+        if (realpath(path, abspath)) {
+            log_info("Saved screenshot %s\n", abspath);
+            osd_show_message("Saved screenshot %s", abspath);
+        } else {
+            log_info("Saved screenshot %s\n", path);
+            osd_show_message("Saved screenshot %s", path);
+        }
     }
 }
 
@@ -2431,6 +2422,7 @@ static void osd_draw_to(SDL_Renderer *r, VideoState *is) {
     int show_status = (now < osd_status_show_until);
     int show_seek = (now < osd_seek_show_until);
     int show_volume = (now < osd_volume_show_until);
+    int show_message = (now < osd_message_show_until && osd_message[0]);
 
     SDL_Color fg = {255, 255, 255, 255};
     SDL_Color bar_bg = {80, 80, 80, 200};
@@ -2581,6 +2573,20 @@ static void osd_draw_to(SDL_Renderer *r, VideoState *is) {
             }
         }
     }
+
+    if (show_message && osd_font) {
+        int tw, th;
+        TTF_GetStringSize(osd_font, osd_message, 0, &tw, &th);
+        int pad = 6;
+        int box_x = 6;
+        int box_y = 6;
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 180);
+        SDL_FRect box = {box_x, box_y, tw + 2 * pad, th + 2 * pad};
+        SDL_RenderFillRect(r, &box);
+        SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+        osd_text(r, osd_message, box_x + pad, box_y + pad, fg);
+    }
 }
 
 /* Vulkan path: render OSD into a software surface and store pixels in render_params. */
@@ -2620,7 +2626,8 @@ static void osd_draw(VideoState *is) {
     }
     int64_t now = (int64_t)SDL_GetTicks();
     if (now >= osd_status_show_until && now >= osd_seek_show_until &&
-        now >= osd_volume_show_until && !has_active_subtitle(is)) {
+        now >= osd_volume_show_until && now >= osd_message_show_until &&
+        !has_active_subtitle(is)) {
         return;
     }
 
@@ -2636,7 +2643,8 @@ static void video_display(VideoState *is) {
     if (vk_renderer && osd_font) {
         int64_t now = (int64_t)SDL_GetTicks();
         if (now < osd_status_show_until || now < osd_seek_show_until ||
-            now < osd_volume_show_until || has_active_subtitle(is)) {
+            now < osd_volume_show_until || now < osd_message_show_until ||
+            has_active_subtitle(is)) {
             osd_prepare_vulkan(is);
         }
     }
@@ -5494,7 +5502,7 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
         }
         {
             int64_t now_ms = (int64_t)SDL_GetTicks();
-            int64_t osd_until = FFMAX(osd_status_show_until,
+            int64_t osd_until = FFMAX(FFMAX(osd_status_show_until, osd_message_show_until),
                                       FFMAX(osd_seek_show_until, osd_volume_show_until));
             if (osd_until > now_ms) {
                 double osd_remaining = (osd_until - now_ms) / 1000.0;
@@ -5511,6 +5519,7 @@ static void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
                 osd_status_show_until = 0;
                 osd_seek_show_until = 0;
                 osd_volume_show_until = 0;
+                osd_message_show_until = 0;
             }
         }
         SDL_PumpEvents();
