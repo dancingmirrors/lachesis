@@ -4078,7 +4078,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         is->audio_buf_index += len1;
     }
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
-    /* Let's assume the audio driver that is used by SDL has two periods. */
+    /* Let's assume the audio driver used by SDL has two periods. */
     if (!isnan(is->audio_clock)) {
         /* clang-format off */
         set_clock_at(&is->audclk,
