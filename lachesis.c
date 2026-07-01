@@ -517,7 +517,8 @@ static const struct TextureFormatEntry {
     {AV_PIX_FMT_UYVY422, SDL_PIXELFORMAT_UYVY},
 };
 
-static int opt_add_vfilter(void *optctx, const char *opt, const char *arg) {
+static int opt_add_vfilter(void *optctx av_unused, const char *opt av_unused,
+                           const char *arg) {
     int ret = GROW_ARRAY(vfilters_list, nb_vfilters);
     if (ret < 0) {
         return ret;
@@ -1050,7 +1051,7 @@ static void calculate_display_rect(SDL_Rect *rect,
 }
 
 static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_BlendMode *sdl_blendmode) {
-    int i;
+    size_t i;
     *sdl_blendmode = SDL_BLENDMODE_NONE;
     *sdl_pix_fmt = SDL_PIXELFORMAT_UNKNOWN;
     if (format == AV_PIX_FMT_RGB32 ||
@@ -1205,7 +1206,7 @@ static void video_image_display(VideoState *is) {
                 if (!sp->uploaded) {
                     uint8_t *pixels[4];
                     int pitch[4];
-                    int i;
+                    unsigned int i;
                     if (!sp->width || !sp->height) {
                         sp->width = vp->width;
                         sp->height = vp->height;
@@ -1749,7 +1750,7 @@ static void stream_component_close(VideoState *is, int stream_index) {
     AVFormatContext *ic = is->ic;
     AVCodecParameters *codecpar;
 
-    if (stream_index < 0 || stream_index >= ic->nb_streams) {
+    if (stream_index < 0 || stream_index >= (int)ic->nb_streams) {
         return;
     }
     codecpar = ic->streams[stream_index]->codecpar;
@@ -1940,7 +1941,7 @@ static void do_exit(VideoState *is) {
     exit(0);
 }
 
-static void sigterm_handler(int sig) {
+static void sigterm_handler(int sig av_unused) {
     exit(123);
 }
 
@@ -3089,7 +3090,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
                               ((float)sp2->sub.start_display_time / 1000)))) {
                         /* clang-format on */
                         if (sp->uploaded) {
-                            int i;
+                            unsigned int i;
                             for (i = 0; i < sp->sub.num_rects; i++) {
                                 AVSubtitleRect *sub_rect = sp->sub.rects[i];
                                 uint8_t *pixels;
@@ -3247,8 +3248,9 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
 
 static int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                                  AVFilterContext *source_ctx, AVFilterContext *sink_ctx) {
-    int ret, i;
-    int nb_filters = graph->nb_filters;
+    int ret;
+    unsigned int i;
+    unsigned int nb_filters = graph->nb_filters;
     AVFilterInOut *outputs = NULL, *inputs = NULL;
 
     if (filtergraph) {
@@ -3300,7 +3302,8 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
     const AVDictionaryEntry *e = NULL;
     int nb_pix_fmts = 0;
-    int i, j;
+    int i;
+    size_t j;
     AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
 
     if (!par) {
@@ -3309,7 +3312,7 @@ static int configure_video_filters(AVFilterGraph *graph, VideoState *is, const c
 
     for (i = 0; renderer_texture_formats && renderer_texture_formats[i] != SDL_PIXELFORMAT_UNKNOWN; i++) {
         for (j = 0; j < FF_ARRAY_ELEMS(sdl_texture_format_map); j++) {
-            if (renderer_texture_formats[i] == sdl_texture_format_map[j].texture_fmt) {
+            if ((int)renderer_texture_formats[i] == sdl_texture_format_map[j].texture_fmt) {
                 pix_fmts[nb_pix_fmts++] = sdl_texture_format_map[j].format;
                 break;
             }
@@ -4024,7 +4027,7 @@ static int audio_decode_frame(VideoState *is) {
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len);
 
 static void SDLCALL sdl_audio_stream_callback(void *opaque, SDL_AudioStream *stream,
-                                              int additional_amount, int total_amount) {
+                                              int additional_amount, int total_amount av_unused) {
     if (additional_amount > 0) {
         Uint8 *data = av_malloc(additional_amount);
         if (data) {
@@ -4042,7 +4045,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     audio_callback_time = av_gettime_relative();
 
     while (len > 0) {
-        if (is->audio_buf_index >= is->audio_buf_size) {
+        if ((unsigned int)is->audio_buf_index >= is->audio_buf_size) {
             audio_size = audio_decode_frame(is);
             if (audio_size < 0) {
                 /* Just output silence upon error. */
@@ -4243,7 +4246,7 @@ static int stream_component_open(VideoState *is, int stream_index) {
     AVChannelLayout ch_layout = {0};
     int ret = 0;
 
-    if (stream_index < 0 || stream_index >= ic->nb_streams) {
+    if (stream_index < 0 || stream_index >= (int)ic->nb_streams) {
         return -1;
     }
 
@@ -5222,7 +5225,7 @@ static int read_thread(void *arg) {
                        : (int64_t)MAX_QUEUE_SIZE);
     }
 
-    for (i = 0; i < ic->nb_streams; i++) {
+    for (i = 0; i < (int)ic->nb_streams; i++) {
         AVStream *st = ic->streams[i];
         enum AVMediaType type = st->codecpar->codec_type;
         st->discard = AVDISCARD_ALL;
@@ -5656,7 +5659,7 @@ static void stream_cycle_channel(VideoState *is, int codec_type) {
         if (p) {
             nb_streams = p->nb_stream_indexes;
             for (start_index = 0; start_index < nb_streams; start_index++) {
-                if (p->stream_index[start_index] == stream_index) {
+                if ((int)p->stream_index[start_index] == stream_index) {
                     break;
                 }
             }
@@ -5682,7 +5685,7 @@ static void stream_cycle_channel(VideoState *is, int codec_type) {
         if (stream_index == start_index) {
             return;
         }
-        st = is->ic->streams[p ? p->stream_index[stream_index] : stream_index];
+        st = is->ic->streams[p ? (int)p->stream_index[stream_index] : stream_index];
         if (st->codecpar->codec_type == codec_type) {
             /* Check that parameters are okay. */
             switch (codec_type) {
@@ -5780,7 +5783,7 @@ static void seek_chapter(VideoState *is, int incr) {
         return;
     }
 
-    for (i = 0; i < is->ic->nb_chapters; i++) {
+    for (i = 0; i < (int)is->ic->nb_chapters; i++) {
         AVChapter *ch = is->ic->chapters[i];
         if (av_compare_ts(pos, AV_TIME_BASE_Q, ch->start, ch->time_base) < 0) {
             i--;
@@ -5790,7 +5793,7 @@ static void seek_chapter(VideoState *is, int incr) {
 
     i += incr;
     i = FFMAX(i, 0);
-    if (i >= is->ic->nb_chapters) {
+    if (i >= (int)is->ic->nb_chapters) {
         return;
     }
 
@@ -5934,6 +5937,7 @@ static void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                     break;
                 }
+                [[fallthrough]];
             case SDLK_SPACE:
                 toggle_pause(cur_stream);
                 osd_seek_show_until = (int64_t)SDL_GetTicks() + OSD_SEEK_DURATION_MS;
@@ -6142,6 +6146,7 @@ static void event_loop(VideoState **pis) {
                     last_mouse_left_click = av_gettime_relative();
                 }
             }
+            [[fallthrough]];
         case SDL_EVENT_MOUSE_MOTION:
             if (cursor_hidden) {
                 SDL_ShowCursor();
@@ -6202,6 +6207,7 @@ static void event_loop(VideoState **pis) {
             if (vk_renderer) {
                 vk_renderer_resize(vk_renderer, screen_width, screen_height);
             }
+            [[fallthrough]];
         case SDL_EVENT_WINDOW_EXPOSED:
             cur_stream->force_refresh = 1;
             break;
@@ -6230,7 +6236,7 @@ static void event_loop(VideoState **pis) {
     }
 }
 
-static int opt_width(void *optctx, const char *opt, const char *arg) {
+static int opt_width(void *optctx av_unused, const char *opt, const char *arg) {
     double num;
     int ret = parse_number(opt, arg, OPT_TYPE_INT64, 1, INT_MAX, &num);
     if (ret < 0) {
@@ -6241,7 +6247,7 @@ static int opt_width(void *optctx, const char *opt, const char *arg) {
     return 0;
 }
 
-static int opt_height(void *optctx, const char *opt, const char *arg) {
+static int opt_height(void *optctx av_unused, const char *opt, const char *arg) {
     double num;
     int ret = parse_number(opt, arg, OPT_TYPE_INT64, 1, INT_MAX, &num);
     if (ret < 0) {
@@ -6252,7 +6258,7 @@ static int opt_height(void *optctx, const char *opt, const char *arg) {
     return 0;
 }
 
-static int opt_format(void *optctx, const char *opt, const char *arg) {
+static int opt_format(void *optctx av_unused, const char *opt av_unused, const char *arg) {
     file_iformat = av_find_input_format(arg);
     if (!file_iformat) {
         return AVERROR(EINVAL);
@@ -6261,7 +6267,7 @@ static int opt_format(void *optctx, const char *opt, const char *arg) {
     return 0;
 }
 
-static int opt_sync(void *optctx, const char *opt, const char *arg) {
+static int opt_sync(void *optctx av_unused, const char *opt, const char *arg) {
     if (!strcmp(arg, "audio")) {
         av_sync_type = AV_SYNC_AUDIO_MASTER;
     } else if (!strcmp(arg, "video")) {
@@ -6276,7 +6282,7 @@ static int opt_sync(void *optctx, const char *opt, const char *arg) {
     return 0;
 }
 
-static int opt_show_mode(void *optctx, const char *opt, const char *arg) {
+static int opt_show_mode(void *optctx av_unused, const char *opt, const char *arg) {
     show_mode = !strcmp(arg, "video") ? SHOW_MODE_VIDEO : !strcmp(arg, "waves") ? SHOW_MODE_WAVES
         : !strcmp(arg, "rdft")                                                  ? SHOW_MODE_RDFT
                                                                                 : SHOW_MODE_NONE;
@@ -6343,7 +6349,7 @@ static void expand_directory(const char *dir_path) {
     av_free(entries);
 }
 
-static int opt_input_file(void *optctx, const char *filename) {
+static int opt_input_file(void *optctx av_unused, const char *filename) {
     if (!strcmp(filename, "-")) {
         filename = "fd:";
     }
@@ -6393,7 +6399,7 @@ static int opt_input_file(void *optctx, const char *filename) {
     return playlist_add_entry(filename, NULL, NULL);
 }
 
-static int opt_codec(void *optctx, const char *opt, const char *arg) {
+static int opt_codec(void *optctx av_unused, const char *opt, const char *arg) {
     const char *spec = strchr(opt, ':');
     const char **name;
     if (!spec) {
@@ -6506,7 +6512,8 @@ static const OptionDef options[] = {
            AV_VERSION_MINOR(libname##_version()), AV_VERSION_MICRO(libname##_version()))
 /* clang-format on */
 
-static int opt_version(void *optctx, const char *opt, const char *arg) {
+static int opt_version(void *optctx av_unused, const char *opt av_unused,
+                       const char *arg av_unused) {
     int this_year = program_birth_year;
     time_t t = time(NULL);
 
@@ -6542,7 +6549,7 @@ static int opt_version(void *optctx, const char *opt, const char *arg) {
     return 0;
 }
 
-void show_help_default(const char *opt, const char *arg) {
+void show_help_default(const char *opt av_unused, const char *arg av_unused) {
     show_help_options(options, 0, OPT_EXPERT);
     show_help_options(options, OPT_EXPERT, 0);
 }

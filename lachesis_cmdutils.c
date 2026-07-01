@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include <libavformat/avformat.h>
+#include <libavutil/attributes.h>
 #include <libavutil/avassert.h>
 #include <libavutil/avstring.h>
 #include <libavutil/dict.h>
@@ -106,7 +107,7 @@ void show_help_options(const OptionDef *options, int req_flags,
     }
 }
 
-int opt_help(void *optctx, const char *opt, const char *arg) {
+int opt_help(void *optctx av_unused, const char *opt av_unused, const char *arg) {
     show_help_default(arg, NULL);
     return 0;
 }
@@ -133,7 +134,7 @@ static int opt_has_arg(const OptionDef *o) {
 }
 
 static int write_option(void *optctx, const OptionDef *po, const char *opt,
-                        const char *arg, const OptionDef *defs) {
+                        const char *arg, const OptionDef *defs av_unused) {
     /* lachesis's options only use global destination pointers; the SPEC /
      * per-stream / offset and "/file" branches of the original are omitted. */
     void *dst = po->u.dst_ptr;
@@ -312,12 +313,13 @@ static const struct {
     {"trace", AV_LOG_TRACE},
 };
 
-int opt_loglevel(void *optctx, const char *opt, const char *arg) {
+int opt_loglevel(void *optctx av_unused, const char *opt av_unused, const char *arg) {
     const char *token;
     char *tail;
     int flags = av_log_get_flags();
     int level = av_log_get_level();
-    int cmd, i = 0;
+    int cmd;
+    size_t i = 0;
 
     /* Optional leading "repeat+"/"+repeat" flags, '+'-separated from the
      * level. */
@@ -386,7 +388,7 @@ int check_stream_specifier(AVFormatContext *s, AVStream *st, const char *spec) {
     return ret;
 }
 
-int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id,
+int filter_codec_opts(const AVDictionary *opts, enum AVCodecID codec_id av_unused,
                       AVFormatContext *s, AVStream *st, const AVCodec *codec,
                       AVDictionary **dst, AVDictionary **opts_used) {
     AVDictionary *ret = NULL;
@@ -471,7 +473,7 @@ int setup_find_stream_info_opts(AVFormatContext *s,
         return AVERROR(ENOMEM);
     }
 
-    for (int i = 0; i < s->nb_streams; i++) {
+    for (unsigned int i = 0; i < s->nb_streams; i++) {
         ret = filter_codec_opts(local_codec_opts, s->streams[i]->codecpar->codec_id,
                                 s, s->streams[i], NULL, &opts[i], NULL);
         if (ret < 0) {
@@ -481,7 +483,7 @@ int setup_find_stream_info_opts(AVFormatContext *s,
     *dst = opts;
     return 0;
 fail:
-    for (int i = 0; i < s->nb_streams; i++) {
+    for (unsigned int i = 0; i < s->nb_streams; i++) {
         av_dict_free(&opts[i]);
     }
     av_freep(&opts);

@@ -24,7 +24,13 @@ check(
     required="C11 compiler: missing, broken, or too old",
 )
 
-add_cflags("-D_FILE_OFFSET_BITS=64", "-Wall", "-fno-strict-aliasing")
+add_cflags(
+    "-D_FILE_OFFSET_BITS=64",
+    "-Wall",
+    "-Wextra",
+    "-Wno-missing-field-initializers",
+    "-fno-strict-aliasing",
+)
 
 import platform as _platform  # noqa: E402
 

@@ -300,7 +300,7 @@ static int add_instance_extension(const char **ext, unsigned num_ext,
     int ret;
 
     av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
-    for (int i = 0; i < num_ext; i++) {
+    for (unsigned i = 0; i < num_ext; i++) {
         if (i) {
             av_bprintf(&buf, "+%s", ext[i]);
         } else {
@@ -442,7 +442,7 @@ static int create_vk_by_hwcontext(VkRenderer *renderer,
     }
 
 #if defined(VK_KHR_internally_synchronized_queues) && PL_API_VER >= 365
-    for (unsigned i = 0; i < hwctx->nb_enabled_dev_extensions; i++) {
+    for (unsigned i = 0; i < (unsigned)hwctx->nb_enabled_dev_extensions; i++) {
         if (!strcmp(hwctx->enabled_dev_extensions[i],
                     VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
             import_params.queue_graphics.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
@@ -457,7 +457,7 @@ static int create_vk_by_hwcontext(VkRenderer *renderer,
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 32, 100)
     log_warn("VK_KHR_internally_synchronized_queues with libplacebo < 365 hack.\n");
 #endif
-    for (unsigned i = 0; i < hwctx->nb_enabled_dev_extensions; i++) {
+    for (unsigned i = 0; i < (unsigned)hwctx->nb_enabled_dev_extensions; i++) {
         if (!strcmp(hwctx->enabled_dev_extensions[i],
                     VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
             av_buffer_unref(&ctx->hw_device_ref);
@@ -525,7 +525,7 @@ static int get_decode_queue(VkRenderer *renderer, int *index, int *count) {
                           &num_queue_family_prop,
                           queue_family_prop);
 
-    for (int i = 0; i < num_queue_family_prop; i++) {
+    for (int i = 0; i < (int)num_queue_family_prop; i++) {
         if (queue_family_prop[i].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) {
             *index = i;
             *count = queue_family_prop[i].queueCount;
@@ -1535,7 +1535,7 @@ static void destroy(VkRenderer *renderer) {
         av_freep(&ctx->cache_path);
 #endif
         pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
-        for (int i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
+        for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
             pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->tex[i]);
         }
         pl_renderer_destroy(&ctx->renderer);
