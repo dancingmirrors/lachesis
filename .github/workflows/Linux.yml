@@ -137,3 +137,9 @@ jobs:
           # ?
           sudo ldconfig
           LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h
+
+          sudo apt-get purge -y git
+          rm -fr build
+          ./configure
+          ninja -C build
+          ./build/lachesis --version
