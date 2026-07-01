@@ -480,6 +480,13 @@ static int64_t osd_message_show_until = 0;
 static double ab_loop_a = NAN;
 static double ab_loop_b = NAN;
 
+static double playback_speed = 1.0;
+static int audio_speed_serial = 0;
+
+#define PLAYBACK_SPEED_MIN 0.2
+#define PLAYBACK_SPEED_MAX 2.0
+#define PLAYBACK_SPEED_STEP 0.1
+
 /* Forward declaration for the OSD. */
 static double get_master_clock(VideoState *is);
 
@@ -1508,6 +1515,11 @@ static void osd_show_message(const char *fmt, ...) {
     vsnprintf(osd_message, sizeof(osd_message), fmt, ap);
     va_end(ap);
     osd_message_show_until = (int64_t)SDL_GetTicks() + OSD_MESSAGE_DURATION_MS;
+}
+
+/* XXX */
+static void osd_show_position_with_message(void) {
+    osd_seek_show_until = (int64_t)SDL_GetTicks() + OSD_MESSAGE_DURATION_MS;
 }
 
 static void take_screenshot(VideoState *is, int capture_window) {
@@ -2836,6 +2848,7 @@ static void ab_loop_reset(void) {
 
 static void ab_loop_toggle(VideoState *is) {
     char a_buf[32], b_buf[32];
+    osd_show_position_with_message();
     double pos = get_master_clock(is);
     if (isnan(pos)) {
         pos = (double)is->seek_pos / AV_TIME_BASE;
@@ -2874,6 +2887,24 @@ static void ab_loop_check(VideoState *is) {
     }
     stream_seek(is, (int64_t)(ab_loop_a * AV_TIME_BASE),
                 (int64_t)((ab_loop_a - pos) * AV_TIME_BASE), 0);
+}
+
+static void set_playback_speed(double speed) {
+    speed = round(speed / PLAYBACK_SPEED_STEP) * PLAYBACK_SPEED_STEP;
+    speed = FFMAX(PLAYBACK_SPEED_MIN, FFMIN(PLAYBACK_SPEED_MAX, speed));
+    osd_show_position_with_message();
+    if (speed == playback_speed) {
+        osd_show_message("Speed: %d%%", (int)lrint(playback_speed * 100.0));
+        return;
+    }
+    playback_speed = speed;
+    audio_speed_serial++;
+    osd_show_message("Speed: %d%%", (int)lrint(playback_speed * 100.0));
+}
+
+static void reset_playback_speed(void) {
+    playback_speed = 1.0;
+    audio_speed_serial++;
 }
 
 static void toggle_mute(VideoState *is) {
@@ -2979,7 +3010,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
             }
 
             last_duration = vp_duration(is, lastvp, vp);
-            delay = compute_target_delay(last_duration, is);
+            delay = compute_target_delay(last_duration, is) / playback_speed;
 
             time = av_gettime_relative() / 1000000.0;
             if (!benchmark && time < is->frame_timer + delay) {
@@ -3000,8 +3031,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
 
             if (frame_queue_nb_remaining(&is->pictq) > 1) {
                 Frame *nextvp = frame_queue_peek_next(&is->pictq);
-                duration = vp_duration(is, vp, nextvp);
-                if (!benchmark && !is->step && (framedrop > 0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && time > is->frame_timer + duration) {
+                duration = vp_duration(is, vp, nextvp) / playback_speed;
+                if (!benchmark && !is->step && (framedrop > 0 || playback_speed > 1.0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) && time > is->frame_timer + duration) {
                     is->frame_drops_late++;
                     frame_queue_next(&is->pictq);
                     goto retry;
@@ -3018,7 +3049,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
                         sp2 = NULL;
                     }
 
-                    if (sp->serial != is->subtitleq.serial || (is->vidclk.pts > (sp->pts + ((float)sp->sub.end_display_time / 1000))) || (sp2 && is->vidclk.pts > (sp2->pts + ((float)sp2->sub.start_display_time / 1000)))) {
+                    if (sp->serial != is->subtitleq.serial || (is->vidclk.pts > (sp->pts + ((float)sp->sub.end_display_time / 1000))) ||
+                        (sp2 && is->vidclk.pts > (sp2->pts + ((float)sp2->sub.start_display_time / 1000)))) {
                         if (sp->uploaded) {
                             int i;
                             for (i = 0; i < sp->sub.num_rects; i++) {
@@ -3401,6 +3433,36 @@ fail:
     return ret;
 }
 
+static void append_atempo_chain(AVBPrint *bp, double speed) {
+    int first = 1;
+    while (speed > 2.0 + 1e-9) {
+        av_bprintf(bp, "%satempo=2.0", first ? "" : ",");
+        speed /= 2.0;
+        first = 0;
+    }
+    while (speed < 0.5 - 1e-9) {
+        av_bprintf(bp, "%satempo=0.5", first ? "" : ",");
+        speed *= 2.0;
+        first = 0;
+    }
+    av_bprintf(bp, "%satempo=%.6g", first ? "" : ",", speed);
+}
+
+static const char *build_audio_filters(const char *afilters, AVBPrint *scratch) {
+    if (playback_speed == 1.0) {
+        return afilters;
+    }
+    av_bprint_clear(scratch);
+    if (afilters && *afilters) {
+        av_bprintf(scratch, "%s,", afilters);
+    }
+    append_atempo_chain(scratch, playback_speed);
+    if (!av_bprint_is_complete(scratch)) {
+        return afilters;
+    }
+    return scratch->str;
+}
+
 static int configure_audio_filters(VideoState *is, const char *afilters, int force_output_format) {
     AVFilterContext *filt_asrc = NULL, *filt_asink = NULL;
     char aresample_swr_opts[512] = "";
@@ -3487,8 +3549,16 @@ static int configure_audio_filters(VideoState *is, const char *afilters, int for
         goto end;
     }
 
-    if ((ret = configure_filtergraph(is->agraph, afilters, filt_asrc, filt_asink)) < 0) {
-        goto end;
+    {
+        AVBPrint fbp;
+        const char *effective;
+        av_bprint_init(&fbp, 0, AV_BPRINT_SIZE_AUTOMATIC);
+        effective = build_audio_filters(afilters, &fbp);
+        ret = configure_filtergraph(is->agraph, effective, filt_asrc, filt_asink);
+        av_bprint_finalize(&fbp, NULL);
+        if (ret < 0) {
+            goto end;
+        }
     }
 
     is->in_audio_filter = filt_asrc;
@@ -3508,6 +3578,8 @@ static int audio_thread(void *arg) {
     AVFrame *frame = av_frame_alloc();
     Frame *af;
     int last_serial = -1;
+    int last_speed_serial = audio_speed_serial;
+    double atempo_base_pts = NAN;
     int reconfigure;
     int got_frame = 0;
     AVRational tb;
@@ -3530,7 +3602,8 @@ static int audio_thread(void *arg) {
                                frame->format, frame->ch_layout.nb_channels) ||
                 av_channel_layout_compare(&is->audio_filter_src.ch_layout, &frame->ch_layout) ||
                 is->audio_filter_src.freq != frame->sample_rate ||
-                is->auddec.pkt_serial != last_serial;
+                is->auddec.pkt_serial != last_serial ||
+                audio_speed_serial != last_speed_serial;
 
             if (reconfigure) {
                 char buf1[1024], buf2[1024];
@@ -3543,6 +3616,8 @@ static int audio_thread(void *arg) {
                 }
                 is->audio_filter_src.freq = frame->sample_rate;
                 last_serial = is->auddec.pkt_serial;
+                last_speed_serial = audio_speed_serial;
+                atempo_base_pts = NAN;
 
                 if ((ret = configure_audio_filters(is, afilters, 1)) < 0) {
                     goto the_end;
@@ -3564,6 +3639,15 @@ static int audio_thread(void *arg) {
                 af->pos = fd ? fd->pkt_pos : -1;
                 af->serial = is->auddec.pkt_serial;
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
+
+                /* Convert atempo's compressed output timeline back to the real source timeline. */
+                if (playback_speed != 1.0 && !isnan(af->pts)) {
+                    if (isnan(atempo_base_pts)) {
+                        atempo_base_pts = af->pts;
+                    }
+                    af->pts = atempo_base_pts + playback_speed * (af->pts - atempo_base_pts);
+                    af->duration *= playback_speed;
+                }
 
                 av_frame_move_ref(af->frame, frame);
                 frame_queue_push(&is->sampq);
@@ -5701,6 +5785,7 @@ static void playlist_switch(VideoState **pis, int new_pos) {
     stream_close(*pis);
     *pis = NULL;
     ab_loop_reset();
+    reset_playback_speed();
     playlist_pos = new_pos;
     window_title = NULL;
     VideoState *is = stream_open_playlist_entry(playlist_pos);
@@ -5926,6 +6011,14 @@ static void event_loop(VideoState **pis) {
                     sbs360_yaw += 5.0f;
                     cur_stream->force_refresh = 1;
                 }
+                break;
+            case SDLK_LEFTBRACKET:
+                set_playback_speed(playback_speed - PLAYBACK_SPEED_STEP);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_RIGHTBRACKET:
+                set_playback_speed(playback_speed + PLAYBACK_SPEED_STEP);
+                cur_stream->force_refresh = 1;
                 break;
             case SDLK_EQUALS:
             case SDLK_KP_PLUS:
