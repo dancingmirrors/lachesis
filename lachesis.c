@@ -6512,11 +6512,11 @@ int main(int argc, char **argv) {
                 }
             }
 
-#if !defined(_WIN32) && !defined(__APPLE__)
             if (osd_font) {
                 char seen_paths[OSD_MAX_FALLBACK_FONTS][512];
                 int num_seen = 0;
 
+#if !defined(_WIN32) && !defined(__APPLE__)
                 {
                     FILE *fp = popen("fc-match --format=%{file} emoji 2>/dev/null",
                                      "r");
@@ -6532,7 +6532,27 @@ int main(int argc, char **argv) {
                         pclose(fp);
                     }
                 }
+#else
+                {
+                    static const char *const emoji_paths[] = {
+#if defined(_WIN32)
+                        "C:\\Windows\\Fonts\\seguiemj.ttf",
+#elif defined(__APPLE__)
+                        "/System/Library/Fonts/Apple Color Emoji.ttc",
+#endif
+                        NULL,
+                    };
+                    for (int ei = 0; emoji_paths[ei] && !osd_emoji_font; ei++) {
+                        osd_emoji_font = TTF_OpenFont(emoji_paths[ei], 64.0f);
+                        if (osd_emoji_font) {
+                            snprintf(seen_paths[num_seen++],
+                                     sizeof(seen_paths[0]), "%s", emoji_paths[ei]);
+                        }
+                    }
+                }
+#endif
 
+#if !defined(_WIN32) && !defined(__APPLE__)
                 static const char *const fallback_patterns[] = {
                     ":lang=ja",
                     ":lang=ko",
@@ -6577,8 +6597,50 @@ int main(int argc, char **argv) {
                     }
                     pclose(fp);
                 }
-            }
+#else
+                static const char *const fallback_paths[] = {
+#if defined(_WIN32)
+                    "C:\\Windows\\Fonts\\msyh.ttc",
+                    "C:\\Windows\\Fonts\\msjh.ttc",
+                    "C:\\Windows\\Fonts\\YuGothM.ttc",
+                    "C:\\Windows\\Fonts\\meiryo.ttc",
+                    "C:\\Windows\\Fonts\\malgun.ttf",
+                    "C:\\Windows\\Fonts\\leelawui.ttf",
+#elif defined(__APPLE__)
+                    "/System/Library/Fonts/PingFang.ttc",
+                    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+                    "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+                    "/System/Library/Fonts/Thonburi.ttc",
 #endif
+                    NULL,
+                };
+                for (int pi = 0; fallback_paths[pi] &&
+                     osd_num_fallback_fonts < OSD_MAX_FALLBACK_FONTS;
+                     pi++) {
+                    const char *path = fallback_paths[pi];
+                    int dup = 0;
+                    for (int si = 0; si < num_seen; si++) {
+                        if (!strcmp(seen_paths[si], path)) {
+                            dup = 1;
+                            break;
+                        }
+                    }
+                    if (dup) {
+                        continue;
+                    }
+                    TTF_Font *fb = TTF_OpenFont(path, 18.0f);
+                    if (fb) {
+                        if (TTF_AddFallbackFont(osd_font, fb)) {
+                            snprintf(seen_paths[num_seen++],
+                                     sizeof(seen_paths[0]), "%s", path);
+                            osd_fallback_fonts[osd_num_fallback_fonts++] = fb;
+                        } else {
+                            TTF_CloseFont(fb);
+                        }
+                    }
+                }
+#endif
+            }
         }
 
         {

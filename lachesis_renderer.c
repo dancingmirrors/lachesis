@@ -755,7 +755,10 @@ static VkPresentModeKHR select_present_mode(RendererContext *ctx, const char *na
     return chosen;
 }
 
-av_unused static long libplacebo_soversion(const char *path) {
+#ifdef LACHESIS_CAN_ITERATE_LIBS
+#define LACHESIS_MAX_PLACEBO_LIBS 8
+
+static long libplacebo_soversion(const char *path) {
     const char *base;
     const char *stem;
 
@@ -765,14 +768,6 @@ av_unused static long libplacebo_soversion(const char *path) {
 
     base = strrchr(path, '/');
     base = base ? base + 1 : path;
-#ifdef _WIN32
-    {
-        const char *bslash = strrchr(base, '\\');
-        if (bslash) {
-            base = bslash + 1;
-        }
-    }
-#endif
 
     stem = strstr(base, "libplacebo");
     if (!stem) {
@@ -788,9 +783,6 @@ av_unused static long libplacebo_soversion(const char *path) {
 
     return 0;
 }
-
-#ifdef LACHESIS_CAN_ITERATE_LIBS
-#define LACHESIS_MAX_PLACEBO_LIBS 8
 
 struct placebo_lib_scan {
     const char *paths[LACHESIS_MAX_PLACEBO_LIBS];
