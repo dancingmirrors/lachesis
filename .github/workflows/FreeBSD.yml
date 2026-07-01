@@ -16,7 +16,7 @@ jobs:
       - name: actions/checkout@v7
         uses: actions/checkout@v7
 
-      - name: Build on FreeBSD
+      - name: Build, run
         uses: vmactions/freebsd-vm@v1
         with:
           usesh: true

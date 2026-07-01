@@ -24,7 +24,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ccache-
 
-      - name: msys2/setup-msys2@v2
+      - name: Install dependencies
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
@@ -75,7 +75,7 @@ jobs:
           ccache --zero-stats
           mkdir -p $HOME/.ccache
 
-      - name: configure, build, install, test
+      - name: Build, install, run
         run: |
           set -x
 

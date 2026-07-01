@@ -33,7 +33,7 @@ jobs:
           mkdir -p $HOME/.ccache
           echo "/usr/lib/ccache" >> $GITHUB_PATH
 
-      - name: dependencies
+      - name: Build and install dependencies
         run: |
           sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
@@ -112,7 +112,7 @@ jobs:
           make -j$(nproc)
           sudo make install
 
-      - name: configure, build, install, test
+      - name: Build, install, run
         run: |
           set -x
 
