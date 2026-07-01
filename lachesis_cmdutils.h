@@ -115,11 +115,11 @@ static inline void print_error(const char *filename, int err) {
 
 /* clang-format off */
 #define CMDUTILS_COMMON_OPTIONS \
-    {"h", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},                                                 \
-    {"?", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help"},                                    \
-    {"help", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help"},                                 \
-    {"-help", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help"},                                \
-    {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_loglevel}, "set logging level", "loglevel"},
+    {"h", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},                  \
+    {"?", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help"},     \
+    {"help", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help"},  \
+    {"-help", OPT_TYPE_FUNC, OPT_EXIT | OPT_EXPERT, {.func_arg = opt_help}, "show help"}, \
+    {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_loglevel}, "set FFmpeg's logging level", "loglevel"},
 /* clang-format on */
 int opt_help(void *optctx, const char *opt, const char *arg);
 
