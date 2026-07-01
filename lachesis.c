@@ -68,6 +68,14 @@
 #include <strings.h>
 #include <sys/stat.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#define PATH_SEPARATOR '\\'
+#else
+#include <unistd.h>
+#define PATH_SEPARATOR '/'
+#endif
+
 #include "lachesis_archive.h"
 #include "lachesis_cmdutils.h"
 #include "lachesis_log.h"
@@ -1237,6 +1245,23 @@ static void video_image_display(VideoState *is) {
     }
 }
 
+static int screenshot_abspath(const char *path, char *out, size_t out_size) {
+    char cwd[4078];
+#if defined(_WIN32)
+    if (!_getcwd(cwd, (int)sizeof(cwd))) {
+        return -1;
+    }
+#else
+    if (!getcwd(cwd, sizeof(cwd))) {
+        return -1;
+    }
+#endif
+    if (snprintf(out, out_size, "%s%c%s", cwd, PATH_SEPARATOR, path) >= (int)out_size) {
+        return -1;
+    }
+    return 0;
+}
+
 static int next_screenshot_path(char *out, size_t out_size) {
     for (int i = 1; i <= 9999; i++) {
         struct stat st;
@@ -1518,8 +1543,8 @@ static void take_screenshot(VideoState *is, int capture_window) {
         log_warn("Failed to write screenshot %s.\n", path);
         osd_show_message("Failed to save screenshot");
     } else {
-        char abspath[PATH_MAX];
-        if (realpath(path, abspath)) {
+        char abspath[4078];
+        if (screenshot_abspath(path, abspath, sizeof(abspath)) == 0) {
             log_info("Saved screenshot %s\n", abspath);
             osd_show_message("Saved screenshot %s", abspath);
         } else {
