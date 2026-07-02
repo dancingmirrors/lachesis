@@ -6446,7 +6446,7 @@ static const OptionDef options[] = {
     {"vst", OPT_TYPE_STRING, OPT_EXPERT, {&wanted_stream_spec[AVMEDIA_TYPE_VIDEO]}, "select the desired video stream", "stream_specifier"},
     {"sst", OPT_TYPE_STRING, OPT_EXPERT, {&wanted_stream_spec[AVMEDIA_TYPE_SUBTITLE]}, "select the desired subtitle stream", "stream_specifier"},
     {"ss", OPT_TYPE_TIME, 0, {&start_time}, "seek to a given position in seconds", "pos"},
-    {"t", OPT_TYPE_TIME, 0, {&duration}, "play this duration of seconds of audio/video", "duration"},
+    {"t", OPT_TYPE_TIME, 0, {&duration}, "play this duration of the input in seconds", "duration"},
     {"bytes", OPT_TYPE_INT, 0, {&seek_by_bytes}, "seek by bytes (0 = off, 1 = on, -1 = auto)", "val"},
     {"seek_interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
