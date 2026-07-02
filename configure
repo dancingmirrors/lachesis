@@ -32,7 +32,6 @@ add_cflags(
     "-Wjump-misses-init",
     "-Wnull-dereference",
     "-Wshadow",
-    "-Wno-missing-field-initializers",
     "-fno-strict-aliasing",
 )
 

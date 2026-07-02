@@ -6434,6 +6434,8 @@ static int opt_codec(void *optctx av_unused, const char *opt, const char *arg) {
 static int opt_version(void *optctx, const char *opt, const char *arg);
 static int dummy;
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 static const OptionDef options[] = {
     CMDUTILS_COMMON_OPTIONS /* Just a comment to make clang-format ignore this line. */
     {"v", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_version}, "show version"},
@@ -6507,6 +6509,7 @@ static const OptionDef options[] = {
         NULL,
     },
 };
+#pragma GCC diagnostic pop
 
 /* clang-format off */
 #define PRINT_LIB_VERSION(libname, LIBNAME)                                       \
