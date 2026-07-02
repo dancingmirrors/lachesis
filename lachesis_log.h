@@ -26,26 +26,26 @@
 #include <libavutil/attributes.h>
 
 /* I disagree with av_log's loglevels so here we are. */
-static av_unused void log_vline(const char *tag, const char *fmt, va_list ap) {
+static av_unused av_printf_format(2, 0) void log_vline(const char *tag, const char *fmt, va_list ap) {
     fputs(tag, stderr);
     vfprintf(stderr, fmt, ap);
 }
 
-static av_unused void log_info(const char *fmt, ...) {
+static av_unused av_printf_format(1, 2) void log_info(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     log_vline("INFO: ", fmt, ap);
     va_end(ap);
 }
 
-static av_unused void log_warn(const char *fmt, ...) {
+static av_unused av_printf_format(1, 2) void log_warn(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     log_vline("WARN: ", fmt, ap);
     va_end(ap);
 }
 
-static av_unused void log_dead(const char *fmt, ...) {
+static av_unused av_printf_format(1, 2) void log_dead(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     log_vline("DEAD: ", fmt, ap);
@@ -53,7 +53,7 @@ static av_unused void log_dead(const char *fmt, ...) {
 }
 
 /* Like log_dead(), but never returns. */
-static av_unused void fatal_quit(const char *fmt, ...) {
+static av_unused av_printf_format(1, 2) void fatal_quit(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     log_vline("DEAD: ", fmt, ap);

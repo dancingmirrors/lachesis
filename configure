@@ -27,7 +27,11 @@ check(
 add_cflags(
     "-D_FILE_OFFSET_BITS=64",
     "-Wall",
+    "-Werror=format-security",
     "-Wextra",
+    "-Wjump-misses-init",
+    "-Wnull-dereference",
+    "-Wshadow",
     "-Wno-missing-field-initializers",
     "-fno-strict-aliasing",
 )
@@ -42,7 +46,7 @@ check(
     "-optimize",
     desc="optimization",
     fn=lambda: chain(
-        add_cflags("-O3", "-fno-trapping-math", "-fno-signed-zeros"), True
+        add_cflags("-O3", "-fno-signed-zeros", "-fno-trapping-math"), True
     ),
 )
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))

@@ -392,7 +392,7 @@ static int av_sync_type = AV_SYNC_AUDIO_MASTER;
 static int av_sync_type_explicit = 0;
 static int skip_to_keyframe = 0;
 static int64_t start_time = AV_NOPTS_VALUE;
-static int64_t duration = AV_NOPTS_VALUE;
+static int64_t play_duration = AV_NOPTS_VALUE;
 static int fast = 0;
 static int genpts = 0;
 static int decoder_reorder_pts = -1;
@@ -415,7 +415,7 @@ static int64_t cursor_last_shown;
 static int cursor_hidden = 0;
 static const char **vfilters_list = NULL;
 static int nb_vfilters = 0;
-static char *afilters = NULL;
+static char *afilters_opt = NULL;
 static int autorotate = 1;
 static int find_stream_info = 1;
 static int filter_nbthreads = 0;
@@ -1534,7 +1534,7 @@ static int screenshot_window(VideoState *is, const char *path) {
     return ret;
 }
 
-static void osd_show_message(const char *fmt, ...) {
+static av_printf_format(1, 2) void osd_show_message(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(osd_message, sizeof(osd_message), fmt, ap);
@@ -2557,8 +2557,6 @@ static void osd_draw_to(SDL_Renderer *r, VideoState *is) {
         int bar_x = (is->width - bar_w) / 2;
         int bar_y = is->height * 3 / 4;
 
-        SDL_Color bar_bg = {80, 80, 80, 200};
-        SDL_Color bar_fg = {210, 210, 210, 255};
         SDL_Color muted_fg = {210, 210, 210, 255};
 
         SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
@@ -3659,7 +3657,7 @@ static int audio_thread(void *arg) {
                 last_speed_serial = audio_speed_serial;
                 atempo_base_pts = NAN;
 
-                if ((ret = configure_audio_filters(is, afilters, 1)) < 0) {
+                if ((ret = configure_audio_filters(is, afilters_opt, 1)) < 0) {
                     goto the_end;
                 }
             }
@@ -4337,7 +4335,7 @@ static int stream_component_open(VideoState *is, int stream_index) {
             goto fail;
         }
         is->audio_filter_src.fmt = avctx->sample_fmt;
-        if ((ret = configure_audio_filters(is, afilters, 0)) < 0) {
+        if ((ret = configure_audio_filters(is, afilters_opt, 0)) < 0) {
             goto fail;
         }
         sink = is->out_audio_filter;
@@ -4960,6 +4958,11 @@ static int open_external_subtitle(VideoState *is) {
     sic->interrupt_callback.callback = sub_interrupt_cb;
     sic->interrupt_callback.opaque = is;
 
+    int idx;
+    AVStream *st;
+    const AVCodec *codec;
+    AVCodecContext *avctx;
+
     int ret = avformat_open_input(&sic, path, NULL, NULL);
     if (ret < 0) {
         log_warn("Could not open external subtitle '%s'!\n", path);
@@ -4969,14 +4972,14 @@ static int open_external_subtitle(VideoState *is) {
         goto fail;
     }
 
-    int idx = av_find_best_stream(sic, AVMEDIA_TYPE_SUBTITLE, -1, -1, NULL, 0);
+    idx = av_find_best_stream(sic, AVMEDIA_TYPE_SUBTITLE, -1, -1, NULL, 0);
     if (idx < 0) {
         ret = idx;
         goto fail;
     }
 
-    AVStream *st = sic->streams[idx];
-    const AVCodec *codec = avcodec_find_decoder(st->codecpar->codec_id);
+    st = sic->streams[idx];
+    codec = avcodec_find_decoder(st->codecpar->codec_id);
     if (subtitle_codec_name) {
         codec = avcodec_find_decoder_by_name(subtitle_codec_name);
     }
@@ -4985,7 +4988,7 @@ static int open_external_subtitle(VideoState *is) {
         goto fail;
     }
 
-    AVCodecContext *avctx = avcodec_alloc_context3(NULL);
+    avctx = avcodec_alloc_context3(NULL);
     if (!avctx) {
         ret = AVERROR(ENOMEM);
         goto fail;
@@ -5493,11 +5496,11 @@ static int read_thread(void *arg) {
 
         stream_start_time = ic->streams[pkt->stream_index]->start_time;
         pkt_ts = pkt->pts == AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
-        pkt_in_play_range = duration == AV_NOPTS_VALUE ||
+        pkt_in_play_range = play_duration == AV_NOPTS_VALUE ||
             (pkt_ts - (stream_start_time != AV_NOPTS_VALUE ? stream_start_time : 0)) *
                         av_q2d(ic->streams[pkt->stream_index]->time_base) -
                     (double)(start_time != AV_NOPTS_VALUE ? start_time : 0) / 1000000 <=
-                ((double)duration / 1000000);
+                ((double)play_duration / 1000000);
         if (pkt->stream_index == is->audio_stream && pkt_in_play_range && !is->audio_ic) {
             packet_queue_put(&is->audioq, pkt);
             /* clang-format off */
@@ -5543,6 +5546,7 @@ static VideoState *stream_open(const char *filename,
                                const char *archive_path,
                                const char *entry_name) {
     VideoState *is;
+    int vol;
 
     is = av_mallocz(sizeof(VideoState));
     if (!is) {
@@ -5605,7 +5609,7 @@ static VideoState *stream_open(const char *filename,
             }
         }
     }
-    int vol = av_clip(startup_volume, 0, 100);
+    vol = av_clip(startup_volume, 0, 100);
     vol = av_clip(FFP_MIX_MAXVOLUME * vol / 100, 0, FFP_MIX_MAXVOLUME);
     is->audio_volume = vol;
     is->muted = global_muted;
@@ -6446,7 +6450,7 @@ static const OptionDef options[] = {
     {"vst", OPT_TYPE_STRING, OPT_EXPERT, {&wanted_stream_spec[AVMEDIA_TYPE_VIDEO]}, "select the desired video stream", "stream_specifier"},
     {"sst", OPT_TYPE_STRING, OPT_EXPERT, {&wanted_stream_spec[AVMEDIA_TYPE_SUBTITLE]}, "select the desired subtitle stream", "stream_specifier"},
     {"ss", OPT_TYPE_TIME, 0, {&start_time}, "seek to a given position in seconds", "pos"},
-    {"t", OPT_TYPE_TIME, 0, {&duration}, "play this duration of the input in seconds", "duration"},
+    {"t", OPT_TYPE_TIME, 0, {&play_duration}, "play this duration of the input in seconds", "duration"},
     {"bytes", OPT_TYPE_INT, 0, {&seek_by_bytes}, "seek by bytes (0 = off, 1 = on, -1 = auto)", "val"},
     {"seek_interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
@@ -6475,7 +6479,7 @@ static const OptionDef options[] = {
     {"left", OPT_TYPE_INT, OPT_EXPERT, {&screen_left}, "set the x position for the left of the window", "x pos"},
     {"top", OPT_TYPE_INT, OPT_EXPERT, {&screen_top}, "set the y position for the top of the window", "y pos"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT, {.func_arg = opt_add_vfilter}, "set video filters", "filter_graph"},
-    {"af", OPT_TYPE_STRING, 0, {&afilters}, "set audio filters", "filter_graph"},
+    {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
     {"rdftspeed", OPT_TYPE_INT, OPT_AUDIO | OPT_EXPERT, {&rdftspeed}, "RDFT speed", "msecs"},
     {"showmode", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_show_mode}, "select show mode (0 = video, 1 = waves, 2 = RDFT)", "mode"},
     {"i", OPT_TYPE_BOOL, 0, {&dummy}, "play the specified input", "input_file"},
@@ -6628,17 +6632,17 @@ int main(int argc, char **argv) {
     }
 
     if (!display_disable) {
-        int flags = SDL_WINDOW_HIDDEN;
+        int win_flags = SDL_WINDOW_HIDDEN;
         if (is_fullscreen) {
-            flags |= SDL_WINDOW_FULLSCREEN;
+            win_flags |= SDL_WINDOW_FULLSCREEN;
         }
         if (alwaysontop) {
-            flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+            win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
         }
         if (borderless) {
-            flags |= SDL_WINDOW_BORDERLESS;
+            win_flags |= SDL_WINDOW_BORDERLESS;
         } else {
-            flags |= SDL_WINDOW_RESIZABLE;
+            win_flags |= SDL_WINDOW_RESIZABLE;
         }
 
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
@@ -6655,13 +6659,13 @@ int main(int argc, char **argv) {
         if (enable_vulkan) {
             vk_renderer = vk_get_renderer();
             if (vk_renderer) {
-                flags |= SDL_WINDOW_VULKAN;
+                win_flags |= SDL_WINDOW_VULKAN;
             } else {
                 log_warn("Your SDL version doesn't support Vulkan.\n");
                 enable_vulkan = 0;
             }
         }
-        window = SDL_CreateWindow(program_name, default_width, default_height, flags);
+        window = SDL_CreateWindow(program_name, default_width, default_height, win_flags);
         if (!window) {
             fatal_quit("Failed to create window: %s!\n", SDL_GetError());
         }
@@ -6670,7 +6674,7 @@ int main(int argc, char **argv) {
             AVDictionary *dict = NULL;
 
             if (vulkan_params) {
-                int ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
+                ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
                 if (ret < 0) {
                     fatal_quit("Failed to parse %s.\n", vulkan_params);
                 }

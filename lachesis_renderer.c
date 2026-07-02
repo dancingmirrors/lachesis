@@ -672,14 +672,14 @@ static int create_vk_by_placebo(VkRenderer *renderer,
 
     ctx->decode_caps = 0;
     for (int i = 0; i < ctx->placebo_vulkan->num_extensions; i++) {
-        const char *ext = ctx->placebo_vulkan->extensions[i];
-        if (!strcmp(ext, "VK_KHR_video_decode_h264")) {
+        const char *ext_name = ctx->placebo_vulkan->extensions[i];
+        if (!strcmp(ext_name, "VK_KHR_video_decode_h264")) {
             ctx->decode_caps |= VK_DECODE_CAP_H264;
-        } else if (!strcmp(ext, "VK_KHR_video_decode_h265")) {
+        } else if (!strcmp(ext_name, "VK_KHR_video_decode_h265")) {
             ctx->decode_caps |= VK_DECODE_CAP_HEVC;
-        } else if (!strcmp(ext, "VK_KHR_video_decode_av1")) {
+        } else if (!strcmp(ext_name, "VK_KHR_video_decode_av1")) {
             ctx->decode_caps |= VK_DECODE_CAP_AV1;
-        } else if (!strcmp(ext, "VK_KHR_video_decode_vp9")) {
+        } else if (!strcmp(ext_name, "VK_KHR_video_decode_vp9")) {
             ctx->decode_caps |= VK_DECODE_CAP_VP9;
         }
     }
@@ -976,6 +976,7 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     unsigned num_ext = 0;
     const char **ext = NULL;
     int w, h;
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     struct pl_log_params vk_log_params = {
         .log_level = enable_debug(opt) ? PL_LOG_DEBUG : PL_LOG_WARN,
         .log_priv = renderer,
@@ -1023,7 +1024,6 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
         goto out;
     }
 
-    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     entry = av_dict_get(opt, "present_mode", NULL, 0);
     if (entry && entry->value && *entry->value) {
         present_mode = select_present_mode(ctx, entry->value);
@@ -1362,6 +1362,7 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     };
     int ret = 0;
     struct pl_color_space hint = {0};
+    int64_t _ts1, _ts2, _ts3;
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
@@ -1382,7 +1383,7 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         ret = AVERROR_EXTERNAL;
         goto out;
     }
-    int64_t _ts1 = av_gettime_relative();
+    _ts1 = av_gettime_relative();
     t_acq += _ts1 - _ts0;
 
     pl_frame_from_swapchain(&target, &swap_frame);
@@ -1392,12 +1393,12 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
 
     setup_render(ctx, &pl_frame, &target, &pl_params, params, &osd_overlay, &osd_part);
 
-    int64_t _ts2 = av_gettime_relative();
+    _ts2 = av_gettime_relative();
     if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
         ret = AVERROR_EXTERNAL;
         goto out;
     }
-    int64_t _ts3 = av_gettime_relative();
+    _ts3 = av_gettime_relative();
     t_rnd += _ts3 - _ts2;
 
     if (!pl_swapchain_submit_frame(ctx->swapchain)) {
@@ -1436,6 +1437,8 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
         .skip_anti_aliasing = params->skip_anti_aliasing,
     };
     pl_tex cap_tex = NULL;
+    struct pl_tex_params cap_params;
+    struct pl_tex_transfer_params xfer;
     int ret = 0;
 
     ret = convert_frame(renderer, frame);
@@ -1452,7 +1455,7 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
         ret = AVERROR_EXTERNAL;
         goto out;
     }
-    struct pl_tex_params cap_params = {
+    cap_params = (struct pl_tex_params){
         .w = width,
         .h = height,
         .format = fmt,
@@ -1487,7 +1490,7 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
         goto out;
     }
 
-    struct pl_tex_transfer_params xfer = {
+    xfer = (struct pl_tex_transfer_params){
         .tex = cap_tex,
         .ptr = out,
         .row_pitch = out_stride,

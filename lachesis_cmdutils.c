@@ -65,8 +65,8 @@ int parse_number(const char *context, const char *numstr, enum OptionType type,
         *dst = d;
         return 0;
     }
-
     av_log(NULL, AV_LOG_FATAL, error, context, numstr, min, max);
+
     return AVERROR(EINVAL);
 }
 
