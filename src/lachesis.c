@@ -836,7 +836,6 @@ static void video_image_display(VideoState *is) {
         }
         is->render_params.disable_linear_scaling = is->render_low_quality;
         is->render_params.skip_anti_aliasing = is->render_low_quality;
-        is->render_params.preserve_mixing_cache = is->render_low_quality;
         is->render_params.deinterlace = deinterlace;
         is->render_params.rotate = video_rotate;
         vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
@@ -1479,7 +1478,9 @@ static void video_refresh(void *opaque, double *remaining_time) {
     if (is->video_st) {
     retry:
         if (frame_queue_nb_remaining(&is->pictq) == 0) {
-            /* Nothing to do. */
+            if (is->videoq.nb_packets > 0) {
+                *remaining_time = FFMIN(*remaining_time, 0.002);
+            }
         } else {
             double last_duration, duration, delay;
             Frame *vp, *lastvp;

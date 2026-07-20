@@ -279,6 +279,9 @@ typedef struct RendererContext {
     double stat_present_ms;
     int stat_valid;
 
+    struct pl_color_space last_hint;
+    bool have_hint;
+
     pl_tex osd_tex;
 
 #if LACHESIS_HAVE_PL_CACHE
@@ -1471,7 +1474,6 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         .color_map_params = pl_render_default_params.color_map_params,
         .disable_linear_scaling = ctx->benchmark || params->disable_linear_scaling,
         .skip_anti_aliasing = ctx->benchmark || params->skip_anti_aliasing,
-        .preserve_mixing_cache = ctx->benchmark || params->preserve_mixing_cache,
     };
     int ret = 0;
     bool frame_started = false;
@@ -1488,7 +1490,11 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     }
 
     pl_color_space_from_avframe(&hint, frame);
-    pl_swapchain_colorspace_hint(ctx->swapchain, &hint);
+    if (!ctx->have_hint || !pl_color_space_equal(&hint, &ctx->last_hint)) {
+        pl_swapchain_colorspace_hint(ctx->swapchain, &hint);
+        ctx->last_hint = hint;
+        ctx->have_hint = true;
+    }
 
     static int64_t t_acq, t_rnd, t_prs, t_n;
     int64_t _ts0 = av_gettime_relative();

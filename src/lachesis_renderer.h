@@ -53,7 +53,6 @@ typedef struct RenderParams {
     int osd_stride;
     int disable_linear_scaling;
     int skip_anti_aliasing;
-    int preserve_mixing_cache;
     int deinterlace;
     int rotate;
 } RenderParams;
