@@ -43,9 +43,10 @@
 #include "lachesis_renderer.h"
 
 #define FFP_MIX_MAXVOLUME 128
-/* No A/V sync correction is done if below the minimum AV sync threshold. */
+#define VOLUME_BOOST_MAX_PCT 260
+/* No A/V sync correction is done if below this threshold. */
 #define AV_NOSYNC_THRESHOLD 10.0
-/* Number of audio samples over which the audio diff average is computed. */
+/* Number of audio samples over which the audio difference average is computed. */
 #define AUDIO_DIFF_AVG_NB 20
 
 typedef struct MyAVPacketList {
@@ -188,6 +189,7 @@ typedef struct VideoState {
     int audio_buf_index;
     int audio_write_buf_size;
     int audio_volume;
+    int audio_volume_max;
     int muted;
     struct AudioParams audio_src;
     struct AudioParams audio_filter_src;

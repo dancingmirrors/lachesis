@@ -467,6 +467,16 @@ static void SDLCALL sdl_audio_stream_callback(void *opaque, SDL_AudioStream *str
     SDL_PutAudioStreamData(stream, audio_cb_buf, additional_amount);
 }
 
+/* SDL_MixAudio() multiplies without saturating. */
+static void audio_amplify_s16(uint8_t *dst, const uint8_t *src, int len, float gain) {
+    int16_t *d = (int16_t *)dst;
+    const int16_t *s = (const int16_t *)src;
+    int n = len / (int)sizeof(int16_t);
+    for (int i = 0; i < n; i++) {
+        d[i] = (int16_t)av_clip_int16((int)lrintf(s[i] * gain));
+    }
+}
+
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     VideoState *is = opaque;
     int audio_size, len1;
@@ -491,6 +501,10 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         }
         if (!is->muted && is->audio_buf && is->audio_volume == FFP_MIX_MAXVOLUME) {
             memcpy(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1);
+        } else if (!is->muted && is->audio_buf && is->audio_volume > FFP_MIX_MAXVOLUME) {
+            audio_amplify_s16(stream,
+                              (uint8_t *)is->audio_buf + is->audio_buf_index,
+                              len1, is->audio_volume / (float)FFP_MIX_MAXVOLUME);
         } else {
             memset(stream, 0, len1);
             if (!is->muted && is->audio_buf) {
@@ -613,9 +627,21 @@ void toggle_mute(VideoState *is) {
 }
 
 void update_volume(VideoState *is, int sign, double step) {
-    double volume_level = is->audio_volume ? (20 * log(is->audio_volume / (double)FFP_MIX_MAXVOLUME) / log(10)) : -1000.0;
-    int new_volume = lrint(FFP_MIX_MAXVOLUME * pow(10.0, (volume_level + sign * step) / 20.0));
-    is->audio_volume = av_clip(is->audio_volume == new_volume ? (is->audio_volume + sign) : new_volume, 0, FFP_MIX_MAXVOLUME);
+    int vol_max = is->audio_volume_max > 0 ? is->audio_volume_max : FFP_MIX_MAXVOLUME;
+    int max_pct = (int)lrint(100.0 * vol_max / FFP_MIX_MAXVOLUME);
+    double cur_pct = lrint(100.0 * is->audio_volume / FFP_MIX_MAXVOLUME);
+    if (cur_pct > max_pct) {
+        cur_pct = max_pct;
+    }
+    double target_pct = sign > 0 ? (floor(cur_pct / step + 1e-6) + 1) * step
+                                 : (ceil(cur_pct / step - 1e-6) - 1) * step;
+    if (target_pct < 0) {
+        target_pct = 0;
+    }
+    if (target_pct > max_pct) {
+        target_pct = max_pct;
+    }
+    is->audio_volume = av_clip((int)lrint(FFP_MIX_MAXVOLUME * target_pct / 100.0), 0, vol_max);
     osd_show_volume();
     is->force_refresh = 1;
 }

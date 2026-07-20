@@ -119,6 +119,8 @@ const char *ytdl_path = NULL;
 const char *ytdl_format = NULL;
 int allow_delete = 0;
 int terminal_quit_disable = 0;
+/* XXX: Is 260% loud enough to void your warranty? */
+int allow_volume_boost = 1;
 
 static int opt_add_vfilter(void *optctx av_unused, const char *opt av_unused,
                            const char *arg) {
@@ -257,7 +259,7 @@ const OptionDef options[] = {
     {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)", ""},
     {"noborder", OPT_TYPE_BOOL, 0, {&borderless}, "enable borderless window mode"},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to keep the window always on top"},
-    {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume (0 = min, 100 = max)", "volume"},
+    {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 260)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
     {"fast", OPT_TYPE_BOOL, 0, {&fast}, "enable non-compliant optimizations", ""},

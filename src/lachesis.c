@@ -2039,8 +2039,12 @@ static VideoState *stream_open(const char *filename,
             }
         }
     }
-    vol = av_clip(startup_volume, 0, 100);
-    vol = av_clip(FFP_MIX_MAXVOLUME * vol / 100, 0, FFP_MIX_MAXVOLUME);
+    int vol_max_pct = allow_volume_boost ? VOLUME_BOOST_MAX_PCT : 100;
+    is->audio_volume_max = allow_volume_boost
+        ? (FFP_MIX_MAXVOLUME * VOLUME_BOOST_MAX_PCT + 50) / 100
+        : FFP_MIX_MAXVOLUME;
+    vol = av_clip(startup_volume, 0, vol_max_pct);
+    vol = av_clip((FFP_MIX_MAXVOLUME * vol + 50) / 100, 0, is->audio_volume_max);
     is->audio_volume = vol;
     is->muted = global_muted;
     is->av_sync_type = av_sync_type;

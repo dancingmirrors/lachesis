@@ -102,5 +102,6 @@ extern const char *ytdl_path;
 extern const char *ytdl_format;
 extern int allow_delete;
 extern int terminal_quit_disable;
+extern int allow_volume_boost;
 
 #endif /* LACHESIS_OPTIONS_H */

@@ -43,7 +43,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_screenshot.h"
 
-#define SDL_VOLUME_STEP (0.75)
+#define SDL_VOLUME_STEP (10.0)
 
 static int sbs360_drag = 0;
 static int sbs360_drag_last_x = 0;

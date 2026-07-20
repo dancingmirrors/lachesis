@@ -1279,6 +1279,7 @@ static void osd_draw_volume(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     int vol_pct = (int)(100.0 * is->audio_volume / FFP_MIX_MAXVOLUME + 0.5);
     SDL_Color bar_bg = {80, 80, 80, 200};
     SDL_Color bar_fg = {210, 210, 210, 255};
+    SDL_Color bar_hot = {230, 150, 60, 255};
     SDL_Color fg = {255, 255, 255, 255};
     SDL_Color muted_fg = {210, 210, 210, 255};
 
@@ -1292,11 +1293,29 @@ static void osd_draw_volume(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     SDL_SetRenderDrawColor(r, bar_bg.r, bar_bg.g, bar_bg.b, bar_bg.a);
     SDL_FRect bg_rect = {bar_x - 4, bar_y - bar_h / 2 - 4, bar_w + 8, bar_h + 8};
     SDL_RenderFillRect(r, &bg_rect);
+
+    int vol_max = is->audio_volume_max > 0 ? is->audio_volume_max : FFP_MIX_MAXVOLUME;
+    int boosted = vol_max > FFP_MIX_MAXVOLUME;
+    int unity_px = boosted ? (int)((double)bar_w * FFP_MIX_MAXVOLUME / vol_max + 0.5) : bar_w;
     if (vol_pct > 0 && !is->muted) {
-        int filled = (int)(bar_w * vol_pct / 100.0 + 0.5);
+        int filled = (int)((double)bar_w * is->audio_volume / vol_max + 0.5);
+        if (filled > bar_w) {
+            filled = bar_w;
+        }
+        int base = filled < unity_px ? filled : unity_px;
         SDL_SetRenderDrawColor(r, bar_fg.r, bar_fg.g, bar_fg.b, bar_fg.a);
-        SDL_FRect fg_rect = {bar_x, bar_y - bar_h / 2, filled, bar_h};
+        SDL_FRect fg_rect = {bar_x, bar_y - bar_h / 2, base, bar_h};
         SDL_RenderFillRect(r, &fg_rect);
+        if (filled > unity_px) {
+            SDL_SetRenderDrawColor(r, bar_hot.r, bar_hot.g, bar_hot.b, bar_hot.a);
+            SDL_FRect hot_rect = {bar_x + unity_px, bar_y - bar_h / 2, filled - unity_px, bar_h};
+            SDL_RenderFillRect(r, &hot_rect);
+        }
+    }
+    if (boosted) {
+        SDL_SetRenderDrawColor(r, 255, 255, 255, 230);
+        SDL_FRect unity_rect = {bar_x + unity_px - 1, bar_y - bar_h / 2 - 2, 2, bar_h + 4};
+        SDL_RenderFillRect(r, &unity_rect);
     }
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
 
