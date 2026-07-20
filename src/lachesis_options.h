@@ -1,0 +1,106 @@
+/*
+ * Copyright © 2003 Fabrice Bellard
+ * Copyright © 2026 dancingmirrors@icloud.com
+ *
+ * This file is part of lachesis.
+ *
+ * lachesis is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * lachesis is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with lachesis; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#ifndef LACHESIS_OPTIONS_H
+#define LACHESIS_OPTIONS_H
+
+#include <stdint.h>
+
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+
+#include "lachesis_cmdutils.h"
+#include "lachesis_internal.h"
+
+extern const OptionDef options[];
+
+int opt_version(void *optctx, const char *opt, const char *arg);
+
+extern const AVInputFormat *file_iformat;
+extern const char *window_title;
+extern int cmd_width;
+extern int cmd_height;
+extern int screen_left;
+extern int screen_top;
+extern int audio_disable;
+extern int video_disable;
+extern int subtitle_disable;
+extern const char *wanted_stream_spec[AVMEDIA_TYPE_NB];
+extern int seek_by_bytes;
+extern float seek_interval;
+extern int display_disable;
+extern int benchmark;
+extern int borderless;
+extern int alwaysontop;
+extern int startup_volume;
+extern int av_sync_type;
+extern int av_sync_type_explicit;
+extern int skip_to_keyframe;
+extern int64_t start_time;
+extern int64_t play_duration;
+extern int fast;
+extern int genpts;
+extern int decoder_reorder_pts;
+extern int keep_open;
+extern int shuffle;
+extern int reverse_playlist;
+extern int start_paused;
+extern int exit_on_keydown;
+extern int exit_on_mousedown;
+extern int loop;
+extern int framedrop;
+extern int infinite_buffer;
+extern float opt_cache_secs;
+extern int opt_cache_size_mb;
+extern const char *audio_codec_name;
+extern const char *subtitle_codec_name;
+extern const char *video_codec_name;
+extern const char **vfilters_list;
+extern int nb_vfilters;
+extern char *afilters_opt;
+extern int autorotate;
+extern int video_rotate;
+extern int find_stream_info;
+extern int filter_nbthreads;
+extern int enable_vulkan;
+extern int disable_vulkan;
+extern char *vulkan_params;
+extern char *vulkan_swap_mode;
+extern int no_shader_cache;
+extern char *shader_cache_dir;
+extern const char *icc_profile;
+extern char *video_background;
+extern const char *hwaccel;
+extern int no_hwaccel;
+extern int video_unscaled;
+extern int enable_360sbs;
+extern int enable_360tb;
+extern int is_fullscreen;
+extern int start_windowed;
+extern float autofit_larger;
+extern int global_muted;
+extern int ytdl_disable;
+extern const char *ytdl_path;
+extern const char *ytdl_format;
+extern int allow_delete;
+extern int terminal_quit_disable;
+
+#endif /* LACHESIS_OPTIONS_H */

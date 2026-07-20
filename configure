@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from configure_common import *  # noqa: E402,F401,F403
+
+begin()
+
+check(
+    desc="whether the compiler works",
+    fn=lambda: check_program("CC") and check_cc(link=[]),
+    required="C compiler: missing or broken",
+)
+check(
+    desc="pkg-config",
+    fn=lambda: check_program("PKG_CONFIG"),
+    required="pkg-config: missing or not in PATH",
+)
+
+check(
+    desc="C11 compiler",
+    fn=lambda: check_cc(flags="-std=c11"),
+    required=True,
+)
+
+add_cflags(
+    "-D_FILE_OFFSET_BITS=64",
+    "-Wall",
+    "-Werror=format-security",
+    "-Wextra",
+    "-Wnull-dereference",
+    "-Wshadow",
+    "-fno-math-errno",
+    "-fno-strict-aliasing",
+)
+
+import platform as _platform  # noqa: E402
+
+_system = _platform.system()
+if _system == "Linux":
+    add_cflags("-D_GNU_SOURCE")
+
+check(
+    "-optimize",
+    desc="optimization",
+    fn=lambda: chain(
+        add_cflags("-O3", "-fno-signed-zeros", "-fno-trapping-math"), True
+    ),
+)
+check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
+
+check(
+    "Windows",
+    fn=lambda: check_cc(
+        defined="_WIN32",
+        flags=[
+            "-D_WIN32_WINNT=0x0602",
+            "-DUNICODE",
+            "-DCOBJMACROS",
+            "-U__STRICT_ANSI__",
+            "-D__USE_MINGW_ANSI_STDIO=1",
+        ],
+        include="windows.h",
+        link=["-mwindows", "-lshell32"],
+    )
+    and check_program("WINDRES")
+    and chain(set_exe_format("pe"), True),
+)
+check(
+    "macOS",
+    fn=lambda: check_cc(defined="__APPLE__") and chain(set_exe_format("macho"), True),
+)
+check("POSIX*", fn=lambda: check_cc(include="unistd.h", defined="_POSIX_VERSION"))
+check(
+    desc="development environment",
+    deps_any=["POSIX", "Windows"],
+    required="Unable to find a suitable environment",
+)
+
+check(
+    "-increase-stack-size*",
+    desc="whether we can increase stack size via PT_GNU_STACK",
+    fn=lambda: check_ldflags("-Wl,-z,stack-size=524288", fatal_warnings=True),
+)
+
+check("libm", fn=lambda: check_cc(link="-lm"))
+check(
+    "pthreads",
+    deps_neg="Windows",
+    fn=lambda: check_cc(
+        link="-pthread", flags="-pthread", include="pthread.h", expr="pthread_self();"
+    ),
+)
+# Debian Trixie
+check(
+    desc="FFmpeg",
+    fn=lambda: check_pkg_config(
+        "libavutil      >= 59.39.100",
+        "libavcodec     >= 61.19.101",
+        "libavformat    >= 61.7.103",
+        "libswscale     >= 8.3.100",
+        "libavfilter    >= 10.5.100",
+        "libswresample  >= 5.3.100",
+    ),
+    required=True,
+)
+check(
+    "-libavdevice*",
+    desc="libavdevice",
+    fn=lambda: check_pkg_config("libavdevice >= 61.3.100"),
+)
+
+check("-rtsp-demuxer*", desc="RTSP demuxer in libavformat (assumed)", default=True)
+check("-mmsh-protocol*", desc="MMSH protocol in libavformat (assumed)", default=True)
+
+check(
+    desc="SDL3",
+    fn=lambda: check_pkg_config("sdl3 >= 3.0.0"),
+    required=True,
+)
+check(
+    desc="SDL3_ttf",
+    fn=lambda: check_pkg_config("sdl3-ttf >= 3.0.0")
+    or check_pkg_config("SDL3_ttf >= 3.0.0"),
+    required=True,
+)
+check(
+    "-libarchive*",
+    desc="libarchive",
+    fn=lambda: check_pkg_config("libarchive >= 3.0.0"),
+    required=True,
+)
+
+check(
+    desc="vulkan",
+    fn=lambda: check_pkg_config("vulkan") and check_cc(include="vulkan/vulkan.h"),
+)
+
+check(
+    "-libplacebo*",
+    desc="libplacebo",
+    fn=lambda: check_pkg_config("libplacebo >= 7.349.0"),
+    required=True,
+)
+
+add_sources(
+    "src/lachesis.c",
+    "src/lachesis_archive.c",
+    "src/lachesis_audio.c",
+    "src/lachesis_cmdutils.c",
+    "src/lachesis_delete.c",
+    "src/lachesis_demux.c",
+    "src/lachesis_filters.c",
+    "src/lachesis_information.c",
+    "src/lachesis_keys.c",
+    "src/lachesis_network.c",
+    "src/lachesis_options.c",
+    "src/lachesis_osd.c",
+    "src/lachesis_rc.c",
+    "src/lachesis_renderer.c",
+    "src/lachesis_screenshot.c",
+    "src/lachesis_subtitles.c",
+    "src/lachesis_terminal.c",
+)
+
+finish()

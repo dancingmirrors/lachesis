@@ -1,0 +1,145 @@
+name: lachesis Linux
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Setup ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Install and configure ccache
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          ccache --version
+          ccache --set-config=cache_dir=$HOME/.ccache
+          ccache --set-config=max_size=999M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          mkdir -p $HOME/.ccache
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+
+      - name: Build and install dependencies
+        run: |
+          sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+          sudo apt-get update
+          sudo apt-get install -y build-essential ccache clang cmake gcc git libarchive-dev libshaderc-dev meson nasm ninja-build yasm
+          sudo apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+                                  libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
+                                  libwayland-dev libdecor-0-dev libasound2-dev libpulse-dev \
+                                  libdbus-1-dev libudev-dev libgbm-dev libegl1-mesa-dev \
+                                  libgl1-mesa-dev libgles2-mesa-dev libxtst-dev
+          sudo apt-get build-dep -y ffmpeg mpv shaderc
+
+          set -x
+
+          git clone --depth 1 https://github.com/libsdl-org/SDL.git
+          cd SDL
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+          make -j$(nproc)
+          sudo make install
+
+          git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
+          cd SDL_ttf
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+          make -j$(nproc)
+          sudo make install
+
+          git clone --depth 1 --recursive https://github.com/google/shaderc.git
+          cd shaderc
+          ./utils/git-sync-deps
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DSHADERC_SKIP_TESTS=ON
+          make -j$(nproc)
+          sudo make install
+
+          git clone --depth 1 --recursive https://github.com/KhronosGroup/Vulkan-Headers.git
+          cd Vulkan-Headers
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+          make -j$(nproc)
+          sudo make install
+
+          git clone --depth 1 --recursive https://github.com/KhronosGroup/Vulkan-Tools.git
+          cd Vulkan-Tools
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+          make -j$(nproc)
+          sudo make install
+
+          git clone --depth 1 --recursive https://github.com/KhronosGroup/Vulkan-Loader.git
+          cd Vulkan-Loader
+          mkdir build
+          cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
+          make -j$(nproc)
+          sudo make install
+
+          git clone --depth 1 --recursive https://github.com/haasn/libplacebo.git
+          cd libplacebo
+          meson setup --prefix=/usr/local -Dlibdir=lib build
+          ninja -v -C build
+          sudo ninja -C build install
+
+          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git
+          cd FFmpeg
+          ./configure --prefix=/usr/local \
+                      --enable-libplacebo \
+                      --enable-vulkan \
+                      --disable-doc \
+                      --disable-programs
+          make -j$(nproc)
+          sudo make install
+
+      - name: Build, install, run
+        run: |
+          set -x
+
+          sudo apt-get install -y --reinstall meson ninja-build
+
+          CFLAGS="-Werror" ./configure
+           
+          ninja -v -C build
+          sudo ninja -C build install
+
+          # ?
+          sudo ldconfig
+          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h
+
+          rm -rf build
+                      
+          CFLAGS="-Werror" ./configure
+
+          ninja -v -C build
+          sudo ninja -C build install
+
+          # ?
+          sudo ldconfig
+          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h
+
+          sudo apt-get purge -y git
+          rm -fr build
+          CFLAGS="-Werror" ./configure
+          ninja -C build
+          ./build/lachesis --version

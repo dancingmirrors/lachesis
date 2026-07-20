@@ -1,0 +1,37 @@
+name: lachesis FreeBSD
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Build, run
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            set -x
+            pkg install -y ccache cmake evdev-proto ffmpeg git libarchive \
+            libevdev libinput libplacebo libxkbcommon mpv ninja pkgconf python3 \
+            sdl3 sdl3_ttf vulkan-headers wayland wayland-protocols
+
+          run: |
+            set -x
+
+            git config --global --add safe.directory "$PWD"
+            export PKG_CONFIG_PATH=/usr/local/libdata/pkgconfig:/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
+
+            CFLAGS="-Werror" ./configure
+            ninja -v -C build
+            ./build/lachesis -h
