@@ -347,6 +347,7 @@ extern enum Vk360Layout view360_layout;
 extern float sbs360_yaw;
 extern float sbs360_pitch;
 extern float sbs360_hfov;
+void sbs360_reset_view(void);
 extern int deinterlace;
 extern double playback_speed;
 extern int screen_width;

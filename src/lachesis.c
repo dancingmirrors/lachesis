@@ -149,8 +149,14 @@ int deinterlace = 0;
 int fatal_error_pending = 0;
 enum Vk360Layout view360_layout = VK_360_LAYOUT_FULL;
 float sbs360_yaw = 0.0f;
-float sbs360_pitch = 0.0f;
+float sbs360_pitch = VIEW360_DEFAULT_PITCH;
 float sbs360_hfov = VIEW360_DEFAULT_HFOV;
+
+void sbs360_reset_view(void) {
+    sbs360_yaw = view360_default_yaw(view360_layout);
+    sbs360_pitch = VIEW360_DEFAULT_PITCH;
+    sbs360_hfov = VIEW360_DEFAULT_HFOV;
+}
 
 SDL_Window *window;
 SDL_Renderer *renderer;
@@ -2526,7 +2532,7 @@ int main(int argc, char **argv) {
                 fatal_quit("Failed to create Vulkan renderer!\n");
             }
             if (enable_360sbs) {
-                sbs360_yaw = view360_default_yaw(view360_layout);
+                sbs360_reset_view();
                 ret = vk_renderer_enable_360(vk_renderer, view360_layout);
                 if (ret < 0) {
                     fatal_quit("Failed to enable 360 shader!\n");

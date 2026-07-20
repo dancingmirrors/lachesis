@@ -409,7 +409,7 @@ void event_loop(VideoState **pis) {
             case SDLK_MINUS:
             case SDLK_KP_MINUS:
                 if (enable_360sbs) {
-                    sbs360_hfov = FFMIN(sbs360_hfov + 10.0f, 170.0f);
+                    sbs360_hfov = FFMIN(sbs360_hfov + 10.0f, 180.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
@@ -427,8 +427,7 @@ void event_loop(VideoState **pis) {
                         osd_show_message("360: off");
                     }
                     if (enable_360sbs) {
-                        sbs360_yaw = view360_default_yaw(view360_layout);
-                        sbs360_hfov = VIEW360_DEFAULT_HFOV;
+                        sbs360_reset_view();
                     }
                     vk_renderer_enable_360(vk_renderer, enable_360sbs ? view360_layout : VK_360_LAYOUT_OFF);
                     cur_stream->force_refresh = 1;

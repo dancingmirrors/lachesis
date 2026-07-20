@@ -95,7 +95,8 @@ static inline float view360_default_yaw(enum Vk360Layout layout) {
     return layout == VK_360_LAYOUT_FULL ? 90.0f : 0.0f;
 }
 
-#define VIEW360_DEFAULT_HFOV 130.0f
+#define VIEW360_DEFAULT_HFOV 140.0f
+#define VIEW360_DEFAULT_PITCH -15.0f
 
 int vk_renderer_enable_360(VkRenderer *renderer, enum Vk360Layout layout);
 void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float hfov);
