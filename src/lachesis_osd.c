@@ -640,11 +640,7 @@ static void subtitle_strip_ass(const char *in, char *out, size_t outsz) {
 }
 
 static double osd_display_pos(VideoState *is) {
-    double pos = get_master_clock(is);
-    if (isnan(pos) && !(is->seek_flags & AVSEEK_FLAG_BYTE)) {
-        pos = (double)is->seek_pos / AV_TIME_BASE;
-    }
-    return pos;
+    return effective_playhead(is);
 }
 
 static Frame *active_text_subtitle(VideoState *is) {
@@ -1078,6 +1074,9 @@ static void osd_draw_status(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     double dur = (is->ic && is->ic->duration != AV_NOPTS_VALUE)
         ? (double)is->ic->duration / AV_TIME_BASE
         : 0.0;
+    if (dur > 0 && !isnan(pos) && pos > dur) {
+        pos = dur;
+    }
     char pos_str[16], dur_str[16], line[64];
     format_time(pos_str, sizeof(pos_str), isnan(pos) || pos < 0 ? 0.0 : pos);
     format_time(dur_str, sizeof(dur_str), dur);

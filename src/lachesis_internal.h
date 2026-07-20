@@ -303,6 +303,7 @@ extern double ab_loop_b;
 int ab_loop_defining(void);
 
 double get_master_clock(VideoState *is);
+double effective_playhead(VideoState *is);
 Frame *frame_queue_peek(FrameQueue *f);
 Frame *frame_queue_peek_last(FrameQueue *f);
 int frame_queue_nb_remaining(FrameQueue *f);

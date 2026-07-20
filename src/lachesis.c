@@ -107,6 +107,7 @@ const int program_birth_year = 2003;
 #define DECODE_RECOVER_FRAMES 120
 #define CATCHUP_BEHIND_SECS 1.0
 #define CATCHUP_COOLDOWN_US (18 * 1000000)
+#define SEEK_STALL_SLACK 1.0
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
 #define EXTERNAL_CLOCK_MAX_FRAMES 10
 
@@ -1290,6 +1291,22 @@ double get_master_clock(VideoState *is) {
     }
 
     return val;
+}
+
+/* Fall back to the external clock so we can advance when there's no more audio. */
+double effective_playhead(VideoState *is) {
+    double pos = get_master_clock(is);
+
+    if (is->seek_flags & AVSEEK_FLAG_BYTE) {
+        return pos;
+    }
+
+    double target = (double)is->seek_pos / AV_TIME_BASE;
+    if (isnan(pos) || pos < target - SEEK_STALL_SLACK) {
+        pos = target;
+    }
+
+    return pos;
 }
 
 static void check_external_clock_speed(VideoState *is) {

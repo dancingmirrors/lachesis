@@ -57,7 +57,7 @@ static int delete_prearm_paused = 0;
 static int delete_advance_deferred = 0;
 
 static void seek_chapter(VideoState *is, int incr) {
-    int64_t pos = get_master_clock(is) * AV_TIME_BASE;
+    int64_t pos = effective_playhead(is) * AV_TIME_BASE;
     int i;
 
     if (!is->ic->nb_chapters) {
@@ -340,10 +340,7 @@ void event_loop(VideoState **pis) {
                     pos += incr;
                     stream_seek(cur_stream, pos, incr, 1);
                 } else {
-                    pos = get_master_clock(cur_stream);
-                    if (isnan(pos)) {
-                        pos = (double)cur_stream->seek_pos / AV_TIME_BASE;
-                    }
+                    pos = effective_playhead(cur_stream);
                     pos += incr;
                     if (cur_stream->ic->start_time != AV_NOPTS_VALUE && pos < cur_stream->ic->start_time / (double)AV_TIME_BASE) {
                         pos = cur_stream->ic->start_time / (double)AV_TIME_BASE;
