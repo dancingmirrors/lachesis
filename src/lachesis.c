@@ -104,6 +104,7 @@ const char program_name[] = "lachesis";
 const int program_birth_year = 2003;
 
 #define DECODE_BEHIND_LATCH_FRAMES 20
+#define DECODE_RECOVER_FRAMES 120
 #define CATCHUP_BEHIND_SECS 1.0
 #define CATCHUP_COOLDOWN_US (18 * 1000000)
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
@@ -1640,6 +1641,20 @@ static void enable_degraded_decode(VideoState *is) {
     }
 }
 
+static void disable_degraded_decode(VideoState *is) {
+    if (!is->decode_degraded) {
+        return;
+    }
+    is->decode_degraded = 0;
+    is->render_low_quality = 0;
+    is->decode_behind_streak = 0;
+    is->decode_recover_streak = 0;
+    if (is->viddec.avctx) {
+        is->viddec.avctx->skip_loop_filter = AVDISCARD_DEFAULT;
+        is->viddec.avctx->skip_frame = AVDISCARD_DEFAULT;
+    }
+}
+
 static void hwframe_download_inplace(AVFrame *frame) {
     static int warned = 0;
     static int announced = 0;
@@ -1703,6 +1718,19 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
             }
             if (is->decode_behind_streak >= DECODE_BEHIND_LATCH_FRAMES) {
                 enable_degraded_decode(is);
+            } else if (is->decode_degraded) {
+                double m = get_master_clock(is);
+                double v = get_clock(&is->vidclk);
+                int have_headroom = interval_us > 0 && decode_us * 3 < interval_us;
+                int in_sync = isnan(m) || isnan(v) ||
+                    fabs(m - v) < AV_SYNC_THRESHOLD_MAX;
+                if (have_headroom && in_sync) {
+                    if (++is->decode_recover_streak >= DECODE_RECOVER_FRAMES) {
+                        disable_degraded_decode(is);
+                    }
+                } else {
+                    is->decode_recover_streak = 0;
+                }
             }
             if (is->decode_degraded && skip_to_keyframe && !av_sync_type_explicit &&
                 is->audio_st && is->av_sync_type == AV_SYNC_AUDIO_MASTER) {
