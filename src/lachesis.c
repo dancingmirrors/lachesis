@@ -2590,58 +2590,81 @@ int main(int argc, char **argv) {
         }
         if (enable_vulkan) {
             vk_renderer = vk_get_renderer();
-            if (vk_renderer) {
-                win_flags |= SDL_WINDOW_VULKAN;
-            } else {
+            if (!vk_renderer) {
                 log_warn("Your SDL version doesn't support Vulkan.\n");
                 enable_vulkan = 0;
             }
         }
-        window = SDL_CreateWindow(program_name, default_width, default_height, win_flags);
-        if (!window) {
-            fatal_quit("Failed to create window: %s!\n", SDL_GetError());
-        }
 
         if (vk_renderer) {
-            AVDictionary *dict = NULL;
+            window = SDL_CreateWindow(program_name, default_width,
+                                      default_height, win_flags | SDL_WINDOW_VULKAN);
+            if (window) {
+                AVDictionary *dict = NULL;
 
-            if (vulkan_params) {
-                ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
+                if (vulkan_params) {
+                    ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
+                    if (ret < 0) {
+                        fatal_quit("Failed to parse %s.\n", vulkan_params);
+                    }
+                }
+                if (vulkan_swap_mode) {
+                    av_dict_set(&dict, "present_mode", vulkan_swap_mode, 0);
+                } else if (benchmark) {
+                    av_dict_set(&dict, "present_mode", "immediate", 0);
+                }
+                if (benchmark) {
+                    av_dict_set(&dict, "present_mode", "immediate", 0);
+                    av_dict_set(&dict, "benchmark", "1", 0);
+                }
+                if (no_shader_cache) {
+                    av_dict_set(&dict, "cache", "0", 0);
+                }
+                if (shader_cache_dir && !no_shader_cache) {
+                    av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
+                }
+                if (icc_profile) {
+                    av_dict_set(&dict, "icc_profile", icc_profile, 0);
+                }
+                ret = vk_renderer_create(vk_renderer, window, dict);
+                av_dict_free(&dict);
                 if (ret < 0) {
-                    fatal_quit("Failed to parse %s.\n", vulkan_params);
+                    log_warn("Failed to create the Vulkan renderer.\n");
+                    vk_renderer_destroy(vk_renderer);
+                    av_free(vk_renderer);
+                    vk_renderer = NULL;
+                    SDL_DestroyWindow(window);
+                    window = NULL;
+                } else if (enable_360sbs) {
+                    sbs360_reset_view();
+                    ret = vk_renderer_enable_360(vk_renderer, view360_layout);
+                    if (ret < 0) {
+                        fatal_quit("Failed to enable the 360° shader!\n");
+                    }
+                }
+            } else {
+                log_warn("Failed to create a Vulkan window: %s!\n",
+                         SDL_GetError());
+                av_free(vk_renderer);
+                vk_renderer = NULL;
+            }
+
+            if (!vk_renderer) {
+                enable_vulkan = 0;
+                if (enable_360sbs) {
+                    fatal_quit("360° modes require Vulkan.\n");
                 }
             }
-            if (vulkan_swap_mode) {
-                av_dict_set(&dict, "present_mode", vulkan_swap_mode, 0);
-            } else if (benchmark) {
-                av_dict_set(&dict, "present_mode", "immediate", 0);
+        }
+
+        if (!vk_renderer) {
+            if (!window) {
+                window = SDL_CreateWindow(program_name, default_width,
+                                          default_height, win_flags);
             }
-            if (benchmark) {
-                av_dict_set(&dict, "present_mode", "immediate", 0);
-                av_dict_set(&dict, "benchmark", "1", 0);
+            if (!window) {
+                fatal_quit("Failed to create window: %s!\n", SDL_GetError());
             }
-            if (no_shader_cache) {
-                av_dict_set(&dict, "cache", "0", 0);
-            }
-            if (shader_cache_dir && !no_shader_cache) {
-                av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
-            }
-            if (icc_profile) {
-                av_dict_set(&dict, "icc_profile", icc_profile, 0);
-            }
-            ret = vk_renderer_create(vk_renderer, window, dict);
-            av_dict_free(&dict);
-            if (ret < 0) {
-                fatal_quit("Failed to create Vulkan renderer!\n");
-            }
-            if (enable_360sbs) {
-                sbs360_reset_view();
-                ret = vk_renderer_enable_360(vk_renderer, view360_layout);
-                if (ret < 0) {
-                    fatal_quit("Failed to enable 360 shader!\n");
-                }
-            }
-        } else {
             renderer = SDL_CreateRenderer(window, NULL);
             if (renderer) {
                 SDL_SetRenderVSync(renderer, benchmark ? 0 : 1);

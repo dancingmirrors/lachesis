@@ -109,7 +109,12 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
 }
 
 static int create_hwaccel(AVBufferRef **device_ctx) {
-    static const char *auto_hwaccels[] = {"vulkan", "vaapi", "videotoolbox", "d3d11va", NULL};
+    static const char *auto_hwaccels_vk[] = {
+        "vulkan", "vaapi", "videotoolbox", "d3d11va", "dxva2", NULL};
+    static const char *auto_hwaccels_sw[] = {
+        "vaapi", "videotoolbox", "d3d11va", "dxva2", NULL};
+    const char *const *auto_hwaccels = vk_renderer ? auto_hwaccels_vk
+                                                   : auto_hwaccels_sw;
     int ret;
 
     *device_ctx = NULL;
@@ -127,10 +132,6 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
             media_info_set_hwaccel(hwaccel);
         }
         return ret < 0 ? ret : 0;
-    }
-
-    if (!vk_renderer) {
-        return 0;
     }
 
     for (int i = 0; auto_hwaccels[i]; i++) {
@@ -217,9 +218,14 @@ int stream_component_open(VideoState *is, int stream_index) {
 
     avctx->codec_id = codec->id;
 
-    /* XXX */
-    if (!no_hwaccel && (vk_renderer || hwaccel) &&
-        avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+        ret = create_hwaccel(&avctx->hw_device_ctx);
+        if (ret < 0) {
+            goto fail;
+        }
+    }
+
+    if (avctx->hw_device_ctx && avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
 #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)
         av_dict_set(&opts, "threads", "1", 0);
 #else
@@ -228,13 +234,6 @@ int stream_component_open(VideoState *is, int stream_index) {
     }
 
     av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);
-
-    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        ret = create_hwaccel(&avctx->hw_device_ctx);
-        if (ret < 0) {
-            goto fail;
-        }
-    }
 
     if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
         goto fail;
