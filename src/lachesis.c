@@ -1072,6 +1072,7 @@ void do_exit(VideoState *is) {
     av_freep(&video_codec_name);
     av_freep(&audio_codec_name);
     av_freep(&subtitle_codec_name);
+    av_freep(&hwaccel);
     av_freep(&input_filename);
     for (int i = 0; i < playlist_size; i++) {
         av_free(playlist_entries[i].display_path);
@@ -2519,7 +2520,7 @@ int main(int argc, char **argv) {
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
         if (hwaccel && (!strcmp(hwaccel, "none") || !strcmp(hwaccel, "no") || !strcmp(hwaccel, "off") || !strcmp(hwaccel, "0"))) {
             no_hwaccel = 1;
-            hwaccel = NULL;
+            av_freep(&hwaccel);
         }
         if (hwaccel && !no_hwaccel && !enable_vulkan && !disable_vulkan) {
             enable_vulkan = 1;

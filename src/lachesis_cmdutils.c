@@ -175,8 +175,6 @@ static int opt_has_arg(const OptionDef *o) {
 
 static int write_option(void *optctx, const OptionDef *po, const char *opt,
                         const char *arg, const OptionDef *defs av_unused) {
-    /* lachesis's options only use global destination pointers; the SPEC /
-     * per-stream / offset and "/file" branches of the original are omitted. */
     void *dst = po->u.dst_ptr;
     double num;
     int ret = 0;
