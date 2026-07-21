@@ -78,9 +78,11 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
+/* clang-format off */
 #include <direct.h>
-#include <shellapi.h>
 #include <windows.h>
+#include <shellapi.h>
+/* clang-format on */
 #undef main /* We don't want SDL to override our main(). */
 #define PATH_SEPARATOR '\\'
 #else
