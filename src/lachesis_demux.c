@@ -38,6 +38,7 @@
 #include <libavutil/avutil.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
+#include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
@@ -49,7 +50,6 @@
 
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
-#include "lachesis_cmdutils.h"
 #include "lachesis_demux.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -63,6 +63,24 @@
 
 static double read_ahead_secs = 1.0;
 static int64_t max_queue_bytes = MAX_QUEUE_SIZE;
+
+AVDictionary *format_opts;
+
+static void print_error(const char *filename, int err) {
+    av_log(NULL, AV_LOG_ERROR, "%s: %s\n", filename, av_err2str(err));
+}
+
+/* Fail if any option in m was left unconsumed by the libav* call it was
+ * passed to. */
+static int check_avoptions(AVDictionary *m) {
+    const AVDictionaryEntry *t = av_dict_iterate(m, NULL);
+    if (t) {
+        av_log(NULL, AV_LOG_FATAL, "Option %s not found.\n", t->key);
+        return AVERROR_OPTION_NOT_FOUND;
+    }
+
+    return 0;
+}
 
 static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
     enum AVHWDeviceType type;
@@ -201,12 +219,6 @@ int stream_component_open(VideoState *is, int stream_index) {
 
     if (fast) {
         avctx->flags2 |= AV_CODEC_FLAG2_FAST;
-    }
-
-    ret = filter_codec_opts(codec_opts, avctx->codec_id, ic,
-                            ic->streams[stream_index], codec, &opts, NULL);
-    if (ret < 0) {
-        goto fail;
     }
 
     /* XXX */
@@ -594,8 +606,6 @@ int read_thread(void *arg) {
         ret = -1;
         goto fail;
     }
-    remove_avoptions(&format_opts, codec_opts);
-
     ret = check_avoptions(format_opts);
     if (ret < 0) {
         goto fail;
@@ -607,22 +617,7 @@ int read_thread(void *arg) {
     }
 
     if (find_stream_info) {
-        AVDictionary **opts;
-        int orig_nb_streams = ic->nb_streams;
-
-        err = setup_find_stream_info_opts(ic, codec_opts, &opts);
-        if (err < 0) {
-            ret = err;
-            goto fail;
-        }
-
-        err = avformat_find_stream_info(ic, opts);
-
-        for (i = 0; i < orig_nb_streams; i++) {
-            av_dict_free(&opts[i]);
-        }
-        av_freep(&opts);
-
+        err = avformat_find_stream_info(ic, NULL);
         if (err < 0) {
             if (!is->archive_avio) {
                 ret = -1;

@@ -24,6 +24,8 @@
 
 #include "lachesis_internal.h"
 
+extern AVDictionary *format_opts;
+
 int stream_component_open(VideoState *is, int stream_index);
 int read_thread(void *arg);
 

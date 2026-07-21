@@ -76,7 +76,12 @@
 #include <sys/stat.h>
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <direct.h>
+#include <shellapi.h>
+#include <windows.h>
+#undef main /* We don't want SDL to override our main(). */
 #define PATH_SEPARATOR '\\'
 #else
 #include <unistd.h>
@@ -85,7 +90,6 @@
 
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
-#include "lachesis_cmdutils.h"
 #include "lachesis_demux.h"
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
@@ -102,6 +106,55 @@
 
 const char program_name[] = "lachesis";
 const int program_birth_year = 2003;
+
+static void uninit_opts(void) {
+    av_dict_free(&format_opts);
+}
+
+static void init_dynload(void) {
+#ifdef _WIN32
+    /* Remove the current working directory from the DLL search path as a
+     * security precaution. */
+    SetDllDirectoryW(L"");
+#endif
+}
+
+#ifdef _WIN32
+static void win32_argv_to_utf8(int *argc_p, char ***argv_p) {
+    int wargc = 0;
+    wchar_t **wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv) {
+        return;
+    }
+    char **uargv = av_calloc((size_t)wargc + 1, sizeof(*uargv));
+    if (!uargv) {
+        LocalFree(wargv);
+        return;
+    }
+    for (int i = 0; i < wargc; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        if (n <= 0) {
+            goto fail;
+        }
+        uargv[i] = av_malloc((size_t)n);
+        if (!uargv[i]) {
+            goto fail;
+        }
+        WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, uargv[i], n, NULL, NULL);
+    }
+    LocalFree(wargv);
+    *argc_p = wargc;
+    *argv_p = uargv;
+    return;
+
+fail:
+    for (int i = 0; i < wargc; i++) {
+        av_free(uargv[i]);
+    }
+    av_free(uargv);
+    LocalFree(wargv);
+}
+#endif
 
 #define DECODE_BEHIND_LATCH_FRAMES 20
 #define DECODE_RECOVER_FRAMES 120

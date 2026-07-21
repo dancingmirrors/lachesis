@@ -21,8 +21,8 @@
 #ifndef LACHESIS_RC_H
 #define LACHESIS_RC_H
 
-#include "lachesis_cmdutils.h"
+#include "lachesis_options.h"
 
-int load_config_file(void *optctx, const OptionDef *options);
+int load_config_file(void *optctx, const OptionDef *defs);
 
 #endif /* LACHESIS_RC_H */

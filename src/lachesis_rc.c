@@ -27,8 +27,8 @@
 #include <libavutil/error.h>
 #include <libavutil/mem.h>
 
-#include "lachesis_cmdutils.h"
 #include "lachesis_log.h"
+#include "lachesis_options.h"
 #include "lachesis_rc.h"
 
 #define LACHESIS_RC_NAME ".lachesis.rc"
@@ -145,7 +145,7 @@ static char *parse_value(char *v) {
     return v;
 }
 
-static void apply_line(void *optctx, const OptionDef *options, char *line,
+static void apply_line(void *optctx, const OptionDef *defs, char *line,
                        const char *path, int lineno) {
     char *s = trim(line);
     if (!*s || *s == '#') {
@@ -168,10 +168,10 @@ static void apply_line(void *optctx, const OptionDef *options, char *line,
 
     char src[LACHESIS_RC_SRC_MAX];
     snprintf(src, sizeof(src), "%s:%d", path, lineno);
-    parse_config_option(optctx, key, value, options, src);
+    parse_config_option(optctx, key, value, defs, src);
 }
 
-int load_config_file(void *optctx, const OptionDef *options) {
+int load_config_file(void *optctx, const OptionDef *defs) {
     char path[LACHESIS_RC_PATH_MAX];
     if (resolve_rc_path(path, sizeof(path)) < 0) {
         return 0;
@@ -204,7 +204,7 @@ int load_config_file(void *optctx, const OptionDef *options) {
             line[len - 1] = '\0';
         }
 
-        apply_line(optctx, options, line, path, ++lineno);
+        apply_line(optctx, defs, line, path, ++lineno);
     }
 
     av_free(buf);

@@ -48,7 +48,6 @@
 #include <SDL3/SDL.h>
 
 #include "lachesis_audio.h"
-#include "lachesis_cmdutils.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
@@ -106,8 +105,6 @@ static const char *build_audio_filters(const char *afilters, AVBPrint *scratch) 
 
 int configure_audio_filters(VideoState *is, const char *afilters, int force_output_format) {
     AVFilterContext *filt_asrc = NULL, *filt_asink = NULL;
-    char aresample_swr_opts[512] = "";
-    const AVDictionaryEntry *e = NULL;
     AVBPrint bp;
     char asrc_args[256];
     int ret;
@@ -120,13 +117,7 @@ int configure_audio_filters(VideoState *is, const char *afilters, int force_outp
 
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_AUTOMATIC);
 
-    while ((e = av_dict_iterate(swr_opts, e))) {
-        av_strlcatf(aresample_swr_opts, sizeof(aresample_swr_opts), "%s=%s:", e->key, e->value);
-    }
-    if (strlen(aresample_swr_opts)) {
-        aresample_swr_opts[strlen(aresample_swr_opts) - 1] = '\0';
-    }
-    av_opt_set(is->agraph, "aresample_swr_opts", aresample_swr_opts, 0);
+    av_opt_set(is->agraph, "aresample_swr_opts", "", 0);
 
     av_channel_layout_describe_bprint(&is->audio_filter_src.ch_layout, &bp);
 

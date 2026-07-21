@@ -149,7 +149,6 @@ add_sources(
     "src/lachesis.c",
     "src/lachesis_archive.c",
     "src/lachesis_audio.c",
-    "src/lachesis_cmdutils.c",
     "src/lachesis_delete.c",
     "src/lachesis_demux.c",
     "src/lachesis_filters.c",

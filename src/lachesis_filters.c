@@ -32,6 +32,7 @@
 #include <libavutil/avstring.h>
 #include <libavutil/avutil.h>
 #include <libavutil/dict.h>
+#include <libavutil/display.h>
 #include <libavutil/frame.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
@@ -41,7 +42,6 @@
 
 #include <SDL3/SDL.h>
 
-#include "lachesis_cmdutils.h"
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -80,14 +80,23 @@ int check_filtergraph(const char *desc) {
     return ret;
 }
 
+static double get_rotation(const int32_t *displaymatrix) {
+    double theta = 0;
+    if (displaymatrix) {
+        theta = -round(av_display_rotation_get(displaymatrix));
+    }
+
+    theta -= 360 * floor(theta / 360 + 0.9 / 360);
+
+    return theta;
+}
+
 int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame) {
     enum AVPixelFormat pix_fmts[FF_ARRAY_ELEMS(sdl_texture_format_map)];
-    char sws_flags_str[512] = "";
     int ret;
     AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
     AVCodecParameters *codecpar = is->video_st->codecpar;
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
-    const AVDictionaryEntry *e = NULL;
     int nb_pix_fmts = 0;
     int i;
     size_t j;
@@ -106,22 +115,7 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         }
     }
 
-    if (!av_dict_get(sws_dict, "sws_flags", NULL, 0)) {
-        av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "flags=fast_bilinear:");
-    }
-
-    while ((e = av_dict_iterate(sws_dict, e))) {
-        if (!strcmp(e->key, "sws_flags")) {
-            av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", "flags", e->value);
-        } else {
-            av_strlcatf(sws_flags_str, sizeof(sws_flags_str), "%s=%s:", e->key, e->value);
-        }
-    }
-    if (strlen(sws_flags_str)) {
-        sws_flags_str[strlen(sws_flags_str) - 1] = '\0';
-    }
-
-    graph->scale_sws_opts = av_strdup(sws_flags_str);
+    graph->scale_sws_opts = av_strdup("flags=fast_bilinear");
 
     filt_src = avfilter_graph_alloc_filter(graph, avfilter_get_by_name("buffer"),
                                            "lachesis_buffer");

@@ -27,8 +27,65 @@
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
 
-#include "lachesis_cmdutils.h"
 #include "lachesis_internal.h"
+
+extern const char program_name[];
+extern const int program_birth_year;
+
+enum OptionType {
+    OPT_TYPE_FUNC,
+    OPT_TYPE_BOOL,
+    OPT_TYPE_STRING,
+    OPT_TYPE_INT,
+    OPT_TYPE_INT64,
+    OPT_TYPE_FLOAT,
+    OPT_TYPE_DOUBLE,
+    OPT_TYPE_TIME,
+};
+
+#define OPT_FUNC_ARG (1 << 0)
+#define OPT_EXIT (1 << 1)
+
+typedef struct OptionDef {
+    const char *name;
+    enum OptionType type;
+    int flags;
+
+    union {
+        void *dst_ptr;
+        int (*func_arg)(void *, const char *, const char *);
+    } u;
+    const char *help;
+    const char *argname;
+} OptionDef;
+
+int parse_number(const char *context, const char *numstr, enum OptionType type,
+                 double min, double max, double *dst);
+
+void show_help_options(const OptionDef *defs);
+void show_help_default(void);
+
+int parse_options(void *optctx, int argc, char **argv, const OptionDef *defs,
+                  int (*parse_arg_function)(void *optctx, const char *));
+int parse_option(void *optctx, const char *opt, const char *arg,
+                 const OptionDef *defs);
+int parse_config_option(void *optctx, const char *opt, const char *arg,
+                        const OptionDef *defs, const char *src);
+void parse_loglevel(int argc, char **argv, const OptionDef *defs);
+void parse_quiet(int argc, char **argv, const OptionDef *defs);
+
+int opt_loglevel(void *optctx, const char *opt, const char *arg);
+int opt_quiet(void *optctx, const char *opt, const char *arg);
+
+/* clang-format off */
+#define CMDUTILS_COMMON_OPTIONS \
+    {"h", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},                  \
+    {"?", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},     \
+    {"help", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},  \
+    {"-help", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"}, \
+    {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set FFmpeg's logging level", "loglevel"},
+/* clang-format on */
+int opt_help(void *optctx, const char *opt, const char *arg);
 
 extern const OptionDef options[];
 
