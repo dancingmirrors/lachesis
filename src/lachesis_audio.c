@@ -113,7 +113,6 @@ int configure_audio_filters(VideoState *is, const char *afilters, int force_outp
     if (!(is->agraph = avfilter_graph_alloc())) {
         return AVERROR(ENOMEM);
     }
-    is->agraph->nb_threads = filter_nbthreads;
 
     av_bprint_init(&bp, 0, AV_BPRINT_SIZE_AUTOMATIC);
 

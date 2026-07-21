@@ -217,10 +217,6 @@ int stream_component_open(VideoState *is, int stream_index) {
 
     avctx->codec_id = codec->id;
 
-    if (fast) {
-        avctx->flags2 |= AV_CODEC_FLAG2_FAST;
-    }
-
     /* XXX */
     if (!no_hwaccel && (vk_renderer || hwaccel) &&
         avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -464,7 +460,7 @@ static int audio_read_thread(void *arg) {
             continue;
         }
 
-        if (!sent_eof && infinite_buffer < 1 &&
+        if (!sent_eof && !is->realtime &&
             stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq)) {
             SDL_Delay(10);
             continue;
@@ -612,17 +608,11 @@ int read_thread(void *arg) {
     }
     is->ic = ic;
 
-    if (genpts) {
-        ic->flags |= AVFMT_FLAG_GENPTS;
-    }
-
-    if (find_stream_info) {
-        err = avformat_find_stream_info(ic, NULL);
-        if (err < 0) {
-            if (!is->archive_avio) {
-                ret = -1;
-                goto fail;
-            }
+    err = avformat_find_stream_info(ic, NULL);
+    if (err < 0) {
+        if (!is->archive_avio) {
+            ret = -1;
+            goto fail;
         }
     }
 
@@ -803,10 +793,6 @@ int read_thread(void *arg) {
         goto fail;
     }
 
-    if (infinite_buffer < 0 && is->realtime) {
-        infinite_buffer = 1;
-    }
-
     if ((start_paused || is->begin_paused) && !is->is_still_image) {
         if (is->video_stream >= 0) {
             is->step = 1;
@@ -892,7 +878,7 @@ int read_thread(void *arg) {
             is->queue_attachments_req = 0;
         }
 
-        if (infinite_buffer < 1 &&
+        if (!is->realtime &&
             (is->audioq.size + is->videoq.size + is->subtitleq.size > max_queue_bytes ||
              (stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq) &&
               stream_has_enough_packets(is->video_st, is->video_stream, &is->videoq) &&

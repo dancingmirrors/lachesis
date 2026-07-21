@@ -429,11 +429,7 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                     av_assert0(frame);
                     ret = avcodec_receive_frame(d->avctx, frame);
                     if (ret >= 0) {
-                        if (decoder_reorder_pts == -1) {
-                            frame->pts = frame->best_effort_timestamp;
-                        } else if (!decoder_reorder_pts) {
-                            frame->pts = frame->pkt_dts;
-                        }
+                        frame->pts = frame->best_effort_timestamp;
                     }
                     break;
                 case AVMEDIA_TYPE_AUDIO:
@@ -1598,9 +1594,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
                 duration = vp_duration(is, vp, nextvp) / playback_speed;
                 /* clang-format off */
                 if (!benchmark && !is->step &&
-                    (framedrop > 0 || playback_speed > 1.0 ||
-                     (framedrop &&
-                      get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) &&
+                    (playback_speed > 1.0 ||
+                     get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) &&
                     time > is->frame_timer + duration) {
                     /* clang-format on */
                     is->frame_drops_late++;
@@ -1822,7 +1817,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
             }
         }
 
-        if (framedrop > 0 || (framedrop && get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER)) {
+        if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
             if (frame->pts != AV_NOPTS_VALUE) {
                 double diff = dpts - get_master_clock(is);
                 if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
@@ -1948,7 +1943,6 @@ int video_thread(void *arg) {
             if (!graph) {
                 goto the_end;
             }
-            graph->nb_threads = filter_nbthreads;
 
             /* XXX: Needs more testing when scale_vulkan becomes more useful. */
             download_active = 0;
@@ -1967,7 +1961,6 @@ int video_thread(void *arg) {
                 if (!graph) {
                     goto the_end;
                 }
-                graph->nb_threads = filter_nbthreads;
                 hwframe_download_inplace(frame);
                 download_active = 1;
                 ret = configure_video_filters(graph, is, vfilters, frame);
@@ -2554,6 +2547,10 @@ int main(int argc, char **argv) {
 
     if (disable_vulkan) {
         enable_vulkan = 0;
+    }
+
+    if (disable_autorotate) {
+        autorotate = 0;
     }
 
     if (!display_disable) {

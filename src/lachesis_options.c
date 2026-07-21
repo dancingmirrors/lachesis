@@ -77,18 +77,11 @@ int av_sync_type_explicit = 0;
 int skip_to_keyframe = 0;
 int64_t start_time = AV_NOPTS_VALUE;
 int64_t play_duration = AV_NOPTS_VALUE;
-int fast = 0;
-int genpts = 0;
-int decoder_reorder_pts = -1;
 int keep_open;
 int shuffle;
 int reverse_playlist;
 int start_paused;
-int exit_on_keydown;
-int exit_on_mousedown;
 int loop = 1;
-int framedrop = -1;
-int infinite_buffer = -1;
 float opt_cache_secs = -1.0f;
 int opt_cache_size_mb = -1;
 const char *audio_codec_name;
@@ -98,9 +91,8 @@ const char **vfilters_list = NULL;
 int nb_vfilters = 0;
 char *afilters_opt = NULL;
 int autorotate = 1;
+int disable_autorotate = 0;
 int video_rotate = 0;
-int find_stream_info = 1;
-int filter_nbthreads = 0;
 int enable_vulkan = 1;
 int disable_vulkan = 0;
 char *vulkan_params = NULL;
@@ -229,36 +221,6 @@ static int opt_sync(void *optctx av_unused, const char *opt, const char *arg) {
     return 0;
 }
 
-static int opt_codec(void *optctx av_unused, const char *opt, const char *arg) {
-    const char *spec = strchr(opt, ':');
-    const char **name;
-    if (!spec) {
-        return AVERROR(EINVAL);
-    }
-    spec++;
-
-    switch (spec[0]) {
-    case 'a':
-        name = &audio_codec_name;
-        break;
-    case 's':
-        name = &subtitle_codec_name;
-        break;
-    case 'v':
-        name = &video_codec_name;
-        break;
-    default:
-        return AVERROR(EINVAL);
-    }
-
-    av_freep(name);
-    *name = av_strdup(arg);
-
-    return *name ? 0 : AVERROR(ENOMEM);
-}
-
-static int dummy;
-
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 const OptionDef options[] = {
@@ -268,18 +230,16 @@ const OptionDef options[] = {
     {"quiet", OPT_TYPE_FUNC, 0, {.func_arg = opt_quiet}, "silence all logging (overrides -loglevel)"},
     {"x", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_width}, "force displayed width", "width"},
     {"y", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_height}, "force displayed height", "height"},
-    {"fs", OPT_TYPE_BOOL, 0, {&is_fullscreen}, "force fullscreen"},
     {"windowed", OPT_TYPE_BOOL, 0, {&start_windowed}, "start windowed instead of fullscreen"},
     {"autofit", OPT_TYPE_FLOAT, 0, {&autofit_larger}, "limit windowed size to this fraction of the display (default 0.85)", "fraction"},
     {"an", OPT_TYPE_BOOL, 0, {&audio_disable}, "disable audio"},
     {"vn", OPT_TYPE_BOOL, 0, {&video_disable}, "disable video"},
-    {"sn", OPT_TYPE_BOOL, 0, {&subtitle_disable}, "disable subtitling"},
+    {"sn", OPT_TYPE_BOOL, 0, {&subtitle_disable}, "disable subtitles"},
     {"ast", OPT_TYPE_STRING, 0, {&wanted_stream_spec[AVMEDIA_TYPE_AUDIO]}, "select the desired audio stream", "stream_specifier"},
     {"vst", OPT_TYPE_STRING, 0, {&wanted_stream_spec[AVMEDIA_TYPE_VIDEO]}, "select the desired video stream", "stream_specifier"},
     {"sst", OPT_TYPE_STRING, 0, {&wanted_stream_spec[AVMEDIA_TYPE_SUBTITLE]}, "select the desired subtitle stream", "stream_specifier"},
     {"ss", OPT_TYPE_TIME, 0, {&start_time}, "seek to a given position in seconds", "pos"},
     {"t", OPT_TYPE_TIME, 0, {&play_duration}, "play this duration of the input in seconds", "duration"},
-    {"bytes", OPT_TYPE_INT, 0, {&seek_by_bytes}, "seek by bytes (0 = off, 1 = on, -1 = auto)", "val"},
     {"seek_interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
     {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)", ""},
@@ -288,9 +248,6 @@ const OptionDef options[] = {
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 260)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
-    {"fast", OPT_TYPE_BOOL, 0, {&fast}, "enable non-compliant optimizations", ""},
-    {"genpts", OPT_TYPE_BOOL, 0, {&genpts}, "generate PTS", ""},
-    {"drp", OPT_TYPE_INT, 0, {&decoder_reorder_pts}, "let the decoder reorder PTS (0 = off, 1 = on, -1 = auto)", ""},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type (audio, video, ext)", "type"},
     {"skip-to-keyframe", OPT_TYPE_BOOL, 0, {&skip_to_keyframe}, "skip the video forward to keyframes instead of slowing down (drops content)", ""},
     {"no-shader-cache", OPT_TYPE_BOOL, 0, {&no_shader_cache}, "disable caching compiled shaders on disk", ""},
@@ -299,11 +256,7 @@ const OptionDef options[] = {
     {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order", ""},
     {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order", ""},
     {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry", ""},
-    {"exitonkeydown", OPT_TYPE_BOOL, 0, {&exit_on_keydown}, "exit on key down", ""},
-    {"exitonmousedown", OPT_TYPE_BOOL, 0, {&exit_on_mousedown}, "exit on mouse down", ""},
     {"loop", OPT_TYPE_INT, 0, {&loop}, "set the number of times playback will be looped", "loop count"},
-    {"framedrop", OPT_TYPE_BOOL, 0, {&framedrop}, "drop frames when the CPU is too slow", ""},
-    {"infbuf", OPT_TYPE_BOOL, 0, {&infinite_buffer}, "don't limit the input buffer size (useful with realtime streams)", ""},
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
@@ -311,16 +264,11 @@ const OptionDef options[] = {
     {"top", OPT_TYPE_INT, 0, {&screen_top}, "set the y position for the top of the window", "y pos"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
-    {"i", OPT_TYPE_BOOL, 0, {&dummy}, "play the specified input", "input_file"},
-    {"codec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_codec}, "force a decoder", "decoder_name"},
     {"acodec", OPT_TYPE_STRING, 0, {&audio_codec_name}, "force an audio decoder", "decoder_name"},
     {"scodec", OPT_TYPE_STRING, 0, {&subtitle_codec_name}, "force a subtitle decoder", "decoder_name"},
     {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},
-    {"autorotate", OPT_TYPE_BOOL, 0, {&autorotate}, "automatically rotate video", ""},
+    {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation", ""},
     {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees", "degrees"},
-    {"find_stream_info", OPT_TYPE_BOOL, 0, {&find_stream_info}, "read and decode the stream(s) to fill missing information with heuristics"},
-    {"filter_threads", OPT_TYPE_INT, 0, {&filter_nbthreads}, "number of filter threads per graph"},
-    {"enable_vulkan", OPT_TYPE_BOOL, 0, {&enable_vulkan}, "enable the Vulkan renderer"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&disable_vulkan}, "disable the Vulkan renderer"},
     {"vulkan_params", OPT_TYPE_STRING, 0, {&vulkan_params}, "Vulkan configuration using a list of key=value pairs separated by ':'"},
     {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "Vulkan present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},

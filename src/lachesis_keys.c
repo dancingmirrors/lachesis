@@ -167,7 +167,7 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             }
-            if (exit_on_keydown || event.key.key == SDLK_ESCAPE || event.key.key == SDLK_Q) {
+            if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_Q) {
                 do_exit(cur_stream);
                 break;
             }
@@ -443,10 +443,6 @@ void event_loop(VideoState **pis) {
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (exit_on_mousedown) {
-                do_exit(cur_stream);
-                break;
-            }
             if (enable_360sbs && event.button.button == SDL_BUTTON_LEFT) {
                 sbs360_drag = 1;
                 sbs360_drag_last_x = event.button.x;
