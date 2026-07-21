@@ -663,10 +663,10 @@ int read_thread(void *arg) {
             (is->filename &&
              (!strncmp(is->filename, "http://", 7) ||
               !strncmp(is->filename, "https://", 8)));
-        read_ahead_secs = opt_cache_secs >= 0.0f
+        read_ahead_secs = opt_cache_secs > 0.0f
             ? opt_cache_secs
             : (network ? 30.0 : 1.0);
-        max_queue_bytes = opt_cache_size_mb >= 0
+        max_queue_bytes = opt_cache_size_mb > 0
             ? (int64_t)opt_cache_size_mb * 1024 * 1024
             : (network ? (int64_t)128 * 1024 * 1024
                        : (int64_t)MAX_QUEUE_SIZE);
