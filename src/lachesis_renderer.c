@@ -1637,6 +1637,8 @@ int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
     ctx->sbs360_layout = layout;
     return 0;
 #else
+    (void)renderer;
+    (void)layout;
     return AVERROR(ENOSYS);
 #endif
 }
@@ -1647,6 +1649,11 @@ void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float 
     ctx->sbs360_yaw = yaw;
     ctx->sbs360_pitch = pitch;
     ctx->sbs360_hfov = hfov;
+#else
+    (void)renderer;
+    (void)yaw;
+    (void)pitch;
+    (void)hfov;
 #endif
 }
 

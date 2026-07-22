@@ -2604,7 +2604,6 @@ int main(int argc, char **argv) {
         if (enable_vulkan) {
             vk_renderer = vk_get_renderer();
             if (!vk_renderer) {
-                log_warn("Your SDL version doesn't support Vulkan.\n");
                 enable_vulkan = 0;
             }
         }

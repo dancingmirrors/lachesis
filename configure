@@ -135,6 +135,7 @@ check(
 )
 
 check(
+    "vulkan",
     desc="vulkan",
     fn=lambda: check_pkg_config("vulkan") and check_cc(include="vulkan/vulkan.h"),
 )
@@ -142,8 +143,8 @@ check(
 check(
     "-libplacebo*",
     desc="libplacebo",
+    deps="vulkan",
     fn=lambda: check_pkg_config("libplacebo >= 7.349.0"),
-    required=True,
 )
 
 add_sources(
