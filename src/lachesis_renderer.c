@@ -26,6 +26,7 @@
 #include "lachesis_config.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
+#include "lachesis_view360.h"
 /* clang-format on */
 
 #if LACHESIS_HAVE_LIBPLACEBO
@@ -50,134 +51,6 @@
 #include <libplacebo/utils/libav.h>
 #pragma GCC diagnostic pop
 #include <libplacebo/vulkan.h>
-
-static const char sbs360_shader[] =
-    "//!PARAM yaw\n"
-    "//!DESC Horizontal view angle (degrees, positive = right)\n"
-    "//!TYPE DYNAMIC float\n"
-    "//!MINIMUM -180.0\n"
-    "//!MAXIMUM 180.0\n"
-    "0.0\n"
-    "\n"
-    "//!PARAM pitch\n"
-    "//!DESC Vertical view angle (degrees, positive = up)\n"
-    "//!TYPE DYNAMIC float\n"
-    "//!MINIMUM -90.0\n"
-    "//!MAXIMUM 90.0\n"
-    "0.0\n"
-    "\n"
-    "//!PARAM hfov\n"
-    "//!DESC Horizontal field of view (degrees)\n"
-    "//!TYPE DYNAMIC float\n"
-    "//!MINIMUM 10.0\n"
-    "//!MAXIMUM 180.0\n"
-    "90.0\n"
-    "\n"
-    "//!PARAM tb\n"
-    "//!DESC Frame layout (0 = SBS, 1 = TB)\n"
-    "//!TYPE DYNAMIC float\n"
-    "//!MINIMUM 0.0\n"
-    "//!MAXIMUM 1.0\n"
-    "0.0\n"
-    "\n"
-    "//!HOOK MAIN\n"
-    "//!BIND HOOKED\n"
-    "//!DESC 360 Panini projection with zoom-coupled vertical fit\n"
-    "//!WIDTH OUTPUT.w\n"
-    "//!HEIGHT OUTPUT.h\n"
-    "\n"
-    "#define PI 3.14159265358979323846\n"
-    "\n"
-    "#define VC_LO 130.0\n"
-    "#define VC_HI 180.0\n"
-    "\n"
-    "vec4 sample_catmull_rom(vec2 uv) {\n"
-    "    vec2 sz  = HOOKED_size;\n"
-    "    vec2 sp  = uv * sz;\n"
-    "    vec2 tc1 = floor(sp - 0.5) + 0.5;\n"
-    "    vec2 f   = sp - tc1;\n"
-    "\n"
-    "    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
-    "    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
-    "    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));\n"
-    "    vec2 w3 = f * f * (-0.5 + 0.5 * f);\n"
-    "\n"
-    "    vec2 w12 = w1 + w2;\n"
-    "    vec2 off = w2 / w12;\n"
-    "    vec2 t0  = (tc1 - 1.0) / sz;\n"
-    "    vec2 t3  = (tc1 + 2.0) / sz;\n"
-    "    vec2 t12 = (tc1 + off) / sz;\n"
-    "\n"
-    "    vec4 r = vec4(0.0);\n"
-    "    r += HOOKED_tex(vec2(t0.x,  t0.y )) * w0.x  * w0.y;\n"
-    "    r += HOOKED_tex(vec2(t12.x, t0.y )) * w12.x * w0.y;\n"
-    "    r += HOOKED_tex(vec2(t3.x,  t0.y )) * w3.x  * w0.y;\n"
-    "    r += HOOKED_tex(vec2(t0.x,  t12.y)) * w0.x  * w12.y;\n"
-    "    r += HOOKED_tex(vec2(t12.x, t12.y)) * w12.x * w12.y;\n"
-    "    r += HOOKED_tex(vec2(t3.x,  t12.y)) * w3.x  * w12.y;\n"
-    "    r += HOOKED_tex(vec2(t0.x,  t3.y )) * w0.x  * w3.y;\n"
-    "    r += HOOKED_tex(vec2(t12.x, t3.y )) * w12.x * w3.y;\n"
-    "    r += HOOKED_tex(vec2(t3.x,  t3.y )) * w3.x  * w3.y;\n"
-    "    return r;\n"
-    "}\n"
-    "\n"
-    "vec3 view_ray(vec2 ndc, float aspect) {\n"
-    "    float hfov_rad = hfov * (PI / 180.0);\n"
-    "    float hh       = hfov_rad * 0.5;\n"
-    "    float sh       = sin(hh);\n"
-    "    float ch       = cos(hh);\n"
-    "\n"
-    "    float d = smoothstep(80.0, 160.0, hfov);\n"
-    "\n"
-    "    float kx = ndc.x * sh / (d + ch);\n"
-    "    float ky = ndc.y * sh / ((d + ch) * aspect);\n"
-    "    float kk = kx * kx;\n"
-    "\n"
-    "    float cphi = (-kk * d + sqrt(1.0 + kk * (1.0 - d * d))) / (1.0 + kk);\n"
-    "    float sphi = kx * (d + cphi);\n"
-    "\n"
-    "    float rv = ky * (d + cphi);\n"
-    "\n"
-    "    float vcomp = smoothstep(VC_LO, VC_HI, hfov);\n"
-    "    float theta = (1.0 + vcomp) * atan(rv);\n"
-    "    float sinth = sin(theta);\n"
-    "    float costh = cos(theta);\n"
-    "\n"
-    "    return vec3(costh * sphi, sinth, costh * cphi);\n"
-    "}\n"
-    "\n"
-    "vec4 hook() {\n"
-    "    vec2 ndc = HOOKED_pos * 2.0 - 1.0;\n"
-    "    ndc.y    = -ndc.y;\n"
-    "\n"
-    "    float aspect = target_size.x / target_size.y;\n"
-    "    vec3 ray = view_ray(ndc, aspect);\n"
-    "\n"
-    "    float p  = pitch * (PI / 180.0);\n"
-    "    float cp = cos(p), sp = sin(p);\n"
-    "    mat3 Rx  = mat3(\n"
-    "        1.0, 0.0,  0.0,\n"
-    "        0.0,  cp,  -sp,\n"
-    "        0.0,  sp,   cp\n"
-    "    );\n"
-    "\n"
-    "    float ya = yaw * (PI / 180.0);\n"
-    "    float cy = cos(ya), sy = sin(ya);\n"
-    "    mat3 Ry  = mat3(\n"
-    "        cy, 0.0, -sy,\n"
-    "        0.0, 1.0, 0.0,\n"
-    "        sy, 0.0, cy\n"
-    "    );\n"
-    "\n"
-    "    vec3 dir = Ry * Rx * ray;\n"
-    "\n"
-    "    float lon = atan(dir.x, dir.z);\n"
-    "    float lat = asin(clamp(dir.y, -1.0, 1.0));\n"
-    "    float u   = lon / (2.0 * PI) + 0.5;\n"
-    "    float v   = (0.5 - lat / PI) * (1.0 - 0.5 * tb);\n"
-    "\n"
-    "    return sample_catmull_rom(vec2(u, v));\n"
-    "}\n";
 
 #include <libavutil/bprint.h>
 #include <libavutil/macros.h>
@@ -270,7 +143,7 @@ typedef struct RendererContext {
     float sbs360_yaw;
     float sbs360_pitch;
     float sbs360_hfov;
-    float sbs360_layout;
+    enum View360Layout sbs360_layout;
 
     int benchmark;
 
@@ -1389,21 +1262,9 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     }
 
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
-        for (int i = 0; i < ctx->sbs360_hook->num_parameters; i++) {
-            struct pl_hook_par *par = (struct pl_hook_par *)&ctx->sbs360_hook->parameters[i];
-            if (!strcmp(par->name, "yaw")) {
-                par->data->f = ctx->sbs360_yaw;
-            }
-            if (!strcmp(par->name, "pitch")) {
-                par->data->f = ctx->sbs360_pitch;
-            }
-            if (!strcmp(par->name, "hfov")) {
-                par->data->f = ctx->sbs360_hfov;
-            }
-            if (!strcmp(par->name, "tb")) {
-                par->data->f = ctx->sbs360_layout;
-            }
-        }
+        view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
+                               ctx->sbs360_pitch, ctx->sbs360_hfov,
+                               ctx->sbs360_layout);
         pl_params->hooks = &ctx->sbs360_hook;
         pl_params->num_hooks = 1;
     }
@@ -1689,7 +1550,7 @@ static void destroy(VkRenderer *renderer) {
     av_buffer_unref(&ctx->hw_frame_ref);
 
     if (ctx->sbs360_hook) {
-        pl_mpv_user_shader_destroy(&ctx->sbs360_hook);
+        view360_pl_hook_destroy(&ctx->sbs360_hook);
     }
 
     av_freep(&ctx->icc_data);
@@ -1757,14 +1618,12 @@ VkRenderer *vk_get_renderer(void) {
 
 #endif
 
-int vk_renderer_enable_360(VkRenderer *renderer, enum Vk360Layout layout) {
+int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
 #if HAVE_VULKAN_RENDERER
     RendererContext *ctx = (RendererContext *)renderer;
-    int enable = layout != VK_360_LAYOUT_OFF;
+    int enable = layout != VIEW360_LAYOUT_OFF;
     if (enable && !ctx->sbs360_hook) {
-        ctx->sbs360_hook = pl_mpv_user_shader_parse(ctx->placebo_vulkan->gpu,
-                                                    sbs360_shader,
-                                                    sizeof(sbs360_shader) - 1);
+        ctx->sbs360_hook = view360_pl_hook_create(ctx->placebo_vulkan->gpu);
         if (!ctx->sbs360_hook) {
             return AVERROR_EXTERNAL;
         }
@@ -1772,10 +1631,10 @@ int vk_renderer_enable_360(VkRenderer *renderer, enum Vk360Layout layout) {
         ctx->sbs360_pitch = 0.0f;
         ctx->sbs360_hfov = 90.0f;
     } else if (!enable && ctx->sbs360_hook) {
-        pl_mpv_user_shader_destroy(&ctx->sbs360_hook);
+        view360_pl_hook_destroy(&ctx->sbs360_hook);
     }
     ctx->sbs360_enabled = enable;
-    ctx->sbs360_layout = layout == VK_360_LAYOUT_TB ? 1.0f : 0.0f;
+    ctx->sbs360_layout = layout;
     return 0;
 #else
     return AVERROR(ENOSYS);

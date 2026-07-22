@@ -205,7 +205,7 @@ int64_t cursor_last_shown;
 int cursor_hidden = 0;
 int deinterlace = 0;
 int fatal_error_pending = 0;
-enum Vk360Layout view360_layout = VK_360_LAYOUT_FULL;
+enum View360Layout view360_layout = VIEW360_LAYOUT_FULL;
 float sbs360_yaw = 0.0f;
 float sbs360_pitch = VIEW360_DEFAULT_PITCH;
 float sbs360_hfov = VIEW360_DEFAULT_HFOV;
@@ -2596,7 +2596,7 @@ int main(int argc, char **argv) {
         if (enable_360tb) {
             /* XXX */
             enable_360sbs = 1;
-            view360_layout = VK_360_LAYOUT_TB;
+            view360_layout = VIEW360_LAYOUT_TB;
         }
         if (enable_360sbs) {
             sbs360_reset_view();

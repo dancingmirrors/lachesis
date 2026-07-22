@@ -347,7 +347,7 @@ void calculate_display_rect(SDL_Rect *rect,
 extern float display_scale;
 extern float display_pan_x;
 extern float display_pan_y;
-extern enum Vk360Layout view360_layout;
+extern enum View360Layout view360_layout;
 extern float sbs360_yaw;
 extern float sbs360_pitch;
 extern float sbs360_hfov;

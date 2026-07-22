@@ -21,17 +21,191 @@
 #include <math.h>
 #include <string.h>
 
+#include <libavutil/macros.h>
 #include <libavutil/mem.h>
 
+#include "lachesis_config.h"
 #include "lachesis_view360.h"
+
+#if LACHESIS_HAVE_LIBPLACEBO
+#include <libplacebo/shaders/custom.h>
+#endif
+
+#define VIEW360_PANINI_LO 80.0
+#define VIEW360_PANINI_HI 160.0
+#define VIEW360_VC_LO 130.0
+#define VIEW360_VC_HI 180.0
+
+#if LACHESIS_HAVE_LIBPLACEBO
+
+/* clang-format off */
+static const char view360_shader[] =
+    "//!PARAM yaw\n"
+    "//!DESC Horizontal view angle (degrees, positive = right)\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM -180.0\n"
+    "//!MAXIMUM 180.0\n"
+    "0.0\n"
+    "\n"
+    "//!PARAM pitch\n"
+    "//!DESC Vertical view angle (degrees, positive = up)\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM -90.0\n"
+    "//!MAXIMUM 90.0\n"
+    "0.0\n"
+    "\n"
+    "//!PARAM hfov\n"
+    "//!DESC Horizontal field of view (degrees)\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 10.0\n"
+    "//!MAXIMUM 180.0\n"
+    "90.0\n"
+    "\n"
+    "//!PARAM tb\n"
+    "//!DESC Frame layout (0 = SBS, 1 = TB)\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 1.0\n"
+    "0.0\n"
+    "\n"
+    "//!HOOK MAIN\n"
+    "//!BIND HOOKED\n"
+    "//!DESC 360 Panini projection with zoom-coupled vertical fit\n"
+    "//!WIDTH OUTPUT.w\n"
+    "//!HEIGHT OUTPUT.h\n"
+    "\n"
+    "#define PI 3.14159265358979323846\n"
+    "\n"
+    "#define D_LO " AV_STRINGIFY(VIEW360_PANINI_LO) "\n"
+    "#define D_HI " AV_STRINGIFY(VIEW360_PANINI_HI) "\n"
+    "#define VC_LO " AV_STRINGIFY(VIEW360_VC_LO) "\n"
+    "#define VC_HI " AV_STRINGIFY(VIEW360_VC_HI) "\n"
+    "\n"
+    "vec4 sample_catmull_rom(vec2 uv) {\n"
+    "    vec2 sz  = HOOKED_size;\n"
+    "    vec2 sp  = uv * sz;\n"
+    "    vec2 tc1 = floor(sp - 0.5) + 0.5;\n"
+    "    vec2 f   = sp - tc1;\n"
+    "\n"
+    "    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));\n"
+    "    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);\n"
+    "    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));\n"
+    "    vec2 w3 = f * f * (-0.5 + 0.5 * f);\n"
+    "\n"
+    "    vec2 w12 = w1 + w2;\n"
+    "    vec2 off = w2 / w12;\n"
+    "    vec2 t0  = (tc1 - 1.0) / sz;\n"
+    "    vec2 t3  = (tc1 + 2.0) / sz;\n"
+    "    vec2 t12 = (tc1 + off) / sz;\n"
+    "\n"
+    "    vec4 r = vec4(0.0);\n"
+    "    r += HOOKED_tex(vec2(t0.x,  t0.y )) * w0.x  * w0.y;\n"
+    "    r += HOOKED_tex(vec2(t12.x, t0.y )) * w12.x * w0.y;\n"
+    "    r += HOOKED_tex(vec2(t3.x,  t0.y )) * w3.x  * w0.y;\n"
+    "    r += HOOKED_tex(vec2(t0.x,  t12.y)) * w0.x  * w12.y;\n"
+    "    r += HOOKED_tex(vec2(t12.x, t12.y)) * w12.x * w12.y;\n"
+    "    r += HOOKED_tex(vec2(t3.x,  t12.y)) * w3.x  * w12.y;\n"
+    "    r += HOOKED_tex(vec2(t0.x,  t3.y )) * w0.x  * w3.y;\n"
+    "    r += HOOKED_tex(vec2(t12.x, t3.y )) * w12.x * w3.y;\n"
+    "    r += HOOKED_tex(vec2(t3.x,  t3.y )) * w3.x  * w3.y;\n"
+    "    return r;\n"
+    "}\n"
+    "\n"
+    "vec3 view_ray(vec2 ndc, float aspect) {\n"
+    "    float hfov_rad = hfov * (PI / 180.0);\n"
+    "    float hh       = hfov_rad * 0.5;\n"
+    "    float sh       = sin(hh);\n"
+    "    float ch       = cos(hh);\n"
+    "\n"
+    "    float d = smoothstep(D_LO, D_HI, hfov);\n"
+    "\n"
+    "    float kx = ndc.x * sh / (d + ch);\n"
+    "    float ky = ndc.y * sh / ((d + ch) * aspect);\n"
+    "    float kk = kx * kx;\n"
+    "\n"
+    "    float cphi = (-kk * d + sqrt(1.0 + kk * (1.0 - d * d))) / (1.0 + kk);\n"
+    "    float sphi = kx * (d + cphi);\n"
+    "\n"
+    "    float rv = ky * (d + cphi);\n"
+    "\n"
+    "    float vcomp = smoothstep(VC_LO, VC_HI, hfov);\n"
+    "    float theta = (1.0 + vcomp) * atan(rv);\n"
+    "    float sinth = sin(theta);\n"
+    "    float costh = cos(theta);\n"
+    "\n"
+    "    return vec3(costh * sphi, sinth, costh * cphi);\n"
+    "}\n"
+    "\n"
+    "vec4 hook() {\n"
+    "    vec2 ndc = HOOKED_pos * 2.0 - 1.0;\n"
+    "    ndc.y    = -ndc.y;\n"
+    "\n"
+    "    float aspect = target_size.x / target_size.y;\n"
+    "    vec3 ray = view_ray(ndc, aspect);\n"
+    "\n"
+    "    float p  = pitch * (PI / 180.0);\n"
+    "    float cp = cos(p), sp = sin(p);\n"
+    "    mat3 Rx  = mat3(\n"
+    "        1.0, 0.0,  0.0,\n"
+    "        0.0,  cp,  -sp,\n"
+    "        0.0,  sp,   cp\n"
+    "    );\n"
+    "\n"
+    "    float ya = yaw * (PI / 180.0);\n"
+    "    float cy = cos(ya), sy = sin(ya);\n"
+    "    mat3 Ry  = mat3(\n"
+    "        cy, 0.0, -sy,\n"
+    "        0.0, 1.0, 0.0,\n"
+    "        sy, 0.0, cy\n"
+    "    );\n"
+    "\n"
+    "    vec3 dir = Ry * Rx * ray;\n"
+    "\n"
+    "    float lon = atan(dir.x, dir.z);\n"
+    "    float lat = asin(clamp(dir.y, -1.0, 1.0));\n"
+    "    float u   = lon / (2.0 * PI) + 0.5;\n"
+    "    float v   = (0.5 - lat / PI) * (1.0 - 0.5 * tb);\n"
+    "\n"
+    "    return sample_catmull_rom(vec2(u, v));\n"
+    "}\n";
+/* clang-format on */
+
+const struct pl_hook *view360_pl_hook_create(const struct pl_gpu_t *gpu) {
+    return pl_mpv_user_shader_parse(gpu, view360_shader,
+                                    sizeof(view360_shader) - 1);
+}
+
+void view360_pl_hook_destroy(const struct pl_hook **hook) {
+    pl_mpv_user_shader_destroy(hook);
+}
+
+void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
+                            float hfov, enum View360Layout layout) {
+    float tb = layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f;
+
+    for (int i = 0; i < hook->num_parameters; i++) {
+        const struct pl_hook_par *par = &hook->parameters[i];
+        if (!strcmp(par->name, "yaw")) {
+            par->data->f = yaw;
+        }
+        if (!strcmp(par->name, "pitch")) {
+            par->data->f = pitch;
+        }
+        if (!strcmp(par->name, "hfov")) {
+            par->data->f = hfov;
+        }
+        if (!strcmp(par->name, "tb")) {
+            par->data->f = tb;
+        }
+    }
+}
+
+#endif /* LACHESIS_HAVE_LIBPLACEBO */
 
 #define VIEW360_GRID_W 128
 #define VIEW360_GRID_H 72
 
 #define VIEW360_PI 3.14159265358979323846f
-
-#define VIEW360_VC_LO 130.0f
-#define VIEW360_VC_HI 180.0f
 
 typedef struct View360Mesh {
     SDL_Vertex *verts;
@@ -70,7 +244,7 @@ static void view360_project_grid(const SDL_Rect *rect, float yaw, float pitch,
     float hh = hfov_rad * 0.5f;
     float sh = sinf(hh);
     float ch = cosf(hh);
-    float d = view360_smoothstep(80.0f, 160.0f, hfov);
+    float d = view360_smoothstep(VIEW360_PANINI_LO, VIEW360_PANINI_HI, hfov);
     float vscale = 1.0f + view360_smoothstep(VIEW360_VC_LO, VIEW360_VC_HI, hfov);
     float vmul = 1.0f - 0.5f * tb;
 
@@ -154,7 +328,7 @@ static float view360_split_t(float a, float b) {
     return view360_clamp((1.0f - a) / d, 0.0f, 1.0f);
 }
 
-static int view360_build(const SDL_Rect *rect, enum Vk360Layout layout,
+static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
                          float yaw, float pitch, float hfov, int flip_v) {
     const int cells = VIEW360_GRID_W * VIEW360_GRID_H;
     const int grid_points = (VIEW360_GRID_W + 1) * (VIEW360_GRID_H + 1);
@@ -171,7 +345,7 @@ static int view360_build(const SDL_Rect *rect, enum Vk360Layout layout,
     }
 
     view360_project_grid(rect, yaw, pitch, hfov,
-                         layout == VK_360_LAYOUT_TB ? 1.0f : 0.0f, flip_v);
+                         layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f, flip_v);
 
     mesh.num_verts = 0;
     mesh.num_indices = 0;
@@ -255,7 +429,7 @@ static int view360_build(const SDL_Rect *rect, enum Vk360Layout layout,
 }
 
 int view360_draw(SDL_Renderer *renderer, SDL_Texture *texture,
-                 const SDL_Rect *rect, enum Vk360Layout layout,
+                 const SDL_Rect *rect, enum View360Layout layout,
                  float yaw, float pitch, float hfov, int flip_v) {
     if (!renderer || !texture || !rect || rect->w <= 0 || rect->h <= 0) {
         return -1;

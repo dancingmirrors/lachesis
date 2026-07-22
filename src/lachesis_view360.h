@@ -23,12 +23,33 @@
 
 #include <SDL3/SDL.h>
 
-#include "lachesis_renderer.h"
+enum View360Layout {
+    VIEW360_LAYOUT_OFF,
+    VIEW360_LAYOUT_FULL,
+    VIEW360_LAYOUT_TB,
+};
+
+static inline float view360_default_yaw(enum View360Layout layout) {
+    return layout == VIEW360_LAYOUT_FULL ? 90.0f : 0.0f;
+}
+
+#define VIEW360_DEFAULT_HFOV 140.0f
+#define VIEW360_DEFAULT_PITCH -15.0f
 
 int view360_draw(SDL_Renderer *renderer, SDL_Texture *texture,
-                 const SDL_Rect *rect, enum Vk360Layout layout,
+                 const SDL_Rect *rect, enum View360Layout layout,
                  float yaw, float pitch, float hfov, int flip_v);
 
 void view360_free(void);
+
+struct pl_gpu_t;
+struct pl_hook;
+
+const struct pl_hook *view360_pl_hook_create(const struct pl_gpu_t *gpu);
+
+void view360_pl_hook_destroy(const struct pl_hook **hook);
+
+void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
+                            float hfov, enum View360Layout layout);
 
 #endif /* LACHESIS_VIEW360_H */

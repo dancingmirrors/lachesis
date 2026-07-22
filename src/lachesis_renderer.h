@@ -26,6 +26,8 @@
 
 #include <libavutil/frame.h>
 
+#include "lachesis_view360.h"
+
 typedef struct VkRenderer VkRenderer;
 
 #define VIDEO_BACKGROUND_TILE_SIZE 64
@@ -84,20 +86,7 @@ int vk_renderer_resize(VkRenderer *renderer, int width, int height);
 
 void vk_renderer_destroy(VkRenderer *renderer);
 
-enum Vk360Layout {
-    VK_360_LAYOUT_OFF,
-    VK_360_LAYOUT_FULL,
-    VK_360_LAYOUT_TB,
-};
-
-static inline float view360_default_yaw(enum Vk360Layout layout) {
-    return layout == VK_360_LAYOUT_FULL ? 90.0f : 0.0f;
-}
-
-#define VIEW360_DEFAULT_HFOV 140.0f
-#define VIEW360_DEFAULT_PITCH -15.0f
-
-int vk_renderer_enable_360(VkRenderer *renderer, enum Vk360Layout layout);
+int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout);
 void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float hfov);
 
 #endif /* LACHESIS_RENDERER_H */
