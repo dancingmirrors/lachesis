@@ -36,7 +36,18 @@ static char audio_device_format_line[96] = "";
 static char media_info_vout_line[128] = "";
 
 static const char *media_info_renderer(void) {
-    return vk_renderer ? "vulkan (libplacebo)" : "SDL (software)";
+    static char buf[64];
+    const char *name;
+
+    if (vk_renderer) {
+        return "vulkan (libplacebo)";
+    }
+    if (!renderer) {
+        return "none";
+    }
+    name = SDL_GetRendererName(renderer);
+    snprintf(buf, sizeof(buf), "SDL (%s)", name ? name : "unknown");
+    return buf;
 }
 
 static const char *media_info_hwaccel(void) {
