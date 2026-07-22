@@ -68,6 +68,13 @@ static const char view360_shader[] =
     "//!MAXIMUM 1.0\n"
     "0.0\n"
     "\n"
+    "//!PARAM rot\n"
+    "//!DESC Source rotation in quarter turns\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 3.0\n"
+    "0.0\n"
+    "\n"
     "//!HOOK MAIN\n"
     "//!BIND HOOKED\n"
     "//!DESC 360 Panini projection with zoom-coupled vertical fit\n"
@@ -166,7 +173,16 @@ static const char view360_shader[] =
     "    float u   = lon / (2.0 * PI) + 0.5;\n"
     "    float v   = (0.5 - lat / PI) * (1.0 - 0.5 * tb);\n"
     "\n"
-    "    return sample_catmull_rom(vec2(u, v));\n"
+    "    vec2 st = vec2(u, v);\n"
+    "    if (rot == 1.0) {\n"
+    "        st = vec2(v, 1.0 - u);\n"
+    "    } else if (rot == 2.0) {\n"
+    "        st = vec2(1.0 - u, 1.0 - v);\n"
+    "    } else if (rot == 3.0) {\n"
+    "        st = vec2(1.0 - v, u);\n"
+    "    }\n"
+    "\n"
+    "    return sample_catmull_rom(st);\n"
     "}\n";
 /* clang-format on */
 
@@ -180,7 +196,7 @@ void view360_pl_hook_destroy(const struct pl_hook **hook) {
 }
 
 void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
-                            float hfov, enum View360Layout layout) {
+                            float hfov, enum View360Layout layout, int rotate) {
     float tb = layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f;
 
     for (int i = 0; i < hook->num_parameters; i++) {
@@ -196,6 +212,9 @@ void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
         }
         if (!strcmp(par->name, "tb")) {
             par->data->f = tb;
+        }
+        if (!strcmp(par->name, "rot")) {
+            par->data->f = (float)(rotate / 90);
         }
     }
 }
@@ -221,6 +240,7 @@ typedef struct View360Mesh {
     float pitch;
     float hfov;
     int layout;
+    int rotate;
     int flip_v;
     int valid;
 } View360Mesh;
@@ -238,7 +258,7 @@ static float view360_clamp(float x, float lo, float hi) {
 }
 
 static void view360_project_grid(const SDL_Rect *rect, float yaw, float pitch,
-                                 float hfov, float tb, int flip_v) {
+                                 float hfov, float tb) {
     float aspect = (float)rect->w / (float)rect->h;
     float hfov_rad = hfov * (VIEW360_PI / 180.0f);
     float hh = hfov_rad * 0.5f;
@@ -294,9 +314,34 @@ static void view360_project_grid(const SDL_Rect *rect, float yaw, float pitch,
             float v = (0.5f - lat / VIEW360_PI) * vmul;
 
             row_u[i] = lon / (2.0f * VIEW360_PI) + 0.5f;
-            row_v[i] = flip_v ? 1.0f - v : v;
+            row_v[i] = v;
         }
     }
+}
+
+static SDL_FPoint view360_map_tex(float u, float v) {
+    float s, t;
+
+    switch (mesh.rotate) {
+    case 90:
+        s = v;
+        t = 1.0f - u;
+        break;
+    case 180:
+        s = 1.0f - u;
+        t = 1.0f - v;
+        break;
+    case 270:
+        s = 1.0f - v;
+        t = u;
+        break;
+    default:
+        s = u;
+        t = v;
+        break;
+    }
+
+    return (SDL_FPoint){s, mesh.flip_v ? 1.0f - t : t};
 }
 
 static void view360_emit_quad(const SDL_FPoint pos[4], const float u[4],
@@ -308,7 +353,7 @@ static void view360_emit_quad(const SDL_FPoint pos[4], const float u[4],
         SDL_Vertex *vt = &mesh.verts[mesh.num_verts++];
         vt->position = pos[k];
         vt->color = (SDL_FColor){1.0f, 1.0f, 1.0f, 1.0f};
-        vt->tex_coord = (SDL_FPoint){u[k], v[k]};
+        vt->tex_coord = view360_map_tex(u[k], v[k]);
     }
 
     ix[0] = base;
@@ -329,7 +374,8 @@ static float view360_split_t(float a, float b) {
 }
 
 static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
-                         float yaw, float pitch, float hfov, int flip_v) {
+                         float yaw, float pitch, float hfov, int rotate,
+                         int flip_v) {
     const int cells = VIEW360_GRID_W * VIEW360_GRID_H;
     const int grid_points = (VIEW360_GRID_W + 1) * (VIEW360_GRID_H + 1);
 
@@ -345,10 +391,12 @@ static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
     }
 
     view360_project_grid(rect, yaw, pitch, hfov,
-                         layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f, flip_v);
+                         layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f);
 
     mesh.num_verts = 0;
     mesh.num_indices = 0;
+    mesh.rotate = rotate;
+    mesh.flip_v = flip_v;
 
     for (int j = 0; j < VIEW360_GRID_H; j++) {
         float py0 = rect->y + rect->h * ((float)j / VIEW360_GRID_H);
@@ -422,7 +470,6 @@ static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
     mesh.pitch = pitch;
     mesh.hfov = hfov;
     mesh.layout = layout;
-    mesh.flip_v = flip_v;
     mesh.valid = 1;
 
     return 0;
@@ -430,16 +477,16 @@ static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
 
 int view360_draw(SDL_Renderer *renderer, SDL_Texture *texture,
                  const SDL_Rect *rect, enum View360Layout layout,
-                 float yaw, float pitch, float hfov, int flip_v) {
+                 float yaw, float pitch, float hfov, int rotate, int flip_v) {
     if (!renderer || !texture || !rect || rect->w <= 0 || rect->h <= 0) {
         return -1;
     }
 
     if (!mesh.valid || mesh.yaw != yaw || mesh.pitch != pitch ||
         mesh.hfov != hfov || mesh.layout != (int)layout ||
-        mesh.flip_v != flip_v ||
+        mesh.rotate != rotate || mesh.flip_v != flip_v ||
         memcmp(&mesh.rect, rect, sizeof(*rect)) != 0) {
-        if (view360_build(rect, layout, yaw, pitch, hfov, flip_v) < 0) {
+        if (view360_build(rect, layout, yaw, pitch, hfov, rotate, flip_v) < 0) {
             return -1;
         }
     }

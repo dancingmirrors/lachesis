@@ -38,7 +38,7 @@ static inline float view360_default_yaw(enum View360Layout layout) {
 
 int view360_draw(SDL_Renderer *renderer, SDL_Texture *texture,
                  const SDL_Rect *rect, enum View360Layout layout,
-                 float yaw, float pitch, float hfov, int flip_v);
+                 float yaw, float pitch, float hfov, int rotate, int flip_v);
 
 void view360_free(void);
 
@@ -50,6 +50,6 @@ const struct pl_hook *view360_pl_hook_create(const struct pl_gpu_t *gpu);
 void view360_pl_hook_destroy(const struct pl_hook **hook);
 
 void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
-                            float hfov, enum View360Layout layout);
+                            float hfov, enum View360Layout layout, int rotate);
 
 #endif /* LACHESIS_VIEW360_H */

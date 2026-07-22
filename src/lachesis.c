@@ -969,7 +969,7 @@ static void video_image_display(VideoState *is) {
     if (enable_360sbs) {
         drew_360 = view360_draw(renderer, is->vid_texture, rect, view360_layout,
                                 sbs360_yaw, sbs360_pitch, sbs360_hfov,
-                                vp->flip_v) >= 0;
+                                video_rotate, vp->flip_v) >= 0;
     }
     if (!drew_360) {
         SDL_RenderTextureRotated(renderer, is->vid_texture, NULL, &dst_rectf,

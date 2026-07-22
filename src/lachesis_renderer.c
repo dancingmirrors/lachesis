@@ -1243,7 +1243,12 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     SDL_Rect *rect = &params->target_rect;
     target->crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
 
-    pl_frame->rotation = pl_rotation_normalize(pl_frame->rotation + params->rotate / 90);
+    pl_rotation rotation = pl_rotation_normalize(pl_frame->rotation + params->rotate / 90);
+    if (ctx->sbs360_enabled && ctx->sbs360_hook) {
+        pl_frame->rotation = PL_ROTATION_0;
+    } else {
+        pl_frame->rotation = rotation;
+    }
     switch (params->video_background_type) {
     case VIDEO_BACKGROUND_TILES:
         pl_params->background = PL_CLEAR_TILES;
@@ -1264,7 +1269,7 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
                                ctx->sbs360_pitch, ctx->sbs360_hfov,
-                               ctx->sbs360_layout);
+                               ctx->sbs360_layout, (int)rotation * 90);
         pl_params->hooks = &ctx->sbs360_hook;
         pl_params->num_hooks = 1;
     }
