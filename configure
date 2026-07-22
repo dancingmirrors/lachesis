@@ -113,9 +113,6 @@ check(
     fn=lambda: check_pkg_config("libavdevice >= 61.3.100"),
 )
 
-check("-rtsp-demuxer*", desc="RTSP demuxer in libavformat (assumed)", default=True)
-check("-mmsh-protocol*", desc="MMSH protocol in libavformat (assumed)", default=True)
-
 check(
     desc="SDL3",
     fn=lambda: check_pkg_config("sdl3 >= 3.0.0"),

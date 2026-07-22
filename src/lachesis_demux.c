@@ -812,15 +812,6 @@ int read_thread(void *arg) {
                 av_read_play(ic);
             }
         }
-#if LACHESIS_HAVE_RTSP_DEMUXER || LACHESIS_HAVE_MMSH_PROTOCOL
-        if (is->paused &&
-            (!strcmp(ic->iformat->name, "rtsp") ||
-             (ic->pb && !strncmp(input_filename, "mmsh:", 5)))) {
-            /* XXX */
-            SDL_Delay(10);
-            continue;
-        }
-#endif
         if (is->seek_req) {
             int64_t seek_target = is->seek_pos;
             int64_t seek_min = is->seek_rel > 0 ? seek_target - is->seek_rel + 2 : INT64_MIN;
