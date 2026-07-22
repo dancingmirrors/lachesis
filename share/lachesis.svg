@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Placeholder application icon for lachesis. Intentionally simple: a dark
+     rounded "frame" with a play glyph. Swap this file for real artwork when
+     it exists; the installed name (lachesis.svg) and the desktop entry's
+     Icon=lachesis key are all that matter. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <title>lachesis</title>
+  <defs>
+    <linearGradient id="lachesis-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#303030"/>
+      <stop offset="1" stop-color="#080808"/>
+    </linearGradient>
+  </defs>
+  <rect x="18" y="18" width="220" height="220" rx="46" ry="46"
+        fill="url(#lachesis-bg)" stroke="#565656" stroke-width="4"/>
+  <path d="M108 86 L108 170 L180 128 Z"
+        fill="#f4f4f4" stroke="#f4f4f4" stroke-width="12"
+        stroke-linejoin="round"/>
+</svg>

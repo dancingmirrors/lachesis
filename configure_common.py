@@ -582,19 +582,33 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     n += "default %s\n\n" % target
 
     prefix = _G.install_paths.get("PREFIX", "/usr/local")
+    install_cmds = [
+        "mkdir -p %s/bin" % prefix,
+        "install -v -m 0755 %s %s/bin/lachesis%s" % (target, prefix, exesuf),
+    ]
+    install_deps = [target]
+
+    if _G.exe_format == "elf":
+        desktop_src = os.path.join(root_dir, "share", "lachesis.desktop")
+        icon_src = os.path.join(root_dir, "share", "lachesis.svg")
+        icon_dir = "%s/share/icons/hicolor/scalable/apps" % prefix
+        install_cmds.append("mkdir -p %s/share/applications" % prefix)
+        install_cmds.append(
+            "install -v -m 0644 %s %s/share/applications/lachesis.desktop"
+            % (desktop_src, prefix)
+        )
+        install_cmds.append("mkdir -p %s" % icon_dir)
+        install_cmds.append(
+            "install -v -m 0644 %s %s/lachesis.svg" % (icon_src, icon_dir)
+        )
+        install_deps.append(desktop_src)
+        install_deps.append(icon_src)
+
     n += "rule install_rule\n"
     # Just Windows shenanigans..
-    n += (
-        '  command = sh -c "mkdir -p %s/bin && install -v -m 0755 %s %s/bin/lachesis%s"\n'
-        % (
-            prefix,
-            target,
-            prefix,
-            exesuf,
-        )
-    )
+    n += '  command = sh -c "%s"\n' % " && ".join(install_cmds)
     n += "  description = INSTALL\n\n"
-    n += "build install: install_rule | %s\n\n" % target
+    n += "build install: install_rule | %s\n\n" % " ".join(install_deps)
     return n
 
 
