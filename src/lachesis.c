@@ -218,6 +218,8 @@ void sbs360_reset_view(void) {
 SDL_Window *window;
 SDL_Renderer *renderer;
 
+static SDL_AtomicInt pending_window_resize;
+
 const SDL_PixelFormat *renderer_texture_formats = NULL;
 
 VkRenderer *vk_renderer;
@@ -1173,7 +1175,7 @@ void set_default_window_size(int width, int height, AVRational sar) {
     default_height = rect.h;
 
     if (window && !is_fullscreen && !cmd_width && !cmd_height) {
-        SDL_SetWindowSize(window, default_width, default_height);
+        SDL_SetAtomicInt(&pending_window_resize, 1);
     }
 }
 
@@ -2241,6 +2243,10 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             av_usleep((int64_t)(remaining_time * 1000000.0));
         }
         remaining_time = REFRESH_RATE;
+        if (SDL_CompareAndSwapAtomicInt(&pending_window_resize, 1, 0) &&
+            window && !is_fullscreen) {
+            SDL_SetWindowSize(window, default_width, default_height);
+        }
         ab_loop_check(is);
         if (!is->paused || is->force_refresh) {
             video_refresh(is, &remaining_time);
