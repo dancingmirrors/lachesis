@@ -585,8 +585,7 @@ Frame *frame_queue_peek_last(FrameQueue *f) {
 
 Frame *frame_queue_peek_writable(FrameQueue *f) {
     SDL_LockMutex(f->mutex);
-    while (f->size >= f->max_size &&
-           !f->pktq->abort_request) {
+    while (f->size >= f->max_size && !f->pktq->abort_request) {
         SDL_WaitCondition(f->cond, f->mutex);
     }
     SDL_UnlockMutex(f->mutex);
@@ -600,8 +599,7 @@ Frame *frame_queue_peek_writable(FrameQueue *f) {
 
 Frame *frame_queue_peek_readable(FrameQueue *f) {
     SDL_LockMutex(f->mutex);
-    while (f->size - f->rindex_shown <= 0 &&
-           !f->pktq->abort_request) {
+    while (f->size - f->rindex_shown <= 0 && !f->pktq->abort_request) {
         SDL_WaitCondition(f->cond, f->mutex);
     }
     SDL_UnlockMutex(f->mutex);
@@ -2243,8 +2241,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             av_usleep((int64_t)(remaining_time * 1000000.0));
         }
         remaining_time = REFRESH_RATE;
-        if (SDL_CompareAndSwapAtomicInt(&pending_window_resize, 1, 0) &&
-            window && !is_fullscreen) {
+        if (SDL_CompareAndSwapAtomicInt(&pending_window_resize, 1, 0) && window && !is_fullscreen) {
             SDL_SetWindowSize(window, default_width, default_height);
         }
         ab_loop_check(is);
