@@ -163,6 +163,7 @@ add_sources(
     "src/lachesis_screenshot.c",
     "src/lachesis_subtitles.c",
     "src/lachesis_terminal.c",
+    "src/lachesis_view360.c",
 )
 
 finish()

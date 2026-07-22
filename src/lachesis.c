@@ -105,6 +105,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_subtitles.h"
 #include "lachesis_terminal.h"
+#include "lachesis_view360.h"
 
 const char program_name[] = "lachesis";
 const int program_birth_year = 2003;
@@ -964,9 +965,17 @@ static void video_image_display(VideoState *is) {
         dst_rectf.x = cx - dst_rectf.w / 2.0f;
         dst_rectf.y = cy - dst_rectf.h / 2.0f;
     }
-    SDL_RenderTextureRotated(renderer, is->vid_texture, NULL, &dst_rectf,
-                             (double)video_rotate, NULL,
-                             vp->flip_v ? SDL_FLIP_VERTICAL : SDL_FLIP_NONE);
+    int drew_360 = 0;
+    if (enable_360sbs) {
+        drew_360 = view360_draw(renderer, is->vid_texture, rect, view360_layout,
+                                sbs360_yaw, sbs360_pitch, sbs360_hfov,
+                                vp->flip_v) >= 0;
+    }
+    if (!drew_360) {
+        SDL_RenderTextureRotated(renderer, is->vid_texture, NULL, &dst_rectf,
+                                 (double)video_rotate, NULL,
+                                 vp->flip_v ? SDL_FLIP_VERTICAL : SDL_FLIP_NONE);
+    }
     set_sdl_yuv_conversion_mode(NULL);
     if (sp) {
 #if USE_ONEPASS_SUBTITLE_RENDER
@@ -1106,6 +1115,7 @@ void do_exit(VideoState *is) {
     if (is) {
         stream_close(is);
     }
+    view360_free();
     if (renderer) {
         SDL_DestroyRenderer(renderer);
     }
@@ -2588,8 +2598,8 @@ int main(int argc, char **argv) {
             enable_360sbs = 1;
             view360_layout = VK_360_LAYOUT_TB;
         }
-        if (enable_360sbs && !enable_vulkan) {
-            fatal_quit("-360-sbs and -360-tb require Vulkan.\n");
+        if (enable_360sbs) {
+            sbs360_reset_view();
         }
         if (enable_vulkan) {
             vk_renderer = vk_get_renderer();
@@ -2639,7 +2649,6 @@ int main(int argc, char **argv) {
                     SDL_DestroyWindow(window);
                     window = NULL;
                 } else if (enable_360sbs) {
-                    sbs360_reset_view();
                     ret = vk_renderer_enable_360(vk_renderer, view360_layout);
                     if (ret < 0) {
                         fatal_quit("Failed to enable the 360° shader!\n");
@@ -2654,9 +2663,6 @@ int main(int argc, char **argv) {
 
             if (!vk_renderer) {
                 enable_vulkan = 0;
-                if (enable_360sbs) {
-                    fatal_quit("360° modes require Vulkan.\n");
-                }
             }
         }
 

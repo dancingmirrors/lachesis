@@ -411,24 +411,24 @@ void event_loop(VideoState **pis) {
                 }
                 break;
             case SDLK_KP_3:
-                if (vk_renderer) {
-                    if (!enable_360sbs) {
-                        enable_360sbs = 1;
-                        view360_layout = VK_360_LAYOUT_FULL;
-                        osd_show_message("360: side-by-side");
-                    } else if (view360_layout == VK_360_LAYOUT_FULL) {
-                        view360_layout = VK_360_LAYOUT_TB;
-                        osd_show_message("360: top-bottom");
-                    } else {
-                        enable_360sbs = 0;
-                        osd_show_message("360: off");
-                    }
-                    if (enable_360sbs) {
-                        sbs360_reset_view();
-                    }
-                    vk_renderer_enable_360(vk_renderer, enable_360sbs ? view360_layout : VK_360_LAYOUT_OFF);
-                    cur_stream->force_refresh = 1;
+                if (!enable_360sbs) {
+                    enable_360sbs = 1;
+                    view360_layout = VK_360_LAYOUT_FULL;
+                    osd_show_message("360: side-by-side");
+                } else if (view360_layout == VK_360_LAYOUT_FULL) {
+                    view360_layout = VK_360_LAYOUT_TB;
+                    osd_show_message("360: top-bottom");
+                } else {
+                    enable_360sbs = 0;
+                    osd_show_message("360: off");
                 }
+                if (enable_360sbs) {
+                    sbs360_reset_view();
+                }
+                if (vk_renderer) {
+                    vk_renderer_enable_360(vk_renderer, enable_360sbs ? view360_layout : VK_360_LAYOUT_OFF);
+                }
+                cur_stream->force_refresh = 1;
                 break;
             default:
                 break;
