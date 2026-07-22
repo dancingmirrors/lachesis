@@ -67,6 +67,7 @@ check(
     )
     and check_program("WINDRES")
     and chain(set_exe_format("pe"), True),
+    sources="share/lachesis.rc",
 )
 check(
     "macOS",

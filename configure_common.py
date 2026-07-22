@@ -519,6 +519,7 @@ def dedup_ldflags(flags):
 
 def _generate_ninja_file(sources, cflags_str, ldflags_str):
     cc = _G.programs.get("CC", "cc")
+    windres = _G.programs.get("WINDRES", "windres")
     build_dir = os.path.abspath(_G.build_dir)
     root_dir = os.path.abspath(_G.root_dir)
     exesuf = ".exe" if _G.exe_format == "pe" else ""
@@ -526,7 +527,7 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     # Pre-create object directories.
     for src in sources:
         rel = src.replace("$(ROOT)/", "").replace("$(BUILD)/", "")
-        if rel.endswith(".c") or rel.endswith(".m"):
+        if rel.endswith(".c") or rel.endswith(".m") or rel.endswith(".rc"):
             os.makedirs(
                 os.path.dirname(os.path.join(build_dir, rel)) or build_dir,
                 exist_ok=True,
@@ -536,6 +537,7 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     n += "builddir = %s\n" % build_dir
     n += "root = %s\n" % root_dir
     n += "cc = %s\n" % cc
+    n += "windres = %s\n" % windres
     n += "cflags = %s\n" % cflags_str
     n += "ldflags = %s\n" % ldflags_str
     n += "exesuf = %s\n\n" % exesuf
@@ -545,6 +547,10 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     n += "  description = CC $out\n"
     n += "  depfile = $out.d\n"
     n += "  deps = gcc\n\n"
+
+    n += "rule windres\n"
+    n += "  command = $windres -I$root -I$builddir $in $out\n"
+    n += "  description = WINRC $out\n\n"
 
     n += "rule link\n"
     n += "  command = $cc @$out.rsp $ldflags -o $out\n"
@@ -564,17 +570,19 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     n += "# Object files\n"
     for src in sources:
         src_path = src.replace("$(BUILD)", "$builddir").replace("$(ROOT)", "$root")
-        if src.endswith(".c"):
+        if src.endswith(".c") or src.endswith(".m"):
             obj = src[:-2] + ".o"
-        elif src.endswith(".m"):
-            obj = src[:-2] + ".o"
+            rule = "cc"
+        elif src.endswith(".rc"):
+            obj = src[:-3] + ".o"
+            rule = "windres"
         else:
             continue
         obj_path = obj.replace("$(ROOT)/", "$builddir/").replace(
             "$(BUILD)/", "$builddir/"
         )
         objects.append(obj_path)
-        n += "build %s: cc %s || %s\n" % (obj_path, src_path, version_h)
+        n += "build %s: %s %s || %s\n" % (obj_path, rule, src_path, version_h)
     n += "\n"
 
     target = "$builddir/lachesis$exesuf"
