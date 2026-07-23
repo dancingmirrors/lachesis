@@ -208,11 +208,13 @@ int fatal_error_pending = 0;
 enum View360Layout view360_layout = VIEW360_LAYOUT_FULL;
 float sbs360_yaw = 0.0f;
 float sbs360_pitch = VIEW360_DEFAULT_PITCH;
+float sbs360_roll = 0.0f;
 float sbs360_hfov = VIEW360_DEFAULT_HFOV;
 
 void sbs360_reset_view(void) {
     sbs360_yaw = view360_default_yaw(view360_layout);
     sbs360_pitch = VIEW360_DEFAULT_PITCH;
+    sbs360_roll = 0.0f;
     sbs360_hfov = VIEW360_DEFAULT_HFOV;
 }
 
@@ -886,7 +888,7 @@ static void video_image_display(VideoState *is) {
     calculate_display_rect(rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
     if (vk_renderer) {
         if (enable_360sbs) {
-            vk_renderer_update_360(vk_renderer, sbs360_yaw, sbs360_pitch, sbs360_hfov);
+            vk_renderer_update_360(vk_renderer, sbs360_yaw, sbs360_pitch, sbs360_roll, sbs360_hfov);
         }
         is->render_params.disable_linear_scaling = is->render_low_quality;
         is->render_params.skip_anti_aliasing = is->render_low_quality;
@@ -968,8 +970,8 @@ static void video_image_display(VideoState *is) {
     int drew_360 = 0;
     if (enable_360sbs) {
         drew_360 = view360_draw(renderer, is->vid_texture, rect, view360_layout,
-                                sbs360_yaw, sbs360_pitch, sbs360_hfov,
-                                video_rotate, vp->flip_v) >= 0;
+                                sbs360_yaw, sbs360_pitch, sbs360_roll,
+                                sbs360_hfov, video_rotate, vp->flip_v) >= 0;
     }
     if (!drew_360) {
         SDL_RenderTextureRotated(renderer, is->vid_texture, NULL, &dst_rectf,

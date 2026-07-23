@@ -87,6 +87,6 @@ int vk_renderer_resize(VkRenderer *renderer, int width, int height);
 void vk_renderer_destroy(VkRenderer *renderer);
 
 int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout);
-void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float hfov);
+void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float roll, float hfov);
 
 #endif /* LACHESIS_RENDERER_H */

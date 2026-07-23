@@ -142,6 +142,7 @@ typedef struct RendererContext {
     int sbs360_enabled;
     float sbs360_yaw;
     float sbs360_pitch;
+    float sbs360_roll;
     float sbs360_hfov;
     enum View360Layout sbs360_layout;
 
@@ -1268,8 +1269,9 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
-                               ctx->sbs360_pitch, ctx->sbs360_hfov,
-                               ctx->sbs360_layout, (int)rotation * 90);
+                               ctx->sbs360_pitch, ctx->sbs360_roll,
+                               ctx->sbs360_hfov, ctx->sbs360_layout,
+                               (int)rotation * 90);
         pl_params->hooks = &ctx->sbs360_hook;
         pl_params->num_hooks = 1;
     }
@@ -1634,6 +1636,7 @@ int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
         }
         ctx->sbs360_yaw = 0.0f;
         ctx->sbs360_pitch = 0.0f;
+        ctx->sbs360_roll = 0.0f;
         ctx->sbs360_hfov = 90.0f;
     } else if (!enable && ctx->sbs360_hook) {
         view360_pl_hook_destroy(&ctx->sbs360_hook);
@@ -1648,16 +1651,18 @@ int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
 #endif
 }
 
-void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float hfov) {
+void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float roll, float hfov) {
 #if HAVE_VULKAN_RENDERER
     RendererContext *ctx = (RendererContext *)renderer;
     ctx->sbs360_yaw = yaw;
     ctx->sbs360_pitch = pitch;
+    ctx->sbs360_roll = roll;
     ctx->sbs360_hfov = hfov;
 #else
     (void)renderer;
     (void)yaw;
     (void)pitch;
+    (void)roll;
     (void)hfov;
 #endif
 }

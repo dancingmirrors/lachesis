@@ -81,6 +81,35 @@ static void seek_chapter(VideoState *is, int incr) {
     stream_seek(is, av_rescale_q(is->ic->chapters[i]->start, is->ic->chapters[i]->time_base, AV_TIME_BASE_Q), 0, 0);
 }
 
+/* We "roll" as a 90° rotation we can keep the controls sane. */
+static void sbs360_view_move(VideoState *cur_stream, float sx, float sy) {
+    int quadrant = (((int)lroundf(sbs360_roll / 90.0f)) % 4 + 4) % 4;
+    float dyaw, dpitch;
+
+    switch (quadrant) {
+    case 1:
+        dyaw = -sy;
+        dpitch = sx;
+        break;
+    case 2:
+        dyaw = -sx;
+        dpitch = -sy;
+        break;
+    case 3:
+        dyaw = sy;
+        dpitch = -sx;
+        break;
+    default:
+        dyaw = sx;
+        dpitch = sy;
+        break;
+    }
+
+    sbs360_yaw += dyaw;
+    sbs360_pitch = av_clipf(sbs360_pitch + dpitch, -90.0f, 90.0f);
+    cur_stream->force_refresh = 1;
+}
+
 static void pan_display(VideoState *cur_stream, SDL_Scancode sc) {
     float step_x = FFMAX(cur_stream->width, 1) * 0.1f;
     float step_y = FFMAX(cur_stream->height, 1) * 0.1f;
@@ -363,20 +392,17 @@ void event_loop(VideoState **pis) {
                     break;
                 }
                 if (enable_360sbs) {
-                    sbs360_pitch = FFMIN(sbs360_pitch + 5.0f, 90.0f);
-                    cur_stream->force_refresh = 1;
+                    sbs360_view_move(cur_stream, 0.0f, 5.0f);
                 }
                 break;
             case SDLK_K:
                 if (enable_360sbs) {
-                    sbs360_pitch = FFMAX(sbs360_pitch - 5.0f, -90.0f);
-                    cur_stream->force_refresh = 1;
+                    sbs360_view_move(cur_stream, 0.0f, -5.0f);
                 }
                 break;
             case SDLK_J:
                 if (enable_360sbs) {
-                    sbs360_yaw -= 5.0f;
-                    cur_stream->force_refresh = 1;
+                    sbs360_view_move(cur_stream, -5.0f, 0.0f);
                 }
                 break;
             case SDLK_L:
@@ -384,7 +410,26 @@ void event_loop(VideoState **pis) {
                     ab_loop_toggle(cur_stream);
                     cur_stream->force_refresh = 1;
                 } else if (enable_360sbs) {
-                    sbs360_yaw += 5.0f;
+                    sbs360_view_move(cur_stream, 5.0f, 0.0f);
+                }
+                break;
+            case SDLK_U:
+                if (enable_360sbs) {
+                    sbs360_roll -= 90.0f;
+                    if (sbs360_roll <= -180.0f) {
+                        sbs360_roll += 360.0f;
+                    }
+                    osd_show_message("Roll: %d\xc2\xb0", (int)sbs360_roll);
+                    cur_stream->force_refresh = 1;
+                }
+                break;
+            case SDLK_O:
+                if (enable_360sbs) {
+                    sbs360_roll += 90.0f;
+                    if (sbs360_roll > 180.0f) {
+                        sbs360_roll -= 360.0f;
+                    }
+                    osd_show_message("Roll: %d\xc2\xb0", (int)sbs360_roll);
                     cur_stream->force_refresh = 1;
                 }
                 break;
@@ -480,9 +525,7 @@ void event_loop(VideoState **pis) {
                 sbs360_drag_last_y = event.motion.y;
                 if (dx || dy) {
                     float deg_per_px = sbs360_hfov / (float)(cur_stream->width ? cur_stream->width : 1) * 1.0f;
-                    sbs360_yaw += dx * deg_per_px;
-                    sbs360_pitch = av_clipf(sbs360_pitch - dy * deg_per_px, -90.0f, 90.0f);
-                    cur_stream->force_refresh = 1;
+                    sbs360_view_move(cur_stream, dx * deg_per_px, -dy * deg_per_px);
                 }
                 break;
             }

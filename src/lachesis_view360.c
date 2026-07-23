@@ -54,6 +54,13 @@ static const char view360_shader[] =
     "//!MAXIMUM 90.0\n"
     "0.0\n"
     "\n"
+    "//!PARAM roll\n"
+    "//!DESC View roll angle (degrees, positive = clockwise)\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM -180.0\n"
+    "//!MAXIMUM 180.0\n"
+    "0.0\n"
+    "\n"
     "//!PARAM hfov\n"
     "//!DESC Horizontal field of view (degrees)\n"
     "//!TYPE DYNAMIC float\n"
@@ -150,6 +157,14 @@ static const char view360_shader[] =
     "    float aspect = target_size.x / target_size.y;\n"
     "    vec3 ray = view_ray(ndc, aspect);\n"
     "\n"
+    "    float r  = roll * (PI / 180.0);\n"
+    "    float cr = cos(r), sr = sin(r);\n"
+    "    mat3 Rz  = mat3(\n"
+    "         cr,  sr, 0.0,\n"
+    "        -sr,  cr, 0.0,\n"
+    "        0.0, 0.0, 1.0\n"
+    "    );\n"
+    "\n"
     "    float p  = pitch * (PI / 180.0);\n"
     "    float cp = cos(p), sp = sin(p);\n"
     "    mat3 Rx  = mat3(\n"
@@ -166,7 +181,7 @@ static const char view360_shader[] =
     "        sy, 0.0, cy\n"
     "    );\n"
     "\n"
-    "    vec3 dir = Ry * Rx * ray;\n"
+    "    vec3 dir = Ry * Rx * Rz * ray;\n"
     "\n"
     "    float lon = atan(dir.x, dir.z);\n"
     "    float lat = asin(clamp(dir.y, -1.0, 1.0));\n"
@@ -196,7 +211,8 @@ void view360_pl_hook_destroy(const struct pl_hook **hook) {
 }
 
 void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
-                            float hfov, enum View360Layout layout, int rotate) {
+                            float roll, float hfov, enum View360Layout layout,
+                            int rotate) {
     float tb = layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f;
 
     for (int i = 0; i < hook->num_parameters; i++) {
@@ -206,6 +222,9 @@ void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
         }
         if (!strcmp(par->name, "pitch")) {
             par->data->f = pitch;
+        }
+        if (!strcmp(par->name, "roll")) {
+            par->data->f = roll;
         }
         if (!strcmp(par->name, "hfov")) {
             par->data->f = hfov;
@@ -238,6 +257,7 @@ typedef struct View360Mesh {
     SDL_Rect rect;
     float yaw;
     float pitch;
+    float roll;
     float hfov;
     int layout;
     int rotate;
@@ -258,7 +278,7 @@ static float view360_clamp(float x, float lo, float hi) {
 }
 
 static void view360_project_grid(const SDL_Rect *rect, float yaw, float pitch,
-                                 float hfov, float tb) {
+                                 float roll, float hfov, float tb) {
     float aspect = (float)rect->w / (float)rect->h;
     float hfov_rad = hfov * (VIEW360_PI / 180.0f);
     float hh = hfov_rad * 0.5f;
@@ -268,6 +288,8 @@ static void view360_project_grid(const SDL_Rect *rect, float yaw, float pitch,
     float vscale = 1.0f + view360_smoothstep(VIEW360_VC_LO, VIEW360_VC_HI, hfov);
     float vmul = 1.0f - 0.5f * tb;
 
+    float r = roll * (VIEW360_PI / 180.0f);
+    float cr = cosf(r), sr = sinf(r);
     float p = pitch * (VIEW360_PI / 180.0f);
     float cp = cosf(p), sp = sinf(p);
     float ya = yaw * (VIEW360_PI / 180.0f);
@@ -304,10 +326,13 @@ static void view360_project_grid(const SDL_Rect *rect, float yaw, float pitch,
             float y = sinth;
             float z = costh * col_cphi[i];
 
-            float y2 = cp * y + sp * z;
-            float z2 = -sp * y + cp * z;
-            float x3 = cy * x + sy * z2;
-            float z3 = -sy * x + cy * z2;
+            float x1 = cr * x - sr * y;
+            float y1 = sr * x + cr * y;
+
+            float y2 = cp * y1 + sp * z;
+            float z2 = -sp * y1 + cp * z;
+            float x3 = cy * x1 + sy * z2;
+            float z3 = -sy * x1 + cy * z2;
 
             float lon = atan2f(x3, z3);
             float lat = asinf(view360_clamp(y2, -1.0f, 1.0f));
@@ -374,8 +399,8 @@ static float view360_split_t(float a, float b) {
 }
 
 static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
-                         float yaw, float pitch, float hfov, int rotate,
-                         int flip_v) {
+                         float yaw, float pitch, float roll, float hfov,
+                         int rotate, int flip_v) {
     const int cells = VIEW360_GRID_W * VIEW360_GRID_H;
     const int grid_points = (VIEW360_GRID_W + 1) * (VIEW360_GRID_H + 1);
 
@@ -390,7 +415,7 @@ static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
         }
     }
 
-    view360_project_grid(rect, yaw, pitch, hfov,
+    view360_project_grid(rect, yaw, pitch, roll, hfov,
                          layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f);
 
     mesh.num_verts = 0;
@@ -468,6 +493,7 @@ static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
     mesh.rect = *rect;
     mesh.yaw = yaw;
     mesh.pitch = pitch;
+    mesh.roll = roll;
     mesh.hfov = hfov;
     mesh.layout = layout;
     mesh.valid = 1;
@@ -477,16 +503,18 @@ static int view360_build(const SDL_Rect *rect, enum View360Layout layout,
 
 int view360_draw(SDL_Renderer *renderer, SDL_Texture *texture,
                  const SDL_Rect *rect, enum View360Layout layout,
-                 float yaw, float pitch, float hfov, int rotate, int flip_v) {
+                 float yaw, float pitch, float roll, float hfov, int rotate,
+                 int flip_v) {
     if (!renderer || !texture || !rect || rect->w <= 0 || rect->h <= 0) {
         return -1;
     }
 
     if (!mesh.valid || mesh.yaw != yaw || mesh.pitch != pitch ||
-        mesh.hfov != hfov || mesh.layout != (int)layout ||
+        mesh.roll != roll || mesh.hfov != hfov || mesh.layout != (int)layout ||
         mesh.rotate != rotate || mesh.flip_v != flip_v ||
         memcmp(&mesh.rect, rect, sizeof(*rect)) != 0) {
-        if (view360_build(rect, layout, yaw, pitch, hfov, rotate, flip_v) < 0) {
+        if (view360_build(rect, layout, yaw, pitch, roll, hfov, rotate,
+                          flip_v) < 0) {
             return -1;
         }
     }
