@@ -901,12 +901,6 @@ static void video_image_display(VideoState *is) {
         is->render_params.rotate = video_rotate;
         int ret = vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
         if (ret < 0) {
-            static int warned;
-            if (!warned) {
-                warned = 1;
-                log_warn("The Vulkan renderer failed to display a frame: %s.\n",
-                         av_err2str(ret));
-            }
             /* Can't be used to determine the renderer's health. */
             if (!(SDL_GetWindowFlags(window) &
                   (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) &&
