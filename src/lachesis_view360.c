@@ -197,7 +197,10 @@ static const char view360_shader[] =
     "        st = vec2(1.0 - v, u);\n"
     "    }\n"
     "\n"
+#if 0
     "    return sample_catmull_rom(st);\n"
+#endif
+    "    return HOOKED_tex(vec2(u, v));\n"
     "}\n";
 /* clang-format on */
 
