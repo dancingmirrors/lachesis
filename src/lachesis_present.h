@@ -1,5 +1,4 @@
 /*
- * Copyright © 2003 Fabrice Bellard
  * Copyright © 2026 dancingmirrors@icloud.com
  *
  * This file is part of lachesis.
@@ -19,16 +18,31 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef LACHESIS_VFILTER_H
-#define LACHESIS_VFILTER_H
+#ifndef LACHESIS_PRESENT_H
+#define LACHESIS_PRESENT_H
 
-#include "lachesis_internal.h"
+#include <stdint.h>
 
-int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame);
-int check_filtergraph(const char *desc);
+typedef struct PresentStats {
+    double nominal_hz;
+    double measured_hz;
+    double jitter;
+    int measuring;
+    int snapping;
+} PresentStats;
 
-void report_filter_output(AVFilterContext *filt_out,
-                          int *last_w, int *last_h, AVRational *last_sar,
-                          AVRational *last_fr);
+void present_update_display_mode(void);
+void present_disable_snap(void);
+void present_restore_snap(void);
+void present_reset(void);
+void present_feedback(int64_t submit_us, int64_t done_us);
 
-#endif /* LACHESIS_VFILTER_H */
+double present_vsync_sec(void);
+
+int64_t present_last_done_us(void);
+
+double present_snap(double ideal_sec, double now_sec);
+
+void present_get_stats(PresentStats *st);
+
+#endif /* LACHESIS_PRESENT_H */

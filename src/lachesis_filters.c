@@ -202,6 +202,12 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         last_filter = filt_ctx;                                                 \
     } while (0)
     /* clang-format on */
+    if (fps_convert > 0) {
+        char fps_buf[32];
+        snprintf(fps_buf, sizeof(fps_buf), "fps=%.6g", fps_convert);
+        INSERT_FILT("fps", fps_buf);
+    }
+
     if (autorotate) {
         int32_t *displaymatrix = NULL;
         AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX);
@@ -253,25 +259,22 @@ fail:
     return ret;
 }
 
-void report_filter_output(VideoState *is, AVFilterContext *filt_out,
-                          int *last_w, int *last_h, AVRational *last_sar) {
+void report_filter_output(AVFilterContext *filt_out,
+                          int *last_w, int *last_h, AVRational *last_sar,
+                          AVRational *last_fr) {
     int ow = av_buffersink_get_w(filt_out);
     int oh = av_buffersink_get_h(filt_out);
     AVRational osar = av_buffersink_get_sample_aspect_ratio(filt_out);
-    int sw = is->video_st->codecpar->width;
-    int sh = is->video_st->codecpar->height;
-    AVRational ssar = av_guess_sample_aspect_ratio(is->ic, is->video_st, NULL);
+    AVRational ofr = av_buffersink_get_frame_rate(filt_out);
 
-    if (ow == *last_w && oh == *last_h && !av_cmp_q(osar, *last_sar)) {
+    if (ow == *last_w && oh == *last_h && !av_cmp_q(osar, *last_sar) &&
+        ofr.num == last_fr->num && ofr.den == last_fr->den) {
         return;
     }
     *last_w = ow;
     *last_h = oh;
     *last_sar = osar;
+    *last_fr = ofr;
 
-    if (ow == sw && oh == sh && !av_cmp_q(osar, ssar)) {
-        return;
-    }
-
-    media_info_note_video_output(ow, oh, osar);
+    media_info_note_video_output(ow, oh, osar, ofr);
 }

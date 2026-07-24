@@ -57,6 +57,8 @@ typedef struct RenderParams {
     int skip_anti_aliasing;
     int deinterlace;
     int rotate;
+    int64_t present_done_us;
+    int64_t present_block_us;
 } RenderParams;
 
 #define VK_DECODE_CAP_H264 (1u << 0)

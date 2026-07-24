@@ -101,6 +101,7 @@
 #include "lachesis_network.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
+#include "lachesis_present.h"
 #include "lachesis_rc.h"
 #include "lachesis_renderer.h"
 #include "lachesis_subtitles.h"
@@ -169,7 +170,11 @@ fail:
 
 #define AV_SYNC_THRESHOLD_MIN 0.04
 #define AV_SYNC_THRESHOLD_MAX 0.1
-#define AV_SYNC_FRAMEDUP_THRESHOLD 0.1
+
+#define AV_SYNC_SLEW_GAIN 0.1
+#define AV_SYNC_SLEW_FACTOR 0.1
+#define AV_SYNC_RESYNC_THRESHOLD 0.2
+#define PRESENT_LEAD_MAX 0.004
 
 #define EXTERNAL_CLOCK_SPEED_MIN 0.900
 #define EXTERNAL_CLOCK_SPEED_MAX 1.010
@@ -178,6 +183,8 @@ fail:
 #define REFRESH_RATE 0.01
 
 #define CURSOR_HIDE_DELAY 1000000
+
+#define AUDIO_START_MAX_WAIT_US (10 * 1000000)
 
 #define USE_ONEPASS_SUBTITLE_RENDER 1
 
@@ -1263,6 +1270,7 @@ static int video_open(VideoState *is) {
     SDL_SetWindowFullscreen(window, is_fullscreen);
     SDL_ShowWindow(window);
     SDL_SyncWindow(window);
+    present_update_display_mode();
 
     if (window_title) {
         SDL_SetWindowTitle(window, window_title);
@@ -1286,6 +1294,8 @@ static void video_display(VideoState *is) {
     }
 
     is->render_params.osd_pixels = NULL;
+    is->render_params.present_done_us = 0;
+    is->render_params.present_block_us = 0;
     osd_prepare_vulkan(is);
 
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -1294,7 +1304,21 @@ static void video_display(VideoState *is) {
         video_image_display(is);
     }
     osd_draw(is);
-    SDL_RenderPresent(renderer);
+    if (vk_renderer) {
+        int64_t done = is->render_params.present_done_us;
+        if (done > 0) {
+            present_feedback(done - is->render_params.present_block_us, done);
+        }
+    } else {
+        int64_t submit = av_gettime_relative();
+        SDL_RenderPresent(renderer);
+        present_feedback(submit, av_gettime_relative());
+    }
+
+    if (is->audio_start_pending) {
+        is->audio_start_pending = 0;
+        audio_device_resume();
+    }
 }
 
 double get_clock(Clock *c) {
@@ -1429,6 +1453,8 @@ static void stream_toggle_pause(VideoState *is) {
             is->vidclk.paused = 0;
         }
         set_clock(&is->vidclk, get_clock(&is->vidclk), is->vidclk.serial);
+        set_clock(&is->audclk, get_clock(&is->audclk), is->audclk.serial);
+        is->audclk_drift_valid = 0;
     }
     set_clock(&is->extclk, get_clock(&is->extclk), is->extclk.serial);
     is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = !is->paused;
@@ -1530,20 +1556,26 @@ void step_to_next_frame(VideoState *is) {
 }
 
 static double compute_target_delay(double delay, VideoState *is) {
-    double sync_threshold, diff = 0;
+    double diff = 0;
 
     if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
         diff = get_clock(&is->vidclk) - get_master_clock(is);
-        sync_threshold = FFMAX(AV_SYNC_THRESHOLD_MIN, FFMIN(AV_SYNC_THRESHOLD_MAX, delay));
+        is->last_av_diff = isnan(diff) ? NAN : -diff;
         if (!isnan(diff) && fabs(diff) < is->max_frame_duration) {
-            if (diff <= -sync_threshold) {
+            if (fabs(diff) <= AV_SYNC_THRESHOLD_MAX) {
+                double base = delay > 0 ? delay : AV_SYNC_THRESHOLD_MIN;
+                double change = av_clipd(diff * AV_SYNC_SLEW_GAIN,
+                                         -base * AV_SYNC_SLEW_FACTOR,
+                                         base * AV_SYNC_SLEW_FACTOR);
+                delay = FFMAX(0, delay + change);
+            } else if (diff < 0) {
                 delay = FFMAX(0, delay + diff);
-            } else if (diff >= sync_threshold && delay > AV_SYNC_FRAMEDUP_THRESHOLD) {
+            } else {
                 delay = delay + diff;
-            } else if (diff >= sync_threshold) {
-                delay = 2 * delay;
             }
         }
+    } else {
+        is->last_av_diff = NAN;
     }
 
     return delay;
@@ -1607,13 +1639,21 @@ static void video_refresh(void *opaque, double *remaining_time) {
             delay = compute_target_delay(last_duration, is) / playback_speed;
 
             time = av_gettime_relative() / 1000000.0;
-            if (!benchmark && time < is->frame_timer + delay) {
-                *remaining_time = FFMIN(is->frame_timer + delay - time, *remaining_time);
-                goto display;
+            if (!benchmark) {
+                double ideal = is->frame_timer + delay;
+                double target = present_snap(ideal, time);
+                double lead = 0;
+                if (target != ideal) {
+                    lead = FFMIN(PRESENT_LEAD_MAX, present_vsync_sec() * 0.25);
+                }
+                if (time < target - lead) {
+                    *remaining_time = FFMIN(target - lead - time, *remaining_time);
+                    goto display;
+                }
             }
 
             is->frame_timer += delay;
-            if (!benchmark && delay > 0 && time - is->frame_timer > AV_SYNC_THRESHOLD_MAX) {
+            if (!benchmark && delay > 0 && time - is->frame_timer > AV_SYNC_RESYNC_THRESHOLD) {
                 is->frame_timer = time;
             }
 
@@ -1626,8 +1666,12 @@ static void video_refresh(void *opaque, double *remaining_time) {
             if (frame_queue_nb_remaining(&is->pictq) > 1) {
                 Frame *nextvp = frame_queue_peek_next(&is->pictq);
                 duration = vp_duration(is, vp, nextvp) / playback_speed;
+                int64_t last_done = present_last_done_us();
+                int presenting = display_disable ||
+                    (last_done > 0 &&
+                     av_gettime_relative() - last_done < 100000);
                 /* clang-format off */
-                if (!benchmark && !is->step &&
+                if (!benchmark && !is->step && presenting &&
                     (playback_speed > 1.0 ||
                      get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) &&
                     time > is->frame_timer + duration) {
@@ -1946,6 +1990,7 @@ int video_thread(void *arg) {
     int last_out_w = -1;
     int last_out_h = -1;
     AVRational last_out_sar = {0, 1};
+    AVRational last_out_fr = {0, 0};
     int download_active = 0;
 
     if (!frame) {
@@ -2016,7 +2061,8 @@ int video_thread(void *arg) {
             last_serial = is->viddec.pkt_serial;
             last_vfilter_idx = is->vfilter_idx;
             frame_rate = av_buffersink_get_frame_rate(filt_out);
-            report_filter_output(is, filt_out, &last_out_w, &last_out_h, &last_out_sar);
+            report_filter_output(filt_out, &last_out_w, &last_out_h,
+                                 &last_out_sar, &last_out_fr);
         } else if (download_active && frame->hw_frames_ctx) {
             hwframe_download_inplace(frame);
         }
@@ -2125,6 +2171,7 @@ static VideoState *stream_open(const char *filename,
     init_clock(&is->audclk, &is->audioq.serial);
     init_clock(&is->extclk, &is->extclk.serial);
     is->audio_clock_serial = -1;
+    is->last_av_diff = NAN;
     if (video_background) {
         if (!strcmp(video_background, "none")) {
             is->render_params.video_background_type = VIDEO_BACKGROUND_NONE;
@@ -2246,6 +2293,11 @@ static void drop_vulkan_renderer(void) {
     create_sdl_renderer_for_window();
     apply_startup_window_title();
     SDL_ShowWindow(window);
+    present_update_display_mode();
+    present_reset();
+    if (!no_vsync_snap && !benchmark) {
+        present_restore_snap();
+    }
 }
 
 void vulkan_fault_fallback(VideoState **pis) {
@@ -2361,6 +2413,8 @@ void toggle_fullscreen(VideoState *is) {
         is->height = default_height;
         is->force_refresh = 1;
     }
+    present_update_display_mode();
+    present_reset();
 }
 
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
@@ -2380,6 +2434,11 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             SDL_SetWindowSize(window, default_width, default_height);
         }
         ab_loop_check(is);
+        if (is->audio_start_pending &&
+            av_gettime_relative() - is->audio_start_pending_since > AUDIO_START_MAX_WAIT_US) {
+            is->audio_start_pending = 0;
+            audio_device_resume();
+        }
         if (!is->paused || is->force_refresh) {
             video_refresh(is, &remaining_time);
         }
@@ -2637,6 +2696,12 @@ int main(int argc, char **argv) {
         fatal_quit("Invalid audio filter \"%s\".\n",
                    afilters_opt);
     }
+    if (fps_convert < 0 || fps_convert > 480) {
+        fatal_quit("-r must be between 0 and 480.\n");
+    }
+    if (display_fps_override < 0 || display_fps_override > 1000) {
+        fatal_quit("-display-fps must be between 0 and 1000.\n");
+    }
 
     if (playlist_size == 0 && n_pending_dirs > 0) {
         expand_directory(pending_dirs[0]);
@@ -2798,8 +2863,15 @@ int main(int argc, char **argv) {
 
         apply_startup_window_title();
 
+        if (no_vsync_snap || benchmark ||
+            (vk_renderer && vulkan_swap_mode &&
+             strncmp(vulkan_swap_mode, "fifo", 4) != 0)) {
+            present_disable_snap();
+        }
+
         /* Show the window early so the swapchain is fully initialized. */
         SDL_ShowWindow(window);
+        present_update_display_mode();
         if (vk_renderer) {
             int vk_w = 0, vk_h = 0;
             SDL_GetWindowSizeInPixels(window, &vk_w, &vk_h);

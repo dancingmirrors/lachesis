@@ -63,6 +63,9 @@ static unsigned int audio_cb_buf_size;
 int64_t audio_callback_time;
 int audio_speed_serial = 0;
 
+#define AUDCLK_SMOOTH_ALPHA 0.05
+#define AUDCLK_RESET_THRESHOLD 0.3
+
 static inline int cmp_audio_fmts(enum AVSampleFormat fmt1, int64_t channel_count1,
                                  enum AVSampleFormat fmt2, int64_t channel_count2) {
     /* If channel count == 1, planar and non-planar formats are the same. */
@@ -512,16 +515,29 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     }
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
     /* Let's assume the audio driver used by SDL has two periods. */
-    if (!isnan(is->audio_clock)) {
-        /* clang-format off */
-        set_clock_at(&is->audclk,
-                     is->audio_clock -
-                         (double)(2 * is->audio_hw_buf_size +
-                                  is->audio_write_buf_size) /
-                             is->audio_tgt.bytes_per_sec,
-                     is->audio_clock_serial,
-                     audio_callback_time / 1000000.0);
-        /* clang-format on */
+    if (!isnan(is->audio_clock) && is->audio_buf && !is->paused) {
+        double cb_time = audio_callback_time / 1000000.0;
+        double raw_pts = is->audio_clock -
+            (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) /
+                is->audio_tgt.bytes_per_sec;
+        double raw_drift = raw_pts - cb_time;
+        double dt = cb_time - is->audclk_drift_time;
+        double predicted = is->audclk_drift + (playback_speed - 1.0) * dt;
+        if (!is->audclk_drift_valid ||
+            is->audclk_drift_serial != is->audio_clock_serial ||
+            is->audclk_drift_speed_serial != audio_speed_serial ||
+            dt <= 0 || dt > 1.0 ||
+            fabs(raw_drift - predicted) > AUDCLK_RESET_THRESHOLD) {
+            is->audclk_drift = raw_drift;
+            is->audclk_drift_valid = 1;
+            is->audclk_drift_serial = is->audio_clock_serial;
+            is->audclk_drift_speed_serial = audio_speed_serial;
+        } else {
+            is->audclk_drift = predicted + (raw_drift - predicted) * AUDCLK_SMOOTH_ALPHA;
+        }
+        is->audclk_drift_time = cb_time;
+        set_clock_at(&is->audclk, is->audclk_drift + cb_time,
+                     is->audio_clock_serial, cb_time);
         sync_clock_to_slave(&is->extclk, &is->audclk);
     }
 }

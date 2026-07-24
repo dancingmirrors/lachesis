@@ -26,6 +26,7 @@
 #include <stdlib.h>
 
 #include <libavutil/attributes.h>
+#include <libavutil/log.h>
 
 extern int lachesis_quiet;
 
@@ -42,6 +43,16 @@ static av_unused av_printf_format(1, 2) void log_info(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     log_vline("INFO: ", fmt, ap);
+    va_end(ap);
+}
+
+static av_unused av_printf_format(1, 2) void log_verbose(const char *fmt, ...) {
+    va_list ap;
+    if (lachesis_quiet) {
+        return;
+    }
+    va_start(ap, fmt);
+    av_vlog(NULL, AV_LOG_VERBOSE, fmt, ap);
     va_end(ap);
 }
 

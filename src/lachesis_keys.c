@@ -40,6 +40,7 @@
 #include "lachesis_keys.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
+#include "lachesis_present.h"
 #include "lachesis_renderer.h"
 #include "lachesis_screenshot.h"
 
@@ -578,9 +579,14 @@ void event_loop(VideoState **pis) {
             if (vk_renderer) {
                 vk_renderer_resize(vk_renderer, screen_width, screen_height);
             }
+            present_reset();
             [[fallthrough]];
         case SDL_EVENT_WINDOW_EXPOSED:
             cur_stream->force_refresh = 1;
+            break;
+        case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+            present_update_display_mode();
+            present_reset();
             break;
         case SDL_EVENT_QUIT:
             do_exit(*pis);

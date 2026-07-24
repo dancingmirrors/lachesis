@@ -38,6 +38,7 @@ void media_info_set_hwaccel(const char *name);
 void media_info_note_audio_driver(const char *driver, int channels, int freq);
 void media_info_note_audio_format(unsigned fmt, int channels, int freq,
                                   int buffer_frames);
-void media_info_note_video_output(int width, int height, AVRational sar);
+void media_info_note_video_output(int width, int height, AVRational sar,
+                                  AVRational frame_rate);
 
 #endif /* LACHESIS_INFORMATION_H */

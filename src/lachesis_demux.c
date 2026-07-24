@@ -291,7 +291,8 @@ int stream_component_open(VideoState *is, int stream_index) {
         if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0) {
             goto out;
         }
-        audio_device_resume();
+        is->audio_start_pending = 1;
+        is->audio_start_pending_since = av_gettime_relative();
         break;
     case AVMEDIA_TYPE_VIDEO:
         is->video_stream = stream_index;
@@ -790,6 +791,11 @@ int read_thread(void *arg) {
     if (is->video_stream < 0 && is->audio_stream < 0) {
         ret = -1;
         goto fail;
+    }
+
+    if (is->audio_start_pending && (is->video_stream < 0 || display_disable)) {
+        is->audio_start_pending = 0;
+        audio_device_resume();
     }
 
     if ((start_paused || is->begin_paused) && !is->is_still_image) {

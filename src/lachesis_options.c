@@ -115,6 +115,9 @@ const char *ytdl_path = NULL;
 const char *ytdl_format = NULL;
 int allow_delete = 0;
 int terminal_quit_disable = 0;
+double display_fps_override = 0.0;
+int no_vsync_snap = 0;
+double fps_convert = 0.0;
 /* XXX: Is 260% loud enough to void your warranty? */
 int allow_volume_boost = 1;
 
@@ -284,6 +287,9 @@ const OptionDef options[] = {
     {"ytdl-format", OPT_TYPE_STRING, 0, {&ytdl_format}, "yt-dlp format selection string", "format"},
     {"delete", OPT_TYPE_BOOL, 0, {&allow_delete}, "enable permanent file deletion"},
     {"no-terminal-quit", OPT_TYPE_BOOL, 0, {&terminal_quit_disable}, "disable the terminal quit keybinding", ""},
+    {"display-fps", OPT_TYPE_DOUBLE, 0, {&display_fps_override}, "override the detected display refresh rate", "fps"},
+    {"no-vsync-snap", OPT_TYPE_BOOL, 0, {&no_vsync_snap}, "disable snapping frame deadlines to the display refresh grid", ""},
+    {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,
     },
@@ -291,10 +297,10 @@ const OptionDef options[] = {
 #pragma GCC diagnostic pop
 
 /* clang-format off */
-#define PRINT_LIB_VERSION(libname, LIBNAME)                                       \
-    av_log(NULL, AV_LOG_INFO, "  lib%-11s %2d.%3d.%3d / %2d.%3d.%3d\n", #libname, \
-           LIB##LIBNAME##_VERSION_MAJOR, LIB##LIBNAME##_VERSION_MINOR,            \
-           LIB##LIBNAME##_VERSION_MICRO, AV_VERSION_MAJOR(libname##_version()),   \
+#define PRINT_LIB_VERSION(libname, LIBNAME)                                              \
+    av_log(NULL, AV_LOG_INFO, "  lib%-11s %2d.%3d.%3d / %2d.%3d.%3d\n", #libname,        \
+           LIB##LIBNAME##_VERSION_MAJOR, LIB##LIBNAME##_VERSION_MINOR,                   \
+           LIB##LIBNAME##_VERSION_MICRO, AV_VERSION_MAJOR(libname##_version()),          \
            AV_VERSION_MINOR(libname##_version()), AV_VERSION_MICRO(libname##_version()))
 /* clang-format on */
 

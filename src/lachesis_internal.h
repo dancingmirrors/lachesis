@@ -195,6 +195,11 @@ typedef struct VideoState {
     struct AudioParams audio_filter_src;
     struct AudioParams audio_tgt;
     struct SwrContext *swr_ctx;
+    double audclk_drift;
+    double audclk_drift_time;
+    int audclk_drift_serial;
+    int audclk_drift_speed_serial;
+    int audclk_drift_valid;
     int frame_drops_early;
     int frame_drops_late;
     int decode_behind_streak;
@@ -214,6 +219,7 @@ typedef struct VideoState {
     double frame_timer;
     double frame_last_returned_time;
     double frame_last_filter_delay;
+    double last_av_diff;
     int video_stream;
     AVStream *video_st;
     PacketQueue videoq;
@@ -257,6 +263,8 @@ typedef struct VideoState {
     int step;
     int start_pause_pending;
     int begin_paused;
+    int audio_start_pending;
+    int64_t audio_start_pending_since;
 
     int vfilter_idx;
     AVFilterContext *in_video_filter; /* The first filter in the video chain. */

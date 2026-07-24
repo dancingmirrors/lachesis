@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -28,6 +29,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_osd.h"
+#include "lachesis_present.h"
 
 static const char *active_hwaccel = NULL;
 
@@ -204,7 +206,7 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
         return;
     }
 
-    static char cached[256];
+    static char cached[384];
     static int64_t next_refresh_us = 0;
     int64_t now = av_gettime_relative();
     if (cached[0] && now < next_refresh_us) {
@@ -232,9 +234,31 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
                      "Frame timing: unavailable");
         }
 
+        char sync_line[64];
+        if (!isnan(is->last_av_diff)) {
+            snprintf(sync_line, sizeof(sync_line), "A-V: %+.3fs",
+                     is->last_av_diff);
+        } else {
+            snprintf(sync_line, sizeof(sync_line), "A-V: n/a");
+        }
+
+        char disp_line[96];
+        PresentStats ps;
+        present_get_stats(&ps);
+        if (ps.measured_hz > 0) {
+            snprintf(disp_line, sizeof(disp_line),
+                     "Display: %.2f Hz (measured %.3f Hz%s, jitter %.1f%%)%s",
+                     ps.nominal_hz, ps.measured_hz,
+                     ps.measuring ? ", in use" : "", ps.jitter * 100.0,
+                     ps.snapping ? "" : ", snap off");
+        } else {
+            snprintf(disp_line, sizeof(disp_line), "Display: %.2f Hz%s",
+                     ps.nominal_hz, ps.snapping ? "" : ", snap off");
+        }
+
         snprintf(cached, sizeof(cached),
-                 "Dropped frames: %d (early %d, late %d)\n%s", early + late,
-                 early, late, timing);
+                 "Dropped frames: %d (early %d, late %d)\n%s\n%s\n%s",
+                 early + late, early, late, sync_line, disp_line, timing);
     }
 
     next_refresh_us = now + 500000;
@@ -269,9 +293,11 @@ void media_info_note_audio_format(unsigned fmt, int channels, int freq,
     log_info("SDL audio device format: %s\n", audio_device_format_line);
 }
 
-void media_info_note_video_output(int width, int height, AVRational sar) {
+void media_info_note_video_output(int width, int height, AVRational sar,
+                                  AVRational frame_rate) {
     AVRational dar = {0, 1};
     char dar_buf[32];
+    char fps_buf[32];
 
     if (sar.num && sar.den) {
         av_reduce(&dar.num, &dar.den, width * (int64_t)sar.num,
@@ -281,8 +307,13 @@ void media_info_note_video_output(int width, int height, AVRational sar) {
         snprintf(dar_buf, sizeof(dar_buf), "unavailable");
     }
 
+    fps_buf[0] = '\0';
+    if (frame_rate.num > 0 && frame_rate.den > 0) {
+        snprintf(fps_buf, sizeof(fps_buf), ", %.4g fps", av_q2d(frame_rate));
+    }
+
     snprintf(media_info_vout_line, sizeof(media_info_vout_line),
-             "%dx%d, SAR %d:%d DAR %s", width, height,
-             sar.num ? sar.num : 0, sar.den ? sar.den : 1, dar_buf);
+             "%dx%d, SAR %d:%d DAR %s%s", width, height,
+             sar.num ? sar.num : 0, sar.den ? sar.den : 1, dar_buf, fps_buf);
     log_info("Video output: %s\n", media_info_vout_line);
 }

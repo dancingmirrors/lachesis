@@ -1412,8 +1412,11 @@ out:
         } else {
             pl_swapchain_swap_buffers(ctx->swapchain);
             if (ret == 0) {
-                prs_us = av_gettime_relative() - _ts3;
+                int64_t done = av_gettime_relative();
+                prs_us = done - _ts3;
                 t_prs += prs_us;
+                params->present_done_us = done;
+                params->present_block_us = (_ts1 - _ts0) + prs_us;
             }
         }
     }

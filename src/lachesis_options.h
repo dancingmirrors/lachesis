@@ -152,5 +152,8 @@ extern const char *ytdl_format;
 extern int allow_delete;
 extern int terminal_quit_disable;
 extern int allow_volume_boost;
+extern double display_fps_override;
+extern int no_vsync_snap;
+extern double fps_convert;
 
 #endif /* LACHESIS_OPTIONS_H */
