@@ -246,6 +246,7 @@ void media_info_reset(void) {
     audio_device_driver_line[0] = '\0';
     audio_device_format_line[0] = '\0';
     media_info_vout_line[0] = '\0';
+    active_hwaccel = NULL;
     osd_invalidate_info();
 }
 

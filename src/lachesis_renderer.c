@@ -1092,6 +1092,7 @@ static int create_hw_frame(VkRenderer *renderer, AVFrame *frame) {
 
     ret = av_hwframe_ctx_init(ctx->hw_frame_ref);
     if (ret < 0) {
+        av_buffer_unref(&ctx->hw_frame_ref);
         return ret;
     }
 
@@ -1174,6 +1175,7 @@ static int transfer_frame(VkRenderer *renderer, AVFrame *frame, int use_hw_frame
 }
 
 static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
+    static int warned_download;
     int ret;
 
     if (!frame->hw_frames_ctx) {
@@ -1184,26 +1186,21 @@ static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
         return 0;
     }
 
-    ret = create_hw_frame(renderer, frame);
-    if (ret < 0) {
-        return ret;
-    }
+    create_hw_frame(renderer, frame);
 
     for (int use_hw = 1; use_hw >= 0; use_hw--) {
         ret = map_frame(renderer, frame, use_hw);
         if (!ret) {
             return 0;
         }
-        if (ret != AVERROR(ENOSYS)) {
-            return ret;
-        }
 
         ret = transfer_frame(renderer, frame, use_hw);
         if (!ret) {
+            if (!use_hw && !warned_download) {
+                warned_download = 1;
+                log_info("Displaying hardware frames via a system memory copy.\n");
+            }
             return 0;
-        }
-        if (ret != AVERROR(ENOSYS)) {
-            return ret;
         }
     }
 
@@ -1547,6 +1544,85 @@ static int resize(VkRenderer *renderer, int width, int height) {
     return 0;
 }
 
+#define LACHESIS_SELF_TEST_SIZE 64
+
+static AVFrame *alloc_self_test_frame(int value) {
+    AVFrame *frame = av_frame_alloc();
+
+    if (!frame) {
+        return NULL;
+    }
+    frame->format = AV_PIX_FMT_RGBA;
+    frame->width = LACHESIS_SELF_TEST_SIZE;
+    frame->height = LACHESIS_SELF_TEST_SIZE;
+    frame->color_range = AVCOL_RANGE_JPEG;
+    if (av_frame_get_buffer(frame, 0) < 0) {
+        av_frame_free(&frame);
+        return NULL;
+    }
+    for (int y = 0; y < frame->height; y++) {
+        uint8_t *row = frame->data[0] + y * frame->linesize[0];
+        for (int x = 0; x < frame->width * 4; x += 4) {
+            row[x + 0] = value;
+            row[x + 1] = value;
+            row[x + 2] = value;
+            row[x + 3] = 255;
+        }
+    }
+
+    return frame;
+}
+
+static int self_test(VkRenderer *renderer, int width, int height) {
+    enum { size = LACHESIS_SELF_TEST_SIZE };
+    RenderParams params = {.target_rect = {0, 0, size, size}};
+    AVFrame *frame;
+    uint8_t *pixels;
+    int bright = 0;
+    int ret;
+
+    frame = alloc_self_test_frame(255);
+    pixels = frame ? av_mallocz(size * size * 4) : NULL;
+    if (!pixels) {
+        /* Being out of memory is not the renderer's fault. */
+        av_frame_free(&frame);
+        return 0;
+    }
+
+    ret = capture(renderer, frame, &params, size, size, pixels, size * 4);
+    if (ret == 0) {
+        for (int i = 0; i < size * size; i++) {
+            const uint8_t *px = &pixels[i * 4];
+            bright += px[0] + px[1] + px[2] >= 3 * 128;
+        }
+        if (bright < size * size / 2) {
+            ret = AVERROR_EXTERNAL;
+        }
+    }
+    av_free(pixels);
+    av_frame_free(&frame);
+    if (ret < 0) {
+        return ret;
+    }
+
+    frame = alloc_self_test_frame(0);
+    if (!frame) {
+        return 0;
+    }
+    params.target_rect.w = width > 0 ? width : size;
+    params.target_rect.h = height > 0 ? height : size;
+    for (int attempt = 0;; attempt++) {
+        ret = display(renderer, frame, &params);
+        if (ret == 0 || attempt >= 2) {
+            break;
+        }
+        av_usleep(50000);
+    }
+    av_frame_free(&frame);
+
+    return ret;
+}
+
 static void destroy(VkRenderer *renderer) {
     RendererContext *ctx = (RendererContext *)renderer;
     PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
@@ -1690,6 +1766,17 @@ int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *rend
 
 int vk_renderer_resize(VkRenderer *renderer, int width, int height) {
     return renderer->resize(renderer, width, height);
+}
+
+int vk_renderer_self_test(VkRenderer *renderer, int width, int height) {
+#if HAVE_VULKAN_RENDERER
+    return self_test(renderer, width, height);
+#else
+    (void)renderer;
+    (void)width;
+    (void)height;
+    return 0;
+#endif
 }
 
 void vk_renderer_destroy(VkRenderer *renderer) {

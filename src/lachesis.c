@@ -227,6 +227,11 @@ const SDL_PixelFormat *renderer_texture_formats = NULL;
 
 VkRenderer *vk_renderer;
 
+#define VK_DISPLAY_FAULT_LIMIT 8
+static int vk_display_fail_streak;
+static int vk_display_ever_ok;
+static int vk_fault_event_sent;
+
 double ab_loop_a = NAN;
 double ab_loop_b = NAN;
 
@@ -894,7 +899,28 @@ static void video_image_display(VideoState *is) {
         is->render_params.skip_anti_aliasing = is->render_low_quality;
         is->render_params.deinterlace = deinterlace;
         is->render_params.rotate = video_rotate;
-        vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
+        int ret = vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
+        if (ret < 0) {
+            static int warned;
+            if (!warned) {
+                warned = 1;
+                log_warn("The Vulkan renderer failed to display a frame: %s.\n",
+                         av_err2str(ret));
+            }
+            /* Can't be used to determine the renderer's health. */
+            if (!(SDL_GetWindowFlags(window) &
+                  (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) &&
+                !vk_fault_event_sent && !vk_display_ever_ok &&
+                ++vk_display_fail_streak >= VK_DISPLAY_FAULT_LIMIT) {
+                SDL_Event event;
+                event.type = FF_VULKAN_FAULT_EVENT;
+                event.user.data1 = is;
+                vk_fault_event_sent = SDL_PushEvent(&event);
+            }
+        } else {
+            vk_display_ever_ok = 1;
+            vk_display_fail_streak = 0;
+        }
         return;
     }
 
@@ -1749,7 +1775,7 @@ static void hwframe_download_inplace(AVFrame *frame) {
     if (ret < 0) {
         if (!warned) {
             warned = 1;
-            log_warn("Failed to download hardware frame to system memory (%s).\n", av_err2str(ret));
+            log_warn("Failed to download hardware frame to system memory: %s.\n", av_err2str(ret));
         }
         av_frame_free(&sw);
         return;
@@ -2150,6 +2176,109 @@ static VideoState *stream_open_playlist_entry(int pos) {
     }
 
     return is;
+}
+
+static int startup_window_flags(void) {
+    int win_flags = SDL_WINDOW_HIDDEN;
+
+    if (is_fullscreen) {
+        win_flags |= SDL_WINDOW_FULLSCREEN;
+    }
+    if (alwaysontop) {
+        win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+    }
+    if (borderless) {
+        win_flags |= SDL_WINDOW_BORDERLESS;
+    } else {
+        win_flags |= SDL_WINDOW_RESIZABLE;
+    }
+
+    return win_flags;
+}
+
+static void create_sdl_renderer_for_window(void) {
+    renderer = SDL_CreateRenderer(window, NULL);
+    if (renderer) {
+        SDL_SetRenderVSync(renderer, benchmark ? 0 : 1);
+        renderer_texture_formats = (const SDL_PixelFormat *)
+            SDL_GetPointerProperty(SDL_GetRendererProperties(renderer),
+                                   SDL_PROP_RENDERER_TEXTURE_FORMATS_POINTER, NULL);
+    }
+    if (!renderer || !renderer_texture_formats ||
+        renderer_texture_formats[0] == SDL_PIXELFORMAT_UNKNOWN) {
+        fatal_quit("Failed to create window or renderer: %s!\n", SDL_GetError());
+    }
+}
+
+static void apply_startup_window_title(void) {
+    const char *initial_title = window_title;
+    char *initial_title_alloc = NULL;
+
+    if (!initial_title) {
+        if (playlist_size > 0) {
+            PlaylistEntry *e = &playlist_entries[playlist_pos];
+            initial_title = initial_title_alloc =
+                make_default_window_title(e->display_path,
+                                          e->archive_path,
+                                          e->entry_name);
+        } else {
+            initial_title = initial_title_alloc =
+                make_default_window_title(input_filename, NULL, NULL);
+        }
+    }
+    if (initial_title) {
+        SDL_SetWindowTitle(window, initial_title);
+    }
+    av_free(initial_title_alloc);
+}
+
+static void drop_vulkan_renderer(void) {
+    vk_renderer_destroy(vk_renderer);
+    av_free(vk_renderer);
+    vk_renderer = NULL;
+    enable_vulkan = 0;
+
+    if (window) {
+        SDL_DestroyWindow(window);
+        window = NULL;
+    }
+    renderer_texture_formats = NULL;
+
+    window = SDL_CreateWindow(program_name, default_width, default_height,
+                              startup_window_flags());
+    if (!window) {
+        fatal_quit("Failed to create window: %s!\n", SDL_GetError());
+    }
+    create_sdl_renderer_for_window();
+    apply_startup_window_title();
+    SDL_ShowWindow(window);
+}
+
+void vulkan_fault_fallback(VideoState **pis) {
+    int keep_paused;
+
+    if (!vk_renderer) {
+        return;
+    }
+
+    log_warn("The Vulkan renderer initialized but never displayed a frame. "
+             "Falling back to the SDL renderer.\n");
+
+    keep_paused = *pis && (*pis)->paused;
+    if (*pis) {
+        stream_close(*pis);
+        *pis = NULL;
+    }
+    SDL_FlushEvents(FF_QUIT_EVENT, FF_QUIT_EVENT);
+
+    drop_vulkan_renderer();
+
+    pause_next_stream = keep_paused;
+    *pis = stream_open_playlist_entry(playlist_pos);
+    if (!*pis) {
+        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
+        do_exit(NULL);
+    }
 }
 
 void stream_cycle_channel(VideoState *is, int codec_type) {
@@ -2571,18 +2700,7 @@ int main(int argc, char **argv) {
     }
 
     if (!display_disable) {
-        int win_flags = SDL_WINDOW_HIDDEN;
-        if (is_fullscreen) {
-            win_flags |= SDL_WINDOW_FULLSCREEN;
-        }
-        if (alwaysontop) {
-            win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
-        }
-        if (borderless) {
-            win_flags |= SDL_WINDOW_BORDERLESS;
-        } else {
-            win_flags |= SDL_WINDOW_RESIZABLE;
-        }
+        int win_flags = startup_window_flags();
 
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
         if (hwaccel && (!strcmp(hwaccel, "none") || !strcmp(hwaccel, "no") || !strcmp(hwaccel, "off") || !strcmp(hwaccel, "0"))) {
@@ -2675,17 +2793,7 @@ int main(int argc, char **argv) {
             if (!window) {
                 fatal_quit("Failed to create window: %s!\n", SDL_GetError());
             }
-            renderer = SDL_CreateRenderer(window, NULL);
-            if (renderer) {
-                SDL_SetRenderVSync(renderer, benchmark ? 0 : 1);
-                renderer_texture_formats = (const SDL_PixelFormat *)
-                    SDL_GetPointerProperty(SDL_GetRendererProperties(renderer),
-                                           SDL_PROP_RENDERER_TEXTURE_FORMATS_POINTER, NULL);
-            }
-            if (!renderer || !renderer_texture_formats ||
-                renderer_texture_formats[0] == SDL_PIXELFORMAT_UNKNOWN) {
-                fatal_quit("Failed to create window or renderer: %s!\n", SDL_GetError());
-            }
+            create_sdl_renderer_for_window();
         }
 
         if (TTF_Init()) {
@@ -2694,34 +2802,20 @@ int main(int argc, char **argv) {
         osd_set_info_provider(format_media_info);
         osd_set_stats_provider(format_playback_stats);
 
-        {
-            const char *initial_title = window_title;
-            char *initial_title_alloc = NULL;
-            if (!initial_title) {
-                if (playlist_size > 0) {
-                    PlaylistEntry *e = &playlist_entries[playlist_pos];
-                    initial_title = initial_title_alloc =
-                        make_default_window_title(e->display_path,
-                                                  e->archive_path,
-                                                  e->entry_name);
-                } else {
-                    initial_title = initial_title_alloc =
-                        make_default_window_title(input_filename, NULL, NULL);
-                }
-            }
-            if (initial_title) {
-                SDL_SetWindowTitle(window, initial_title);
-            }
-            av_free(initial_title_alloc);
-        }
+        apply_startup_window_title();
 
         /* Show the window early so the swapchain is fully initialized. */
         SDL_ShowWindow(window);
         if (vk_renderer) {
-            int vk_w, vk_h;
+            int vk_w = 0, vk_h = 0;
             SDL_GetWindowSizeInPixels(window, &vk_w, &vk_h);
             if (vk_w > 0 && vk_h > 0) {
                 vk_renderer_resize(vk_renderer, vk_w, vk_h);
+            }
+            if (vk_renderer_self_test(vk_renderer, vk_w, vk_h) < 0) {
+                log_warn("The Vulkan renderer initialized but cannot render. "
+                         "Falling back to the SDL renderer.\n");
+                drop_vulkan_renderer();
             }
         }
     }

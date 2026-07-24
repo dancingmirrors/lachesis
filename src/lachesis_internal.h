@@ -338,6 +338,7 @@ void calculate_display_rect(SDL_Rect *rect,
                             int pic_width, int pic_height, AVRational pic_sar);
 
 #define FF_QUIT_EVENT (SDL_EVENT_USER + 2)
+#define FF_VULKAN_FAULT_EVENT (SDL_EVENT_USER + 3)
 
 #define FF_QUIT_REASON_EOF 0
 #define FF_QUIT_REASON_ERROR 1
@@ -378,6 +379,7 @@ void ab_loop_toggle(VideoState *is);
 void toggle_fullscreen(VideoState *is);
 void playlist_switch(VideoState **pis, int new_pos);
 void playlist_remove_current(VideoState **pis, int keep_paused);
+void vulkan_fault_fallback(VideoState **pis);
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event);
 
 #endif /* LACHESIS_INTERNAL_H */

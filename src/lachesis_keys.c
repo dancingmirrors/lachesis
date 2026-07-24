@@ -607,6 +607,9 @@ void event_loop(VideoState **pis) {
             playlist_advance_or_exit(pis);
             break;
         }
+        case FF_VULKAN_FAULT_EVENT:
+            vulkan_fault_fallback(pis);
+            break;
         default:
             break;
         }

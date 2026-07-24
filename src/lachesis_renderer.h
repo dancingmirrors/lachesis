@@ -84,6 +84,8 @@ int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *para
 
 int vk_renderer_resize(VkRenderer *renderer, int width, int height);
 
+int vk_renderer_self_test(VkRenderer *renderer, int width, int height);
+
 void vk_renderer_destroy(VkRenderer *renderer);
 
 int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout);
