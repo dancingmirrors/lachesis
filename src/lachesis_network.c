@@ -30,6 +30,10 @@
 #include <fcntl.h>
 #include <io.h>
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
 
 #include <libavformat/avio.h>
@@ -385,6 +389,61 @@ fail:
     }
     return NULL;
 }
+#else /* !_WIN32 */
+
+static FILE *posix_ytdl_spawn(const char *path, const char *fmt, const char *url,
+                              pid_t *out_pid) {
+    int fds[2];
+
+    if (pipe(fds) != 0) {
+        return NULL;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(fds[0]);
+        close(fds[1]);
+        return NULL;
+    }
+
+    if (pid == 0) {
+        char *const argv[] = {
+            (char *)path, (char *)"-g", (char *)"--no-warnings",
+            (char *)"--no-playlist", (char *)"-f", (char *)fmt,
+            (char *)"--", (char *)url, NULL,
+        };
+
+        close(fds[0]);
+        if (dup2(fds[1], STDOUT_FILENO) < 0) {
+            _exit(127);
+        }
+        close(fds[1]);
+
+        int nul = open("/dev/null", O_WRONLY);
+        if (nul >= 0) {
+            dup2(nul, STDERR_FILENO);
+            close(nul);
+        }
+
+        execvp(path, argv);
+        _exit(127);
+    }
+
+    close(fds[1]);
+    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+
+    FILE *fp = fdopen(fds[0], "r");
+    if (!fp) {
+        close(fds[0]);
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+        }
+        return NULL;
+    }
+    *out_pid = pid;
+
+    return fp;
+}
+
 #endif /* _WIN32 */
 
 int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
@@ -404,14 +463,9 @@ int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
         return 0;
     }
 #else
-    char *cmd = av_asprintf("%s -g --no-warnings --no-playlist -f '%s' -- '%s' 2>/dev/null",
-                            path, fmt, url);
+    pid_t pid = -1;
+    FILE *fp = posix_ytdl_spawn(path, fmt, url, &pid);
     av_free(auto_fmt);
-    if (!cmd) {
-        return 0;
-    }
-    FILE *fp = popen(cmd, "r");
-    av_free(cmd);
     if (!fp) {
         return 0;
     }
@@ -441,7 +495,11 @@ int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
         CloseHandle(proc);
     }
 #else
-    pclose(fp);
+    fclose(fp);
+    if (pid > 0) {
+        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+        }
+    }
 #endif
 
     if (!*video_url) {
