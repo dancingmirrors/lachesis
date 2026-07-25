@@ -183,6 +183,8 @@ fail:
 
 #define REFRESH_RATE 0.01
 
+#define OSD_ONLY_REFRESH_RATE (1.0 / 30.0)
+
 #define CURSOR_HIDE_DELAY 1000000
 
 #define AUDIO_START_MAX_WAIT_US (10 * 1000000)
@@ -1308,6 +1310,15 @@ static void video_display(VideoState *is) {
     SDL_RenderClear(renderer);
     if (is->video_st) {
         video_image_display(is);
+    } else if (vk_renderer) {
+        int bw = 0, bh = 0;
+        SDL_GetWindowSizeInPixels(window, &bw, &bh);
+        if (bw <= 0 || bh <= 0) {
+            bw = is->width;
+            bh = is->height;
+        }
+        is->render_params.target_rect = (SDL_Rect){0, 0, bw, bh};
+        vk_renderer_display_blank(vk_renderer, &is->render_params);
     }
     osd_draw(is);
     if (vk_renderer) {
@@ -1608,11 +1619,34 @@ static void update_video_pts(VideoState *is, double pts, int serial) {
 static void video_refresh(void *opaque, double *remaining_time) {
     VideoState *is = opaque;
     double time;
+    int keep_refreshing = 0;
 
     Frame *sp, *sp2;
 
     if (!is->paused && get_master_sync_type(is) == AV_SYNC_EXTERNAL_CLOCK && is->realtime) {
         check_external_clock_speed(is);
+    }
+
+    if (!display_disable && !is->video_st) {
+        double now = av_gettime_relative() / 1000000.0;
+        int want = osd_active(is);
+
+        if (is->force_refresh) {
+            is->audio_only_clean = 0;
+        }
+
+        if (want || !is->audio_only_clean) {
+            double next = is->audio_only_last_draw + OSD_ONLY_REFRESH_RATE;
+            if (now >= next) {
+                video_display(is);
+                is->audio_only_last_draw = now;
+                is->audio_only_clean = !want;
+                next = now + OSD_ONLY_REFRESH_RATE;
+            } else {
+                keep_refreshing = 1;
+            }
+            *remaining_time = FFMIN(*remaining_time, FFMAX(next - now, 0.0));
+        }
     }
 
     if (is->video_st) {
@@ -1741,7 +1775,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
             video_display(is);
         }
     }
-    is->force_refresh = 0;
+    is->force_refresh = keep_refreshing;
 }
 
 static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial) {

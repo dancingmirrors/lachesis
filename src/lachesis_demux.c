@@ -551,6 +551,7 @@ int read_thread(void *arg) {
 
     memset(st_index, -1, sizeof(st_index));
     is->eof = 0;
+    is->loop_remaining = loop;
 
     pkt = av_packet_alloc();
     if (!pkt) {
@@ -938,7 +939,8 @@ int read_thread(void *arg) {
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
             if (is->is_still_image) {
                 is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
-            } else if (loop != 1 && (!loop || --loop)) {
+            } else if (is->loop_remaining != 1 &&
+                       (!is->loop_remaining || --is->loop_remaining)) {
                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
             } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0 &&
                        !is->play_range_done) {

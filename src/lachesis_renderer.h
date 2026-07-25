@@ -82,6 +82,7 @@ int vk_renderer_create(VkRenderer *renderer, SDL_Window *window,
 int vk_renderer_get_hw_dev(VkRenderer *renderer, AVBufferRef **dev);
 
 int vk_renderer_display(VkRenderer *renderer, AVFrame *frame, RenderParams *params);
+int vk_renderer_display_blank(VkRenderer *renderer, RenderParams *params);
 
 int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
                         int width, int height, uint8_t *out, int out_stride);

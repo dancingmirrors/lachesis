@@ -228,6 +228,7 @@ typedef struct VideoState {
     struct SwsContext *sub_convert_ctx;
     int eof;
     int play_range_done;
+    int loop_remaining;
 
     char *filename;
     char *archive_path;
@@ -261,6 +262,8 @@ typedef struct VideoState {
     int diag_first_apkt_logged;
     int64_t diag_last_pace_us;
     int is_still_image;
+    double audio_only_last_draw;
+    int audio_only_clean;
     int width, height, xleft, ytop;
     int step;
     int start_pause_pending;

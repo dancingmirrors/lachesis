@@ -1554,6 +1554,10 @@ void osd_show_volume(void) {
     osd_dismiss_info();
 }
 
+int osd_active(VideoState *is) {
+    return osd_should_show(is);
+}
+
 int64_t osd_visible_until(void) {
     return FFMAX(FFMAX(osd_status_show_until, osd_message_show_until),
                  osd_volume_show_until);

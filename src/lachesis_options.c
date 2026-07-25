@@ -272,7 +272,7 @@ const OptionDef options[] = {
     {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order", ""},
     {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order", ""},
     {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry", ""},
-    {"loop", OPT_TYPE_INT, 0, {&loop}, "set the number of times playback will be looped", "loop count"},
+    {"loop", OPT_TYPE_INT, 0, {&loop}, "set the number of times each playlist entry is played (0 = forever)", "loop count"},
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},

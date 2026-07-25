@@ -105,6 +105,8 @@ struct VkRenderer {
 
     int (*display)(VkRenderer *renderer, AVFrame *frame, RenderParams *params);
 
+    int (*display_blank)(VkRenderer *renderer, RenderParams *params);
+
     int (*capture)(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
                    int width, int height, uint8_t *out, int out_stride);
 
@@ -159,6 +161,8 @@ typedef struct RendererContext {
     bool have_hint;
 
     pl_tex osd_tex;
+
+    AVFrame *blank_frame;
 
 #if LACHESIS_HAVE_PL_CACHE
     pl_cache shader_cache;
@@ -1579,6 +1583,19 @@ static AVFrame *alloc_self_test_frame(int value) {
     return frame;
 }
 
+static int display_blank(VkRenderer *renderer, RenderParams *params) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx->blank_frame) {
+        ctx->blank_frame = alloc_self_test_frame(0);
+        if (!ctx->blank_frame) {
+            return AVERROR(ENOMEM);
+        }
+    }
+
+    return display(renderer, ctx->blank_frame, params);
+}
+
 static int self_test(VkRenderer *renderer, int width, int height) {
     enum { size = LACHESIS_SELF_TEST_SIZE };
     RenderParams params = {.target_rect = {0, 0, size, size}};
@@ -1634,6 +1651,7 @@ static void destroy(VkRenderer *renderer) {
     PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
 
     av_frame_free(&ctx->vk_frame);
+    av_frame_free(&ctx->blank_frame);
     av_freep(&ctx->transfer_formats);
     av_hwframe_constraints_free(&ctx->constraints);
     av_buffer_unref(&ctx->hw_frame_ref);
@@ -1692,6 +1710,7 @@ VkRenderer *vk_get_renderer(void) {
     renderer->get_hw_dev = get_hw_dev;
     renderer->create = create;
     renderer->display = display;
+    renderer->display_blank = display_blank;
     renderer->capture = capture;
     renderer->resize = resize;
     renderer->destroy = destroy;
@@ -1760,6 +1779,13 @@ int vk_renderer_get_hw_dev(VkRenderer *renderer, AVBufferRef **dev) {
 
 int vk_renderer_display(VkRenderer *renderer, AVFrame *frame, RenderParams *render_params) {
     return renderer->display(renderer, frame, render_params);
+}
+
+int vk_renderer_display_blank(VkRenderer *renderer, RenderParams *render_params) {
+    if (!renderer->display_blank) {
+        return AVERROR(ENOSYS);
+    }
+    return renderer->display_blank(renderer, render_params);
 }
 
 int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *render_params,
