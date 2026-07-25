@@ -2872,9 +2872,7 @@ int main(int argc, char **argv) {
 
         apply_startup_window_title();
 
-        if (no_vsync_snap || benchmark ||
-            (vk_renderer && vulkan_swap_mode &&
-             strncmp(vulkan_swap_mode, "fifo", 4) != 0)) {
+        if (no_vsync_snap || benchmark || !vk_renderer_is_vsync_blocked(vk_renderer)) {
             present_disable_snap();
         }
 

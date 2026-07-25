@@ -132,6 +132,8 @@ typedef struct RendererContext {
     enum AVPixelFormat *transfer_formats;
     AVHWFramesConstraints *constraints;
     unsigned decode_caps;
+    /* Not necessarily the requested mode. */
+    VkPresentModeKHR present_mode;
 
     PFN_vkGetInstanceProcAddr get_proc_addr;
     VkInstance inst;
@@ -975,6 +977,7 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     if (entry && entry->value && *entry->value) {
         present_mode = select_present_mode(ctx, entry->value);
     }
+    ctx->present_mode = present_mode;
 
     ctx->swapchain = pl_vulkan_create_swapchain(
         ctx->placebo_vulkan,
@@ -1795,6 +1798,24 @@ unsigned vk_renderer_video_decode_caps(VkRenderer *renderer) {
 #else
     (void)renderer;
     return 0;
+#endif
+}
+
+int vk_renderer_is_vsync_blocked(VkRenderer *renderer) {
+#if HAVE_VULKAN_RENDERER
+    if (!renderer) {
+        return 1;
+    }
+    switch (((RendererContext *)renderer)->present_mode) {
+    case VK_PRESENT_MODE_FIFO_KHR:
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+        return 1;
+    default:
+        return 0;
+    }
+#else
+    (void)renderer;
+    return 1;
 #endif
 }
 

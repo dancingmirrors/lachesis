@@ -70,6 +70,8 @@ VkRenderer *vk_get_renderer(void);
 
 unsigned vk_renderer_video_decode_caps(VkRenderer *renderer);
 
+int vk_renderer_is_vsync_blocked(VkRenderer *renderer);
+
 /* Safe to call with a NULL renderer. */
 int vk_renderer_frame_stats(VkRenderer *renderer, double *acquire_ms,
                             double *render_ms, double *present_ms);
