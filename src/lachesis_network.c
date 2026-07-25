@@ -408,9 +408,15 @@ static FILE *posix_ytdl_spawn(const char *path, const char *fmt, const char *url
 
     if (pid == 0) {
         char *const argv[] = {
-            (char *)path, (char *)"-g", (char *)"--no-warnings",
-            (char *)"--no-playlist", (char *)"-f", (char *)fmt,
-            (char *)"--", (char *)url, NULL,
+            (char *)path,
+            (char *)"-g",
+            (char *)"--no-warnings",
+            (char *)"--no-playlist",
+            (char *)"-f",
+            (char *)fmt,
+            (char *)"--",
+            (char *)url,
+            NULL,
         };
 
         close(fds[0]);
