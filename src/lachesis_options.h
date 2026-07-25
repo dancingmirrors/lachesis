@@ -93,6 +93,7 @@ int opt_version(void *optctx, const char *opt, const char *arg);
 
 extern const AVInputFormat *file_iformat;
 extern const char *window_title;
+extern char *window_title_auto;
 extern int cmd_width;
 extern int cmd_height;
 extern int screen_left;

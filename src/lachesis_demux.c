@@ -642,12 +642,13 @@ int read_thread(void *arg) {
 
     is->max_frame_duration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
 
-    if (!window_title && (t = av_dict_get(ic->metadata, "title", NULL, 0))) {
+    if (!window_title && !window_title_auto &&
+        (t = av_dict_get(ic->metadata, "title", NULL, 0))) {
         if (playlist_size > 1) {
-            window_title = av_asprintf("%s - %s [%d/%d]", program_name,
-                                       t->value, playlist_pos + 1, playlist_size);
+            window_title_auto = av_asprintf("%s - %s [%d/%d]", program_name,
+                                            t->value, playlist_pos + 1, playlist_size);
         } else {
-            window_title = av_asprintf("%s - %s", program_name, t->value);
+            window_title_auto = av_asprintf("%s - %s", program_name, t->value);
         }
     }
 

@@ -1166,6 +1166,7 @@ void do_exit(VideoState *is) {
     av_freep(&subtitle_codec_name);
     av_freep(&hwaccel);
     av_freep(&window_title);
+    av_freep(&window_title_auto);
     av_freep(&input_filename);
     for (int i = 0; i < playlist_size; i++) {
         av_free(playlist_entries[i].display_path);
@@ -1262,11 +1263,11 @@ static int video_open(VideoState *is) {
     w = cmd_width ? cmd_width : default_width;
     h = cmd_height ? cmd_height : default_height;
 
-    if (!window_title) {
+    if (!window_title && !window_title_auto) {
         const char *path = is->ytdl_source_url ? is->ytdl_source_url
                                                : is->filename;
-        window_title = make_default_window_title(path, is->archive_path,
-                                                 is->entry_name);
+        window_title_auto = make_default_window_title(path, is->archive_path,
+                                                      is->entry_name);
     }
 
     SDL_SetWindowSize(window, w, h);
@@ -1276,8 +1277,9 @@ static int video_open(VideoState *is) {
     SDL_SyncWindow(window);
     present_update_display_mode();
 
-    if (window_title) {
-        SDL_SetWindowTitle(window, window_title);
+    const char *title = window_title ? window_title : window_title_auto;
+    if (title) {
+        SDL_SetWindowTitle(window, title);
     }
 
     is->width = w;
@@ -2257,7 +2259,7 @@ static void create_sdl_renderer_for_window(void) {
 }
 
 static void apply_startup_window_title(void) {
-    const char *initial_title = window_title;
+    const char *initial_title = window_title ? window_title : window_title_auto;
     char *initial_title_alloc = NULL;
 
     if (!initial_title) {
@@ -2483,7 +2485,7 @@ void playlist_switch(VideoState **pis, int new_pos) {
     ab_loop_reset();
     reset_playback_speed();
     playlist_pos = new_pos;
-    av_freep(&window_title);
+    av_freep(&window_title_auto);
     pause_next_stream = keep_paused;
     VideoState *is = stream_open_playlist_entry(playlist_pos);
     if (!is) {
@@ -2516,7 +2518,7 @@ void playlist_remove_current(VideoState **pis, int keep_paused) {
     reset_playback_speed();
     playlist_nav_dir = 1;
     playlist_pos = next;
-    av_freep(&window_title);
+    av_freep(&window_title_auto);
     pause_next_stream = keep_paused;
     VideoState *nis = stream_open_playlist_entry(playlist_pos);
     if (!nis) {

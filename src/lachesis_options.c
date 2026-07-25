@@ -57,6 +57,7 @@
 
 const AVInputFormat *file_iformat;
 const char *window_title;
+char *window_title_auto;
 int cmd_width = 0;
 int cmd_height = 0;
 int screen_left = SDL_WINDOWPOS_CENTERED;
