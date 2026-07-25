@@ -303,6 +303,10 @@ static int64_t archive_seek(void *opaque, int64_t offset, int whence) {
         return io->size;
     }
 
+    if (!io->arch) {
+        return -1;
+    }
+
     int64_t target;
     switch (whence) {
     case SEEK_SET:
