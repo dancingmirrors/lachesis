@@ -32,9 +32,7 @@ void set_ytdl_http_opts(AVDictionary **opts);
 int ytdl_resolve(VideoState *is, const char *url, char **video_url,
                  char **audio_url);
 
-/* XXX */
 struct YtdlChunkedIO;
-
 struct YtdlChunkedIO *ytdl_chunked_create(const char *url, VideoState *is);
 void ytdl_chunked_free(struct YtdlChunkedIO **pc);
 AVIOContext *ytdl_chunked_pb(struct YtdlChunkedIO *c);

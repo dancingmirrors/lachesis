@@ -171,6 +171,7 @@ static int ytdl_chunked_read(void *opaque, uint8_t *buf, int size) {
         int r = avio_read(c->inner, buf, want);
         if (r > 0) {
             c->pos += r;
+            c->inner_read += r;
             return r;
         }
         avio_closep(&c->inner);
