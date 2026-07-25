@@ -436,6 +436,26 @@ static int audio_interrupt_cb(void *ctx) {
     return is->abort_request || is->audio_seek_pending;
 }
 
+static int play_range_exhausted(const VideoState *is, int vid_over, int aud_over) {
+    int gated = 0;
+
+    if (is->video_stream >= 0 &&
+        !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        if (!vid_over) {
+            return 0;
+        }
+        gated = 1;
+    }
+    if (is->audio_stream >= 0 && !is->audio_ic) {
+        if (!aud_over) {
+            return 0;
+        }
+        gated = 1;
+    }
+
+    return gated;
+}
+
 static int audio_read_thread(void *arg) {
     VideoState *is = arg;
     AVFormatContext *ic = is->audio_ic;
@@ -459,6 +479,15 @@ static int audio_read_thread(void *arg) {
                                is->audio_seek_flags);
             is->audio_seek_pending = 0;
             sent_eof = 0;
+            continue;
+        }
+
+        if (is->play_range_done) {
+            if (!sent_eof) {
+                packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
+                sent_eof = 1;
+            }
+            SDL_Delay(50);
             continue;
         }
 
@@ -512,6 +541,8 @@ int read_thread(void *arg) {
     int extension_picky_set = 0;
     int64_t pkt_ts;
     int ff_quit_reason = FF_QUIT_REASON_ERROR;
+    int vid_range_over = 0;
+    int aud_range_over = 0;
 
     if (!wait_mutex) {
         ret = AVERROR(ENOMEM);
@@ -835,6 +866,8 @@ int read_thread(void *arg) {
             }
         }
         if (is->seek_req) {
+            is->play_range_done = 0;
+            vid_range_over = aud_range_over = 0;
             int64_t seek_target = is->seek_pos;
             int64_t seek_min = is->seek_rel > 0 ? seek_target - is->seek_rel + 2 : INT64_MIN;
             int64_t seek_max = is->seek_rel < 0 ? seek_target - is->seek_rel - 2 : INT64_MAX;
@@ -907,7 +940,8 @@ int read_thread(void *arg) {
                 is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
             } else if (loop != 1 && (!loop || --loop)) {
                 stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
-            } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0) {
+            } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0 &&
+                       !is->play_range_done) {
                 /* An unknown size might be a live stream. */
                 SDL_LockMutex(wait_mutex);
                 SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 100);
@@ -924,6 +958,12 @@ int read_thread(void *arg) {
                 ret = AVERROR_EOF;
                 goto fail;
             }
+        }
+        if (is->play_range_done) {
+            SDL_LockMutex(wait_mutex);
+            SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 10);
+            SDL_UnlockMutex(wait_mutex);
+            continue;
         }
         ret = av_read_frame(ic, pkt);
         if (ret < 0) {
@@ -960,6 +1000,11 @@ int read_thread(void *arg) {
                         av_q2d(ic->streams[pkt->stream_index]->time_base) -
                     (double)(start_time != AV_NOPTS_VALUE ? start_time : 0) / 1000000 <=
                 ((double)play_duration / 1000000);
+        if (pkt->stream_index == is->video_stream) {
+            vid_range_over = !pkt_in_play_range;
+        } else if (pkt->stream_index == is->audio_stream && !is->audio_ic) {
+            aud_range_over = !pkt_in_play_range;
+        }
         if (pkt->stream_index == is->audio_stream && pkt_in_play_range && !is->audio_ic) {
             packet_queue_put(&is->audioq, pkt);
             /* clang-format off */
@@ -971,6 +1016,21 @@ int read_thread(void *arg) {
             packet_queue_put(&is->subtitleq, pkt);
         } else {
             av_packet_unref(pkt);
+        }
+
+        if (play_duration != AV_NOPTS_VALUE && !is->play_range_done &&
+            play_range_exhausted(is, vid_range_over, aud_range_over)) {
+            if (is->video_stream >= 0) {
+                packet_queue_put_nullpacket(&is->videoq, pkt, is->video_stream);
+            }
+            if (is->audio_stream >= 0 && !is->audio_ic) {
+                packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
+            }
+            if (is->subtitle_stream >= 0) {
+                packet_queue_put_nullpacket(&is->subtitleq, pkt, is->subtitle_stream);
+            }
+            is->eof = 1;
+            is->play_range_done = 1;
         }
     }
 

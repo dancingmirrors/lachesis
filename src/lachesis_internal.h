@@ -227,6 +227,7 @@ typedef struct VideoState {
     double max_frame_duration;
     struct SwsContext *sub_convert_ctx;
     int eof;
+    int play_range_done;
 
     char *filename;
     char *archive_path;
