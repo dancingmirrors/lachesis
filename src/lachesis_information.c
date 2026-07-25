@@ -37,6 +37,9 @@ static char audio_device_driver_line[96] = "";
 static char audio_device_format_line[96] = "";
 static char media_info_vout_line[128] = "";
 
+static char playback_stats_cached[384] = "";
+static int64_t playback_stats_next_refresh_us = 0;
+
 static const char *media_info_renderer(void) {
     static char buf[64];
     const char *name;
@@ -206,16 +209,16 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
         return;
     }
 
-    static char cached[384];
-    static int64_t next_refresh_us = 0;
+    char *cached = playback_stats_cached;
+    const size_t cached_size = sizeof(playback_stats_cached);
     int64_t now = av_gettime_relative();
-    if (cached[0] && now < next_refresh_us) {
+    if (cached[0] && now < playback_stats_next_refresh_us) {
         snprintf(buf, bufsz, "%s", cached);
         return;
     }
 
     if (!is->video_st) {
-        snprintf(cached, sizeof(cached), "No video stream");
+        snprintf(cached, cached_size, "No video stream");
     } else {
         int early = is->frame_drops_early;
         int late = is->frame_drops_late;
@@ -256,12 +259,12 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
                      ps.nominal_hz, ps.snapping ? "" : ", snap off");
         }
 
-        snprintf(cached, sizeof(cached),
+        snprintf(cached, cached_size,
                  "Dropped frames: %d (early %d, late %d)\n%s\n%s\n%s",
                  early + late, early, late, sync_line, disp_line, timing);
     }
 
-    next_refresh_us = now + 500000;
+    playback_stats_next_refresh_us = now + 500000;
     snprintf(buf, bufsz, "%s", cached);
 }
 
@@ -271,6 +274,8 @@ void media_info_reset(void) {
     audio_device_format_line[0] = '\0';
     media_info_vout_line[0] = '\0';
     active_hwaccel = NULL;
+    playback_stats_cached[0] = '\0';
+    playback_stats_next_refresh_us = 0;
     osd_invalidate_info();
 }
 
