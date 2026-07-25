@@ -28,6 +28,7 @@
 #include <io.h>
 #else
 #include <poll.h>
+#include <signal.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -41,15 +42,21 @@ static int terminal_active = 0;
 
 #if !defined(_WIN32)
 static struct termios saved_termios;
-static int saved_termios_valid = 0;
+static volatile sig_atomic_t saved_termios_valid = 0;
 
 static void terminal_restore(void) {
-    if (saved_termios_valid) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
-        saved_termios_valid = 0;
-    }
+    terminal_restore_now();
 }
 #endif
+
+void terminal_restore_now(void) {
+#if !defined(_WIN32)
+    if (saved_termios_valid) {
+        saved_termios_valid = 0;
+        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+    }
+#endif
+}
 
 static void request_quit(void) {
     SDL_Event event;

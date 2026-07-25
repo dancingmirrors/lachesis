@@ -34,6 +34,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
 
 #include <libavcodec/avcodec.h>
@@ -1186,7 +1187,8 @@ void do_exit(VideoState *is) {
 }
 
 static void sigterm_handler(int sig av_unused) {
-    exit(123);
+    terminal_restore_now();
+    _Exit(123);
 }
 
 void set_default_window_size(int width, int height, AVRational sar) {
