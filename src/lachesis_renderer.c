@@ -924,6 +924,17 @@ static void icc_setup(RendererContext *ctx, const AVDictionary *opt) {
     log_info("Loaded ICC profile: %s\n", entry->value);
 }
 
+static void vk_log_cb(void *log_priv, enum pl_log_level level,
+                      const char *msg) {
+    (void)log_priv;
+
+    if (level <= PL_LOG_WARN) {
+        log_warn("libplacebo: %s\n", msg);
+    } else {
+        log_verbose("libplacebo: %s\n", msg);
+    }
+}
+
 static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     int ret = 0;
     unsigned num_ext = 0;
@@ -931,7 +942,8 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     int w, h;
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     struct pl_log_params vk_log_params = {
-        .log_level = enable_debug(opt) ? PL_LOG_DEBUG : PL_LOG_WARN,
+        .log_cb = vk_log_cb,
+        .log_level = enable_debug(opt) ? PL_LOG_DEBUG : PL_LOG_ERR,
         .log_priv = renderer,
     };
     RendererContext *ctx = (RendererContext *)renderer;
