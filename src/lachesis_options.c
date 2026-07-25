@@ -201,6 +201,18 @@ static int opt_height(void *optctx av_unused, const char *opt, const char *arg) 
     return 0;
 }
 
+static int opt_autofit(void *optctx av_unused, const char *opt, const char *arg) {
+    double num;
+    int ret = parse_number(opt, arg, OPT_TYPE_FLOAT,
+                           AUTOFIT_MIN, AUTOFIT_MAX, &num);
+    if (ret < 0) {
+        return ret;
+    }
+    autofit_larger = num;
+
+    return 0;
+}
+
 static int opt_format(void *optctx av_unused, const char *opt av_unused, const char *arg) {
     file_iformat = av_find_input_format(arg);
     if (!file_iformat) {
@@ -235,7 +247,7 @@ const OptionDef options[] = {
     {"x", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_width}, "force displayed width", "width"},
     {"y", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_height}, "force displayed height", "height"},
     {"windowed", OPT_TYPE_BOOL, 0, {&start_windowed}, "start windowed instead of fullscreen"},
-    {"autofit", OPT_TYPE_FLOAT, 0, {&autofit_larger}, "limit windowed size to this fraction of the display (default 0.85)", "fraction"},
+    {"autofit", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_autofit}, "limit windowed size to this fraction of the display (default 0.85)", "fraction"},
     {"an", OPT_TYPE_BOOL, 0, {&audio_disable}, "disable audio"},
     {"vn", OPT_TYPE_BOOL, 0, {&video_disable}, "disable video"},
     {"sn", OPT_TYPE_BOOL, 0, {&subtitle_disable}, "disable subtitles"},
@@ -355,13 +367,15 @@ int parse_number(const char *context, const char *numstr, enum OptionType type,
     const char *error;
     double d = av_strtod(numstr, &tail);
     if (*tail) {
-        error = "Expected number for %s but found: %s\n";
+        error = "Expected number for %s but found %s.\n";
+    } else if (isnan(d) || isinf(d)) {
+        error = "Expected a finite number for %s but found %s.\n";
     } else if (d < min || d > max) {
-        error = "The value for %s was %s which is not within %f - %f\n";
+        error = "The value for %s was %s which is not within %f - %f.\n";
     } else if (type == OPT_TYPE_INT64 && (int64_t)d != d) {
-        error = "Expected int64 for %s but found %s\n";
+        error = "Expected int64 for %s but found %s.\n";
     } else if (type == OPT_TYPE_INT && (int)d != d) {
-        error = "Expected int for %s but found %s\n";
+        error = "Expected int for %s but found %s.\n";
     } else {
         *dst = d;
         return 0;
