@@ -25,5 +25,6 @@
 
 int subtitle_thread(void *arg);
 int open_external_subtitle(VideoState *is);
+void close_external_subtitle(VideoState *is);
 
 #endif /* LACHESIS_SUBTITLE_H */

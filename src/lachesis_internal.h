@@ -247,6 +247,7 @@ typedef struct VideoState {
     AVFormatContext *sub_ic;
     SDL_Thread *sub_read_tid;
     int sub_ext_stream;
+    volatile int sub_abort_request;
     volatile int sub_seek_pending;
     int64_t sub_seek_pos;
     int64_t sub_seek_min;

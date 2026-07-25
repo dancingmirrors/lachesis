@@ -84,7 +84,7 @@ static int sub_read_thread(void *arg) {
     }
 
     for (;;) {
-        if (is->abort_request) {
+        if (is->abort_request || is->sub_abort_request) {
             break;
         }
 
@@ -249,4 +249,24 @@ int open_external_subtitle(VideoState *is) {
 fail:
     avformat_close_input(&sic);
     return ret;
+}
+
+void close_external_subtitle(VideoState *is) {
+    if (!is->sub_ic) {
+        return;
+    }
+
+    is->sub_abort_request = 1;
+    if (is->sub_read_tid) {
+        SDL_WaitThread(is->sub_read_tid, NULL);
+        is->sub_read_tid = NULL;
+    }
+
+    decoder_abort(&is->subdec, &is->subpq);
+    decoder_destroy(&is->subdec);
+
+    is->subtitle_st = NULL;
+    is->sub_ext_stream = -1;
+    avformat_close_input(&is->sub_ic);
+    is->sub_abort_request = 0;
 }
