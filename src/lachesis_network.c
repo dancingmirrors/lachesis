@@ -32,7 +32,10 @@
 #include <windows.h>
 #else
 #include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -276,6 +279,9 @@ AVIOContext *ytdl_chunked_pb(struct YtdlChunkedIO *c) {
     return c ? c->pb : NULL;
 }
 
+#define YTDL_POLL_MS 100
+#define YTDL_OUTPUT_MAX (256 * 1024)
+
 #if defined(_WIN32)
 static void win_append_quoted_arg(AVBPrint *bp, const char *arg) {
     av_bprint_chars(bp, '"', 1);
@@ -305,22 +311,21 @@ static void win_append_quoted_arg(AVBPrint *bp, const char *arg) {
     av_bprint_chars(bp, '"', 1);
 }
 
-static FILE *win_ytdl_spawn(const char *path, const char *fmt, const char *url,
-                            HANDLE *out_proc) {
+static int win_ytdl_spawn(const char *path, const char *fmt, const char *url,
+                          HANDLE *out_proc, HANDLE *out_rd) {
     SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .bInheritHandle = TRUE};
     STARTUPINFOA si = {.cb = sizeof(si)};
     PROCESS_INFORMATION pi = {0};
     HANDLE rd = NULL, wr = NULL, nul = INVALID_HANDLE_VALUE;
     AVBPrint cmdline;
     char *cmd = NULL;
-    int fd = -1;
-    FILE *fp = NULL;
     BOOL ok;
 
     *out_proc = NULL;
+    *out_rd = NULL;
 
     if (!CreatePipe(&rd, &wr, &sa, 0)) {
-        return NULL;
+        return 0;
     }
     SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
 
@@ -359,23 +364,9 @@ static FILE *win_ytdl_spawn(const char *path, const char *fmt, const char *url,
     nul = INVALID_HANDLE_VALUE;
     CloseHandle(pi.hThread);
 
-    fd = _open_osfhandle((intptr_t)rd, _O_RDONLY);
-    if (fd < 0) {
-        CloseHandle(rd);
-        CloseHandle(pi.hProcess);
-        return NULL;
-    }
-    rd = NULL;
-
-    fp = _fdopen(fd, "r");
-    if (!fp) {
-        _close(fd);
-        CloseHandle(pi.hProcess);
-        return NULL;
-    }
-
     *out_proc = pi.hProcess;
-    return fp;
+    *out_rd = rd;
+    return 1;
 
 fail:
     if (rd) {
@@ -387,23 +378,51 @@ fail:
     if (nul != INVALID_HANDLE_VALUE) {
         CloseHandle(nul);
     }
-    return NULL;
+    return 0;
+}
+
+static int ytdl_read_output(HANDLE rd, VideoState *is, AVBPrint *out) {
+    for (;;) {
+        if (is && is->abort_request) {
+            return 0;
+        }
+        DWORD avail = 0;
+        if (!PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL)) {
+            return 1;
+        }
+        if (!avail) {
+            Sleep(YTDL_POLL_MS);
+            continue;
+        }
+        char chunk[4096];
+        DWORD got = 0;
+        if (avail > sizeof(chunk)) {
+            avail = sizeof(chunk);
+        }
+        if (!ReadFile(rd, chunk, avail, &got, NULL) || !got) {
+            return 1;
+        }
+        av_bprint_append_data(out, chunk, got);
+        if (!av_bprint_is_complete(out)) {
+            return 0;
+        }
+    }
 }
 #else /* !_WIN32 */
 
-static FILE *posix_ytdl_spawn(const char *path, const char *fmt, const char *url,
-                              pid_t *out_pid) {
+static int posix_ytdl_spawn(const char *path, const char *fmt, const char *url,
+                            pid_t *out_pid) {
     int fds[2];
 
     if (pipe(fds) != 0) {
-        return NULL;
+        return -1;
     }
 
     pid_t pid = fork();
     if (pid < 0) {
         close(fds[0]);
         close(fds[1]);
-        return NULL;
+        return -1;
     }
 
     if (pid == 0) {
@@ -437,76 +456,125 @@ static FILE *posix_ytdl_spawn(const char *path, const char *fmt, const char *url
 
     close(fds[1]);
     fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-
-    FILE *fp = fdopen(fds[0], "r");
-    if (!fp) {
-        close(fds[0]);
-        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
-        }
-        return NULL;
-    }
     *out_pid = pid;
 
-    return fp;
+    return fds[0];
+}
+
+static void posix_ytdl_reap(pid_t pid, int kill_it) {
+    if (pid <= 0) {
+        return;
+    }
+    if (kill_it) {
+        kill(pid, SIGTERM);
+        for (int i = 0; i < 50; i++) {
+            pid_t r = waitpid(pid, NULL, WNOHANG);
+            if (r == pid || (r < 0 && errno != EINTR)) {
+                return;
+            }
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+            nanosleep(&ts, NULL);
+        }
+        kill(pid, SIGKILL);
+    }
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+    }
+}
+
+static int ytdl_read_output(int fd, VideoState *is, AVBPrint *out) {
+    for (;;) {
+        if (is && is->abort_request) {
+            return 0;
+        }
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int pr = poll(&pfd, 1, YTDL_POLL_MS);
+        if (pr < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return 0;
+        }
+        if (pr == 0) {
+            continue;
+        }
+        char chunk[4096];
+        ssize_t got = read(fd, chunk, sizeof(chunk));
+        if (got < 0) {
+            if (errno == EINTR || errno == EAGAIN) {
+                continue;
+            }
+            return 0;
+        }
+        if (got == 0) {
+            return 1;
+        }
+        av_bprint_append_data(out, chunk, (unsigned)got);
+        if (!av_bprint_is_complete(out)) {
+            return 0;
+        }
+    }
 }
 
 #endif /* _WIN32 */
 
-int ytdl_resolve(const char *url, char **video_url, char **audio_url) {
+int ytdl_resolve(VideoState *is, const char *url, char **video_url,
+                 char **audio_url) {
     *video_url = NULL;
     *audio_url = NULL;
     const char *path = ytdl_path ? ytdl_path : "yt-dlp";
     char *auto_fmt = ytdl_format ? NULL : build_default_ytdl_format();
     const char *fmt = ytdl_format ? ytdl_format
                                   : (auto_fmt ? auto_fmt : "bestvideo+bestaudio/best");
+    AVBPrint out;
+    int complete;
+
+    av_bprint_init(&out, 0, YTDL_OUTPUT_MAX);
 
 #if defined(_WIN32)
     /* Spawn yt-dlp directly so cmd.exe never expands %VAR% in the URL. */
-    HANDLE proc = NULL;
-    FILE *fp = win_ytdl_spawn(path, fmt, url, &proc);
+    HANDLE proc = NULL, rd = NULL;
+    int spawned = win_ytdl_spawn(path, fmt, url, &proc, &rd);
     av_free(auto_fmt);
-    if (!fp) {
+    if (!spawned) {
+        av_bprint_finalize(&out, NULL);
         return 0;
     }
-#else
-    pid_t pid = -1;
-    FILE *fp = posix_ytdl_spawn(path, fmt, url, &pid);
-    av_free(auto_fmt);
-    if (!fp) {
-        return 0;
-    }
-#endif
-
-    int n = 0;
-    char line[8192];
-    while (fgets(line, sizeof(line), fp)) {
-        int len = strlen(line);
-        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r')) {
-            line[--len] = '\0';
-        }
-        if (!len) {
-            continue;
-        }
-        if (n == 0) {
-            *video_url = av_strdup(line);
-        } else if (n == 1) {
-            *audio_url = av_strdup(line);
-        }
-        n++;
-    }
-#if defined(_WIN32)
-    fclose(fp);
+    complete = ytdl_read_output(rd, is, &out);
+    CloseHandle(rd);
     if (proc) {
+        if (!complete) {
+            TerminateProcess(proc, 1);
+        }
         WaitForSingleObject(proc, INFINITE);
         CloseHandle(proc);
     }
 #else
-    fclose(fp);
-    if (pid > 0) {
-        while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
+    pid_t pid = -1;
+    int fd = posix_ytdl_spawn(path, fmt, url, &pid);
+    av_free(auto_fmt);
+    if (fd < 0) {
+        av_bprint_finalize(&out, NULL);
+        return 0;
+    }
+    complete = ytdl_read_output(fd, is, &out);
+    close(fd);
+    posix_ytdl_reap(pid, !complete);
+#endif
+
+    int n = 0;
+    if (complete && av_bprint_is_complete(&out)) {
+        char *save = NULL;
+        for (char *line = av_strtok(out.str, "\r\n", &save); line;
+             line = av_strtok(NULL, "\r\n", &save)) {
+            if (n == 0) {
+                *video_url = av_strdup(line);
+            } else if (n == 1) {
+                *audio_url = av_strdup(line);
+            }
+            n++;
         }
     }
-#endif
+    av_bprint_finalize(&out, NULL);
 
     if (!*video_url) {
         av_freep(audio_url);

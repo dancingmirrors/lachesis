@@ -566,7 +566,7 @@ int read_thread(void *arg) {
                 }
             }
             char *vurl = NULL, *aurl = NULL;
-            if (ytdl_resolve(fn, &vurl, &aurl) > 0) {
+            if (ytdl_resolve(is, fn, &vurl, &aurl) > 0) {
                 is->ytdl_source_url = av_strdup(fn);
                 av_free(is->filename);
                 is->filename = vurl;
@@ -578,10 +578,17 @@ int read_thread(void *arg) {
                 } else {
                     set_ytdl_http_opts(&format_opts);
                 }
+            } else if (is->abort_request) {
+                ret = -1;
+                goto fail;
             } else {
                 log_warn("yt-dlp failed, so trying direct open.\n");
             }
         }
+    }
+    if (is->abort_request) {
+        ret = -1;
+        goto fail;
     }
     {
         const char *open_url = (is->archive_path && is->entry_name)

@@ -29,7 +29,8 @@
 
 void set_ytdl_http_opts(AVDictionary **opts);
 
-int ytdl_resolve(const char *url, char **video_url, char **audio_url);
+int ytdl_resolve(VideoState *is, const char *url, char **video_url,
+                 char **audio_url);
 
 /* XXX */
 struct YtdlChunkedIO;
