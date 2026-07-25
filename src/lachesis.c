@@ -914,6 +914,7 @@ static void video_image_display(VideoState *is) {
                 !vk_fault_event_sent && !vk_display_ever_ok &&
                 ++vk_display_fail_streak >= VK_DISPLAY_FAULT_LIMIT) {
                 SDL_Event event;
+                SDL_zero(event);
                 event.type = FF_VULKAN_FAULT_EVENT;
                 event.user.data1 = is;
                 vk_fault_event_sent = SDL_PushEvent(&event);
@@ -1163,6 +1164,7 @@ void do_exit(VideoState *is) {
     av_freep(&audio_codec_name);
     av_freep(&subtitle_codec_name);
     av_freep(&hwaccel);
+    av_freep(&window_title);
     av_freep(&input_filename);
     for (int i = 0; i < playlist_size; i++) {
         av_free(playlist_entries[i].display_path);
@@ -2047,6 +2049,7 @@ int video_thread(void *arg) {
 
             if (ret < 0) {
                 SDL_Event event;
+                SDL_zero(event);
                 event.type = FF_QUIT_EVENT;
                 event.user.code = FF_QUIT_REASON_ERROR;
                 event.user.data1 = is;
@@ -2400,6 +2403,9 @@ the_end:
     if (p && stream_index != -1) {
         stream_index = p->stream_index[stream_index];
     }
+    if (codec_type == AVMEDIA_TYPE_SUBTITLE && is->sub_ic) {
+        close_external_subtitle(is);
+    }
     stream_component_close(is, old_index);
     stream_component_open(is, stream_index);
 }
@@ -2421,7 +2427,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
     SDL_PumpEvents();
     terminal_input_poll();
-    while (!SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST)) {
+    while (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) <= 0) {
         if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
             SDL_HideCursor();
             cursor_hidden = 1;
@@ -2475,7 +2481,7 @@ void playlist_switch(VideoState **pis, int new_pos) {
     ab_loop_reset();
     reset_playback_speed();
     playlist_pos = new_pos;
-    window_title = NULL;
+    av_freep(&window_title);
     pause_next_stream = keep_paused;
     VideoState *is = stream_open_playlist_entry(playlist_pos);
     if (!is) {
@@ -2508,7 +2514,7 @@ void playlist_remove_current(VideoState **pis, int keep_paused) {
     reset_playback_speed();
     playlist_nav_dir = 1;
     playlist_pos = next;
-    window_title = NULL;
+    av_freep(&window_title);
     pause_next_stream = keep_paused;
     VideoState *nis = stream_open_playlist_entry(playlist_pos);
     if (!nis) {
@@ -2735,6 +2741,7 @@ int main(int argc, char **argv) {
     if (display_disable) {
         flags &= ~SDL_INIT_VIDEO;
     }
+    flags |= SDL_INIT_EVENTS;
     if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
         SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
     }

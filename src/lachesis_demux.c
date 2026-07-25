@@ -262,12 +262,12 @@ int stream_component_open(VideoState *is, int stream_index) {
         sample_rate = av_buffersink_get_sample_rate(sink);
         ret = av_buffersink_get_ch_layout(sink, &ch_layout);
         if (ret < 0) {
-            goto fail;
+            goto fail_audio_graph;
         }
     }
 
         if ((ret = audio_open(is, &ch_layout, sample_rate, &is->audio_tgt)) < 0) {
-            goto fail;
+            goto fail_audio_graph;
         }
         is->audio_hw_buf_size = ret;
         is->audio_src = is->audio_tgt;
@@ -282,7 +282,7 @@ int stream_component_open(VideoState *is, int stream_index) {
         is->audio_st = ic->streams[stream_index];
 
         if ((ret = decoder_init(&is->auddec, avctx, &is->audioq, is->continue_read_thread)) < 0) {
-            goto fail;
+            goto fail_audio_graph;
         }
         if (format_lacks_timestamps(is->ic)) {
             is->auddec.start_pts = is->audio_st->start_time;
@@ -330,6 +330,8 @@ int stream_component_open(VideoState *is, int stream_index) {
     }
     goto out;
 
+fail_audio_graph:
+    avfilter_graph_free(&is->agraph);
 fail:
     avcodec_free_context(&avctx);
 out:
@@ -710,6 +712,12 @@ int read_thread(void *arg) {
                                 NULL, 0);
     }
 
+    for (i = 0; i < AVMEDIA_TYPE_NB; i++) {
+        if (st_index[i] == INT_MAX) {
+            st_index[i] = -1;
+        }
+    }
+
     if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
         AVStream *st = ic->streams[st_index[AVMEDIA_TYPE_VIDEO]];
         AVCodecParameters *codecpar = st->codecpar;
@@ -975,6 +983,7 @@ fail:
     if (ret != 0) {
         SDL_Event event;
 
+        SDL_zero(event);
         event.type = FF_QUIT_EVENT;
         event.user.code = ff_quit_reason;
         event.user.data1 = is;
