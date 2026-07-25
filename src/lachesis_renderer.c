@@ -1046,6 +1046,7 @@ static int create_hw_frame(VkRenderer *renderer, AVFrame *frame) {
         }
 
         av_buffer_unref(&ctx->hw_frame_ref);
+        av_freep(&ctx->transfer_formats);
     }
 
     if (!ctx->constraints) {
@@ -1109,9 +1110,12 @@ static int create_hw_frame(VkRenderer *renderer, AVFrame *frame) {
         vk_frame_ctx->usage = VK_IMAGE_USAGE_SAMPLED_BIT;
     }
 
-    av_hwframe_transfer_get_formats(ctx->hw_frame_ref,
-                                    AV_HWFRAME_TRANSFER_DIRECTION_TO,
-                                    &ctx->transfer_formats, 0);
+    av_freep(&ctx->transfer_formats);
+    if (av_hwframe_transfer_get_formats(ctx->hw_frame_ref,
+                                        AV_HWFRAME_TRANSFER_DIRECTION_TO,
+                                        &ctx->transfer_formats, 0) < 0) {
+        av_freep(&ctx->transfer_formats);
+    }
 
     return 0;
 }
