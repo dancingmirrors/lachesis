@@ -43,10 +43,6 @@ static int terminal_active = 0;
 #if !defined(_WIN32)
 static struct termios saved_termios;
 static volatile sig_atomic_t saved_termios_valid = 0;
-
-static void terminal_restore(void) {
-    terminal_restore_now();
-}
 #endif
 
 void terminal_restore_now(void) {
@@ -95,7 +91,7 @@ void terminal_input_init(void) {
         saved_termios_valid = 0;
         return;
     }
-    atexit(terminal_restore);
+    atexit(terminal_restore_now);
     terminal_active = 1;
 #endif
 }
