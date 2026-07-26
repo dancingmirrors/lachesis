@@ -150,6 +150,25 @@ void event_loop(VideoState **pis) {
         cur_stream = *pis;
         refresh_loop_wait_event(cur_stream, &event);
         switch (event.type) {
+        case SDL_EVENT_MOUSE_MOTION:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP: {
+            float density = window_pixel_density();
+            if (density != 1.0f) {
+                if (event.type == SDL_EVENT_MOUSE_MOTION) {
+                    event.motion.x *= density;
+                    event.motion.y *= density;
+                } else {
+                    event.button.x *= density;
+                    event.button.y *= density;
+                }
+            }
+            break;
+        }
+        default:
+            break;
+        }
+        switch (event.type) {
         case SDL_EVENT_KEY_DOWN:
             if (delete_confirm_pending) {
                 delete_confirm_pending = 0;
@@ -581,13 +600,8 @@ void event_loop(VideoState **pis) {
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             screen_width = event.window.data1;
             screen_height = event.window.data2;
-            if (is_fullscreen) {
-                cur_stream->width = screen_width;
-                cur_stream->height = screen_height;
-            } else {
-                cur_stream->width = default_width;
-                cur_stream->height = default_height;
-            }
+            cur_stream->width = screen_width;
+            cur_stream->height = screen_height;
             if (vk_renderer) {
                 vk_renderer_resize(vk_renderer, screen_width, screen_height);
             }

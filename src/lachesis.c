@@ -1259,6 +1259,25 @@ void set_default_window_size(int width, int height, AVRational sar) {
     }
 }
 
+void update_screen_size(void) {
+    int w = 0, h = 0;
+
+    if (!window) {
+        return;
+    }
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w > 0 && h > 0) {
+        screen_width = w;
+        screen_height = h;
+    }
+}
+
+float window_pixel_density(void) {
+    float density = window ? SDL_GetWindowPixelDensity(window) : 1.0f;
+
+    return density > 0.0f ? density : 1.0f;
+}
+
 static const char *file_basename(const char *path) {
     const char *slash = strrchr(path, '/');
     return (slash && slash[1]) ? slash + 1 : path;
@@ -1320,13 +1339,13 @@ static int video_open(VideoState *is) {
         SDL_SetWindowTitle(window, title);
     }
 
-    is->width = w;
-    is->height = h;
-
-    /* Make sure the damn thing is centered. */
-    if (is_fullscreen && screen_width && screen_height) {
+    update_screen_size();
+    if (screen_width > 0 && screen_height > 0) {
         is->width = screen_width;
         is->height = screen_height;
+    } else {
+        is->width = w;
+        is->height = h;
     }
 
     return 0;
@@ -2297,7 +2316,7 @@ static VideoState *stream_open_playlist_entry(int pos) {
 }
 
 static int startup_window_flags(void) {
-    int win_flags = SDL_WINDOW_HIDDEN;
+    int win_flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY;
 
     if (is_fullscreen) {
         win_flags |= SDL_WINDOW_FULLSCREEN;
@@ -2371,6 +2390,7 @@ static void drop_vulkan_renderer(void) {
     apply_startup_window_title();
     SDL_ShowWindow(window);
     present_update_display_mode();
+    update_screen_size();
     present_reset();
     if (!no_vsync_snap && !benchmark) {
         present_restore_snap();
@@ -2489,8 +2509,10 @@ void toggle_fullscreen(VideoState *is) {
     SDL_SetWindowFullscreen(window, is_fullscreen);
     if (!is_fullscreen) {
         SDL_SetWindowSize(window, default_width, default_height);
-        is->width = default_width;
-        is->height = default_height;
+        SDL_SyncWindow(window);
+        update_screen_size();
+        is->width = screen_width;
+        is->height = screen_height;
         is->force_refresh = 1;
     }
     present_update_display_mode();
@@ -2953,9 +2975,9 @@ int main(int argc, char **argv) {
         /* Show the window early so the swapchain is fully initialized. */
         SDL_ShowWindow(window);
         present_update_display_mode();
+        update_screen_size();
         if (vk_renderer) {
-            int vk_w = 0, vk_h = 0;
-            SDL_GetWindowSizeInPixels(window, &vk_w, &vk_h);
+            int vk_w = screen_width, vk_h = screen_height;
             if (vk_w > 0 && vk_h > 0) {
                 vk_renderer_resize(vk_renderer, vk_w, vk_h);
             }
