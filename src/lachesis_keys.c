@@ -57,6 +57,10 @@ static int delete_paused_by_prompt = 0;
 static int delete_prearm_paused = 0;
 static int delete_advance_deferred = 0;
 
+static int demuxer_ready(const VideoState *is) {
+    return is->ic != NULL;
+}
+
 static void seek_chapter(VideoState *is, int incr) {
     int64_t pos = effective_playhead(is) * AV_TIME_BASE;
     int i;
@@ -325,14 +329,16 @@ void event_loop(VideoState **pis) {
                 }
                 break;
             case SDLK_PAGEUP:
-                if (cur_stream->ic->nb_chapters <= 1) {
+                if (!demuxer_ready(cur_stream) ||
+                    cur_stream->ic->nb_chapters <= 1) {
                     incr = 600.0;
                     goto do_seek;
                 }
                 seek_chapter(cur_stream, 1);
                 break;
             case SDLK_PAGEDOWN:
-                if (cur_stream->ic->nb_chapters <= 1) {
+                if (!demuxer_ready(cur_stream) ||
+                    cur_stream->ic->nb_chapters <= 1) {
                     incr = -600.0;
                     goto do_seek;
                 }
@@ -350,6 +356,9 @@ void event_loop(VideoState **pis) {
             case SDLK_DOWN:
                 incr = -60.0;
             do_seek:
+                if (!demuxer_ready(cur_stream)) {
+                    break;
+                }
                 osd_show_seek();
                 if (seek_by_bytes) {
                     pos = -1;
@@ -552,6 +561,9 @@ void event_loop(VideoState **pis) {
                     break;
                 }
                 x = event.motion.x;
+            }
+            if (!demuxer_ready(cur_stream) || cur_stream->width <= 0) {
+                break;
             }
             if (seek_by_bytes || cur_stream->ic->duration <= 0) {
                 uint64_t size = avio_size(cur_stream->ic->pb);
