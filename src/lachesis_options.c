@@ -102,6 +102,8 @@ char *vulkan_swap_mode = NULL;
 int no_shader_cache = 0;
 char *shader_cache_dir = NULL;
 const char *icc_profile = NULL;
+int icc_auto = 0;
+int no_display_hdr = 0;
 char *video_background = NULL;
 const char *hwaccel = NULL;
 int no_hwaccel = 0;
@@ -291,6 +293,8 @@ const OptionDef options[] = {
     {"vulkan_params", OPT_TYPE_STRING, 0, {&vulkan_params}, "Vulkan configuration using a list of key=value pairs separated by ':'"},
     {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "Vulkan present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
     {"icc-profile", OPT_TYPE_STRING, 0, {&icc_profile}, "ICC profile passed to libplacebo", "path"},
+    {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises", ""},
+    {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports", ""},
     {"video_bg", OPT_TYPE_STRING, 0, {&video_background}, "set the video background for transparent content"},
     {"hwaccel", OPT_TYPE_STRING, 0, {&hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none"},
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},

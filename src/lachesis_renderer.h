@@ -89,6 +89,9 @@ int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *para
 
 int vk_renderer_resize(VkRenderer *renderer, int width, int height);
 
+/* Safe to call with a NULL renderer. */
+int vk_renderer_refresh_display_info(VkRenderer *renderer, SDL_Window *window);
+
 int vk_renderer_self_test(VkRenderer *renderer, int width, int height);
 
 void vk_renderer_destroy(VkRenderer *renderer);

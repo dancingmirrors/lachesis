@@ -1370,6 +1370,10 @@ static void video_display(VideoState *is) {
         video_open(is);
     }
 
+    if (window && (SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED)) {
+        return;
+    }
+
     is->render_params.osd_pixels = NULL;
     is->render_params.present_done_us = 0;
     is->render_params.present_block_us = 0;
@@ -2969,6 +2973,12 @@ int main(int argc, char **argv) {
                 }
                 if (icc_profile) {
                     av_dict_set(&dict, "icc_profile", icc_profile, 0);
+                }
+                if (icc_auto) {
+                    av_dict_set(&dict, "icc_auto", "1", 0);
+                }
+                if (no_display_hdr) {
+                    av_dict_set(&dict, "display_hdr", "0", 0);
                 }
                 ret = vk_renderer_create(vk_renderer, window, dict);
                 av_dict_free(&dict);

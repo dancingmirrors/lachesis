@@ -138,6 +138,8 @@ extern char *vulkan_swap_mode;
 extern int no_shader_cache;
 extern char *shader_cache_dir;
 extern const char *icc_profile;
+extern int icc_auto;
+extern int no_display_hdr;
 extern char *video_background;
 extern const char *hwaccel;
 extern int no_hwaccel;

@@ -172,6 +172,13 @@ typedef struct RendererContext {
     void *icc_data;
     size_t icc_len;
     uint64_t icc_sig;
+    int icc_from_file;
+    int icc_auto;
+
+    int hdr_auto;
+    int hdr_warned;
+    int have_display_hdr;
+    struct pl_hdr_metadata display_hdr;
 } RendererContext;
 
 static inline int enable_debug(const AVDictionary *opt) {
@@ -882,46 +889,162 @@ static void cache_save(RendererContext *ctx) {
 }
 #endif /* LACHESIS_HAVE_PL_CACHE */
 
-static void icc_setup(RendererContext *ctx, const AVDictionary *opt) {
-    const AVDictionaryEntry *entry = av_dict_get(opt, "icc_profile", NULL, 0);
+static int icc_adopt(RendererContext *ctx, void *data, size_t len) {
     struct pl_icc_profile profile;
+
+    if (!data || !len) {
+        av_free(data);
+        return 0;
+    }
+
+    profile = (struct pl_icc_profile){.data = data, .len = len};
+    pl_icc_profile_compute_signature(&profile);
+
+    if (ctx->icc_data && ctx->icc_sig == profile.signature) {
+        av_free(data);
+        return 0;
+    }
+
+    av_freep(&ctx->icc_data);
+    ctx->icc_data = data;
+    ctx->icc_len = len;
+    ctx->icc_sig = profile.signature;
+
+    return 1;
+}
+
+static int icc_load_file(RendererContext *ctx, const char *path) {
     long size;
     void *data;
     FILE *f;
 
-    if (!entry || !entry->value || !entry->value[0]) {
-        return;
-    }
-
-    f = fopen(entry->value, "rb");
+    f = fopen(path, "rb");
     if (!f) {
-        log_warn("Failed to open ICC profile '%s'.\n", entry->value);
-        return;
+        log_warn("Failed to open ICC profile '%s'.\n", path);
+        return 0;
     }
     if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) <= 0 ||
         fseek(f, 0, SEEK_SET) != 0) {
         fclose(f);
-        return;
+        return 0;
     }
     data = av_malloc((size_t)size);
     if (!data) {
         fclose(f);
-        return;
+        return 0;
     }
     if (fread(data, 1, (size_t)size, f) != (size_t)size) {
         av_free(data);
         fclose(f);
-        return;
+        return 0;
     }
     fclose(f);
 
-    profile = (struct pl_icc_profile){.data = data, .len = (size_t)size};
-    pl_icc_profile_compute_signature(&profile);
+    if (!icc_adopt(ctx, data, (size_t)size)) {
+        return 0;
+    }
+    log_info("Loaded ICC profile: %s\n", path);
 
-    ctx->icc_data = data;
-    ctx->icc_len = (size_t)size;
-    ctx->icc_sig = profile.signature;
-    log_info("Loaded ICC profile: %s\n", entry->value);
+    return 1;
+}
+
+static int icc_load_display(RendererContext *ctx, SDL_Window *window) {
+    size_t size = 0;
+    void *sdl_data;
+    void *data;
+
+    if (!ctx->icc_auto || ctx->icc_from_file || !window) {
+        return 0;
+    }
+
+    sdl_data = SDL_GetWindowICCProfile(window, &size);
+    if (!sdl_data || !size) {
+        SDL_free(sdl_data);
+        if (!ctx->icc_data) {
+            return 0;
+        }
+        av_freep(&ctx->icc_data);
+        ctx->icc_len = 0;
+        ctx->icc_sig = 0;
+        log_verbose("The display advertises no ICC profile.\n");
+        return 1;
+    }
+    data = av_memdup(sdl_data, size);
+    SDL_free(sdl_data);
+
+    if (!icc_adopt(ctx, data, size)) {
+        return 0;
+    }
+    log_verbose("Using the display's ICC profile (%zu bytes).\n", size);
+
+    return 1;
+}
+
+static void icc_setup(RendererContext *ctx, SDL_Window *window,
+                      const AVDictionary *opt) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "icc_profile", NULL, 0);
+
+    if (entry && entry->value && entry->value[0]) {
+        ctx->icc_from_file = 1;
+        icc_load_file(ctx, entry->value);
+        return;
+    }
+
+    entry = av_dict_get(opt, "icc_auto", NULL, 0);
+    ctx->icc_auto = entry && strtol(entry->value, NULL, 10);
+    icc_load_display(ctx, window);
+}
+
+#define SDL_SCRGB_NITS 80.0f
+
+static int hdr_refresh(RendererContext *ctx, SDL_Window *window) {
+    struct pl_hdr_metadata hdr = {0};
+    SDL_PropertiesID props;
+    float headroom, sdr_white, max_luma;
+
+    if (!ctx->hdr_auto || !window) {
+        return 0;
+    }
+
+    props = SDL_GetWindowProperties(window);
+    if (!props) {
+        return 0;
+    }
+    if (!SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false)) {
+        goto done;
+    }
+
+    headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+    if (!(headroom > 1.0f)) {
+        goto done;
+    }
+
+    sdr_white = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
+    sdr_white = sdr_white == 1.0f ? PL_COLOR_SDR_WHITE : sdr_white * SDL_SCRGB_NITS;
+
+    max_luma = sdr_white * headroom;
+    if (!(max_luma >= 100.0f) || max_luma > 100000.0f) {
+        if (!ctx->hdr_warned) {
+            ctx->hdr_warned = 1;
+            log_warn("Ignoring an implausible display peak of %.1f cd/m².\n", max_luma);
+        }
+        goto done;
+    }
+    hdr.max_luma = max_luma;
+
+done:
+    if (pl_hdr_metadata_equal(&hdr, &ctx->display_hdr)) {
+        return 0;
+    }
+    ctx->display_hdr = hdr;
+    ctx->have_display_hdr = hdr.max_luma > 0;
+    if (ctx->have_display_hdr) {
+        log_verbose("The display reports a peak of %.1f cd/m².\n", hdr.max_luma);
+    } else {
+        log_verbose("The display no longer reports HDR metadata.\n");
+    }
+
+    return 1;
 }
 
 static void vk_log_cb(void *log_priv, enum pl_log_level level,
@@ -1012,7 +1135,11 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     cache_setup(ctx, opt);
 #endif
 
-    icc_setup(ctx, opt);
+    icc_setup(ctx, window, opt);
+
+    entry = av_dict_get(opt, "display_hdr", NULL, 0);
+    ctx->hdr_auto = !entry || strtol(entry->value, NULL, 10);
+    hdr_refresh(ctx, window);
 
     ctx->renderer = pl_renderer_create(ctx->vk_log, ctx->placebo_vulkan->gpu);
     if (!ctx->renderer) {
@@ -1405,6 +1532,10 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         };
     }
 
+    if (ctx->have_display_hdr) {
+        pl_hdr_metadata_merge(&target.color.hdr, &ctx->display_hdr);
+    }
+
     struct pl_overlay osd_overlay;
     struct pl_overlay_part osd_part;
 
@@ -1741,6 +1872,24 @@ VkRenderer *vk_get_renderer(void) {
 }
 
 #endif
+
+int vk_renderer_refresh_display_info(VkRenderer *renderer, SDL_Window *window) {
+#if HAVE_VULKAN_RENDERER
+    RendererContext *ctx = (RendererContext *)renderer;
+    int changed;
+
+    if (!ctx) {
+        return 0;
+    }
+    changed = icc_load_display(ctx, window) | hdr_refresh(ctx, window);
+
+    return changed;
+#else
+    (void)renderer;
+    (void)window;
+    return 0;
+#endif
+}
 
 int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
 #if HAVE_VULKAN_RENDERER

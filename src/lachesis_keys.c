@@ -609,7 +609,14 @@ void event_loop(VideoState **pis) {
             present_reset();
             [[fallthrough]];
         case SDL_EVENT_WINDOW_EXPOSED:
+        case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
             cur_stream->force_refresh = 1;
+            break;
+        case SDL_EVENT_WINDOW_ICCPROF_CHANGED:
+        case SDL_EVENT_WINDOW_HDR_STATE_CHANGED:
+            if (vk_renderer_refresh_display_info(vk_renderer, window)) {
+                cur_stream->force_refresh = 1;
+            }
             break;
         case SDL_EVENT_RENDER_TARGETS_RESET:
         case SDL_EVENT_RENDER_DEVICE_RESET:
@@ -622,6 +629,8 @@ void event_loop(VideoState **pis) {
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
             present_update_display_mode();
             present_reset();
+            vk_renderer_refresh_display_info(vk_renderer, window);
+            cur_stream->force_refresh = 1;
             break;
         case SDL_EVENT_QUIT:
             do_exit(*pis);
