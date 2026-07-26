@@ -720,6 +720,13 @@ void calculate_display_rect(SDL_Rect *rect,
     AVRational aspect_ratio = pic_sar;
     int64_t width, height, x, y;
 
+    if (pic_width < 1) {
+        pic_width = 1;
+    }
+    if (pic_height < 1) {
+        pic_height = 1;
+    }
+
     if (video_rotate == 90 || video_rotate == 270) {
         int tmp = pic_width;
         pic_width = pic_height;
