@@ -21,23 +21,11 @@
 
 #include "lachesis_network.h"
 
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
-#if defined(_WIN32)
-#include <fcntl.h>
-#include <io.h>
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
-#include <sys/wait.h>
-#include <time.h>
-#include <unistd.h>
-#endif
+#include <SDL3/SDL.h>
 
 #include <libavformat/avio.h>
 #include <libavutil/avstring.h>
@@ -283,240 +271,89 @@ AVIOContext *ytdl_chunked_pb(struct YtdlChunkedIO *c) {
 #define YTDL_POLL_MS 100
 #define YTDL_OUTPUT_MAX (256 * 1024)
 
-#if defined(_WIN32)
-static void win_append_quoted_arg(AVBPrint *bp, const char *arg) {
-    av_bprint_chars(bp, '"', 1);
-    for (const char *p = arg;; p++) {
-        unsigned backslashes = 0;
-        while (*p == '\\') {
-            backslashes++;
-            p++;
-        }
-        if (*p == '\0') {
-            for (unsigned i = 0; i < backslashes * 2; i++) {
-                av_bprint_chars(bp, '\\', 1);
-            }
-            break;
-        } else if (*p == '"') {
-            for (unsigned i = 0; i < backslashes * 2 + 1; i++) {
-                av_bprint_chars(bp, '\\', 1);
-            }
-            av_bprint_chars(bp, '"', 1);
-        } else {
-            for (unsigned i = 0; i < backslashes; i++) {
-                av_bprint_chars(bp, '\\', 1);
-            }
-            av_bprint_chars(bp, *p, 1);
-        }
+static SDL_Process *ytdl_spawn(const char *path, const char *fmt, const char *url) {
+    const char *args[] = {
+        path,
+        "-g",
+        "--no-warnings",
+        "--no-playlist",
+        "-f",
+        fmt,
+        "--",
+        url,
+        NULL,
+    };
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_Process *proc;
+
+    if (!props) {
+        return NULL;
     }
-    av_bprint_chars(bp, '"', 1);
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER,
+                          SDL_PROCESS_STDIO_APP);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER,
+                          SDL_PROCESS_STDIO_NULL);
+#if defined(_WIN32)
+    SDL_SetBooleanProperty(props, SDL_PROP_PROCESS_CREATE_BACKGROUND_BOOLEAN, true);
+#endif
+    proc = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+
+    return proc;
 }
 
-static int win_ytdl_spawn(const char *path, const char *fmt, const char *url,
-                          HANDLE *out_proc, HANDLE *out_rd) {
-    SECURITY_ATTRIBUTES sa = {.nLength = sizeof(sa), .bInheritHandle = TRUE};
-    STARTUPINFOA si = {.cb = sizeof(si)};
-    PROCESS_INFORMATION pi = {0};
-    HANDLE rd = NULL, wr = NULL, nul = INVALID_HANDLE_VALUE;
-    AVBPrint cmdline;
-    char *cmd = NULL;
-    BOOL ok;
+static int ytdl_read_output(SDL_Process *proc, VideoState *is, AVBPrint *out) {
+    SDL_IOStream *io = SDL_GetProcessOutput(proc);
 
-    *out_proc = NULL;
-    *out_rd = NULL;
-
-    if (!CreatePipe(&rd, &wr, &sa, 0)) {
+    if (!io) {
         return 0;
     }
-    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-
-    nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE,
-                      FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
-
-    si.dwFlags = STARTF_USESTDHANDLES;
-    si.hStdInput = nul;
-    si.hStdOutput = wr;
-    si.hStdError = nul;
-
-    av_bprint_init(&cmdline, 0, AV_BPRINT_SIZE_AUTOMATIC);
-    win_append_quoted_arg(&cmdline, path);
-    av_bprintf(&cmdline, " -g --no-warnings --no-playlist -f ");
-    win_append_quoted_arg(&cmdline, fmt);
-    av_bprintf(&cmdline, " -- ");
-    win_append_quoted_arg(&cmdline, url);
-    if (!av_bprint_is_complete(&cmdline)) {
-        av_bprint_finalize(&cmdline, NULL);
-        goto fail;
-    }
-    if (av_bprint_finalize(&cmdline, &cmd) < 0 || !cmd) {
-        goto fail;
-    }
-
-    ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL,
-                        &si, &pi);
-    av_free(cmd);
-    if (!ok) {
-        goto fail;
-    }
-
-    CloseHandle(wr);
-    wr = NULL;
-    CloseHandle(nul);
-    nul = INVALID_HANDLE_VALUE;
-    CloseHandle(pi.hThread);
-
-    *out_proc = pi.hProcess;
-    *out_rd = rd;
-    return 1;
-
-fail:
-    if (rd) {
-        CloseHandle(rd);
-    }
-    if (wr) {
-        CloseHandle(wr);
-    }
-    if (nul != INVALID_HANDLE_VALUE) {
-        CloseHandle(nul);
-    }
-    return 0;
-}
-
-static int ytdl_read_output(HANDLE rd, VideoState *is, AVBPrint *out) {
     for (;;) {
+        char chunk[4096];
+        size_t got;
+
         if (is && is->abort_request) {
             return 0;
         }
-        DWORD avail = 0;
-        if (!PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL)) {
-            return 1;
-        }
-        if (!avail) {
-            Sleep(YTDL_POLL_MS);
+        got = SDL_ReadIO(io, chunk, sizeof(chunk));
+        if (got > 0) {
+            av_bprint_append_data(out, chunk, (unsigned)got);
+            if (!av_bprint_is_complete(out)) {
+                return 0;
+            }
             continue;
         }
-        char chunk[4096];
-        DWORD got = 0;
-        if (avail > sizeof(chunk)) {
-            avail = sizeof(chunk);
-        }
-        if (!ReadFile(rd, chunk, avail, &got, NULL) || !got) {
+        switch (SDL_GetIOStatus(io)) {
+        case SDL_IO_STATUS_NOT_READY:
+            SDL_Delay(YTDL_POLL_MS);
+            continue;
+        case SDL_IO_STATUS_EOF:
             return 1;
-        }
-        av_bprint_append_data(out, chunk, got);
-        if (!av_bprint_is_complete(out)) {
+        default:
             return 0;
         }
     }
 }
-#else /* !_WIN32 */
 
-static int posix_ytdl_spawn(const char *path, const char *fmt, const char *url,
-                            pid_t *out_pid) {
-    int fds[2];
-
-    if (pipe(fds) != 0) {
-        return -1;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        close(fds[0]);
-        close(fds[1]);
-        return -1;
-    }
-
-    if (pid == 0) {
-        char *const argv[] = {
-            (char *)path,
-            (char *)"-g",
-            (char *)"--no-warnings",
-            (char *)"--no-playlist",
-            (char *)"-f",
-            (char *)fmt,
-            (char *)"--",
-            (char *)url,
-            NULL,
-        };
-
-        close(fds[0]);
-        if (dup2(fds[1], STDOUT_FILENO) < 0) {
-            _exit(127);
-        }
-        close(fds[1]);
-
-        int nul = open("/dev/null", O_WRONLY);
-        if (nul >= 0) {
-            dup2(nul, STDERR_FILENO);
-            close(nul);
-        }
-
-        execvp(path, argv);
-        _exit(127);
-    }
-
-    close(fds[1]);
-    fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-    *out_pid = pid;
-
-    return fds[0];
-}
-
-static void posix_ytdl_reap(pid_t pid, int kill_it) {
-    if (pid <= 0) {
+static void ytdl_reap(SDL_Process *proc, int kill_it) {
+    if (!proc) {
         return;
     }
     if (kill_it) {
-        kill(pid, SIGTERM);
+        SDL_KillProcess(proc, false);
         for (int i = 0; i < 50; i++) {
-            pid_t r = waitpid(pid, NULL, WNOHANG);
-            if (r == pid || (r < 0 && errno != EINTR)) {
+            if (SDL_WaitProcess(proc, false, NULL)) {
+                SDL_DestroyProcess(proc);
                 return;
             }
-            struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
-            nanosleep(&ts, NULL);
+            SDL_Delay(10);
         }
-        kill(pid, SIGKILL);
+        SDL_KillProcess(proc, true);
     }
-    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) {
-    }
+    SDL_WaitProcess(proc, true, NULL);
+    SDL_DestroyProcess(proc);
 }
-
-static int ytdl_read_output(int fd, VideoState *is, AVBPrint *out) {
-    for (;;) {
-        if (is && is->abort_request) {
-            return 0;
-        }
-        struct pollfd pfd = {.fd = fd, .events = POLLIN};
-        int pr = poll(&pfd, 1, YTDL_POLL_MS);
-        if (pr < 0) {
-            if (errno == EINTR) {
-                continue;
-            }
-            return 0;
-        }
-        if (pr == 0) {
-            continue;
-        }
-        char chunk[4096];
-        ssize_t got = read(fd, chunk, sizeof(chunk));
-        if (got < 0) {
-            if (errno == EINTR || errno == EAGAIN) {
-                continue;
-            }
-            return 0;
-        }
-        if (got == 0) {
-            return 1;
-        }
-        av_bprint_append_data(out, chunk, (unsigned)got);
-        if (!av_bprint_is_complete(out)) {
-            return 0;
-        }
-    }
-}
-
-#endif /* _WIN32 */
 
 int ytdl_resolve(VideoState *is, const char *url, char **video_url,
                  char **audio_url) {
@@ -531,36 +368,14 @@ int ytdl_resolve(VideoState *is, const char *url, char **video_url,
 
     av_bprint_init(&out, 0, YTDL_OUTPUT_MAX);
 
-#if defined(_WIN32)
-    /* Spawn yt-dlp directly so cmd.exe never expands %VAR% in the URL. */
-    HANDLE proc = NULL, rd = NULL;
-    int spawned = win_ytdl_spawn(path, fmt, url, &proc, &rd);
+    SDL_Process *proc = ytdl_spawn(path, fmt, url);
     av_free(auto_fmt);
-    if (!spawned) {
+    if (!proc) {
         av_bprint_finalize(&out, NULL);
         return 0;
     }
-    complete = ytdl_read_output(rd, is, &out);
-    CloseHandle(rd);
-    if (proc) {
-        if (!complete) {
-            TerminateProcess(proc, 1);
-        }
-        WaitForSingleObject(proc, INFINITE);
-        CloseHandle(proc);
-    }
-#else
-    pid_t pid = -1;
-    int fd = posix_ytdl_spawn(path, fmt, url, &pid);
-    av_free(auto_fmt);
-    if (fd < 0) {
-        av_bprint_finalize(&out, NULL);
-        return 0;
-    }
-    complete = ytdl_read_output(fd, is, &out);
-    close(fd);
-    posix_ytdl_reap(pid, !complete);
-#endif
+    complete = ytdl_read_output(proc, is, &out);
+    ytdl_reap(proc, !complete);
 
     int n = 0;
     if (complete && av_bprint_is_complete(&out)) {
