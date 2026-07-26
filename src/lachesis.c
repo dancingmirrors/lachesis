@@ -1226,6 +1226,13 @@ static void SDLCALL apply_default_window_size(void *unused av_unused) {
         max_height = height;
     }
     calculate_display_rect(&rect, 0, 0, max_width, max_height, width, height, sar);
+
+    if (window && !no_keep_aspect && !borderless && !cmd_width && !cmd_height &&
+        rect.w > 0 && rect.h > 0) {
+        float aspect = (float)rect.w / (float)rect.h;
+        SDL_SetWindowAspectRatio(window, aspect, aspect);
+    }
+
     if (rect.w == default_width && rect.h == default_height) {
         return;
     }

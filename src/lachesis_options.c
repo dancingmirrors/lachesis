@@ -72,6 +72,7 @@ int display_disable;
 int benchmark;
 int borderless;
 int alwaysontop;
+int no_keep_aspect;
 int startup_volume = 100;
 int av_sync_type = AV_SYNC_AUDIO_MASTER;
 int av_sync_type_explicit = 0;
@@ -260,6 +261,7 @@ const OptionDef options[] = {
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
     {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)", ""},
     {"noborder", OPT_TYPE_BOOL, 0, {&borderless}, "enable borderless window mode"},
+    {"no-keep-aspect", OPT_TYPE_BOOL, 0, {&no_keep_aspect}, "let the window be resized to any aspect ratio", ""},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to keep the window always on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 260)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},

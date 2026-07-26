@@ -107,6 +107,7 @@ extern float seek_interval;
 extern int display_disable;
 extern int benchmark;
 extern int borderless;
+extern int no_keep_aspect;
 extern int alwaysontop;
 extern int startup_volume;
 extern int av_sync_type;
