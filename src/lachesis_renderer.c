@@ -19,9 +19,6 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#define VK_NO_PROTOTYPES
-#define VK_ENABLE_BETA_EXTENSIONS
-
 /* clang-format off */
 #include "lachesis_config.h"
 #include "lachesis_log.h"
@@ -29,11 +26,14 @@
 #include "lachesis_view360.h"
 /* clang-format on */
 
-#if LACHESIS_HAVE_LIBPLACEBO
+#if LACHESIS_HAVE_VULKAN && LACHESIS_HAVE_LIBPLACEBO
 #define HAVE_VULKAN_RENDERER 1
 #endif
 
 #if HAVE_VULKAN_RENDERER
+
+#define VK_NO_PROTOTYPES
+#define VK_ENABLE_BETA_EXTENSIONS
 
 #if defined(_WIN32) && !defined(VK_USE_PLATFORM_WIN32_KHR)
 #define VK_USE_PLATFORM_WIN32_KHR
