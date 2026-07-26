@@ -1793,6 +1793,53 @@ static void osd_open_face_set(OsdFaceSet *fs, TTF_Font *(*open)(float), float px
     osd_face_setup(fs->outline, 1);
 }
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+static int osd_fc_match(const char *pattern, char *path, size_t path_size) {
+    const char *args[] = {"fc-match", "--format=%{file}", pattern, NULL};
+    SDL_PropertiesID props;
+    SDL_Process *proc;
+    size_t len = 0;
+    int exitcode = -1;
+    char *data;
+    int ok = 0;
+
+    props = SDL_CreateProperties();
+    if (!props) {
+        return 0;
+    }
+    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER,
+                          SDL_PROCESS_STDIO_APP);
+    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER,
+                          SDL_PROCESS_STDIO_NULL);
+    proc = SDL_CreateProcessWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!proc) {
+        return 0;
+    }
+
+    data = SDL_ReadProcess(proc, &len, &exitcode);
+    SDL_DestroyProcess(proc);
+    if (!data) {
+        return 0;
+    }
+
+    if (exitcode == 0) {
+        while (len > 0 && (unsigned char)data[len - 1] <= ' ') {
+            len--;
+        }
+        if (len > 0 && len < path_size) {
+            memcpy(path, data, len);
+            path[len] = '\0';
+            ok = 1;
+        }
+    }
+    SDL_free(data);
+
+    return ok;
+}
+#endif
+
 void osd_init_fonts(void) {
     {
         const char *env = getenv("LACHESIS_OSD_FONT");
@@ -1804,29 +1851,9 @@ void osd_init_fonts(void) {
             }
 #if !defined(_WIN32) && !defined(__APPLE__)
             else {
-                int safe = 1;
-                for (const char *p = env; *p; p++) {
-                    char c = *p;
-                    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                          (c >= '0' && c <= '9') || c == ' ' || c == '-' ||
-                          c == '_' || c == ':' || c == '.' || c == ',')) {
-                        safe = 0;
-                        break;
-                    }
-                }
-                if (safe) {
-                    char cmd[600];
-                    snprintf(cmd, sizeof(cmd),
-                             "fc-match --format=%%{file} \"%s\" 2>/dev/null", env);
-                    FILE *fp = popen(cmd, "r");
-                    if (fp) {
-                        char path[512] = {0};
-                        if (fgets(path, sizeof(path), fp) && path[0]) {
-                            snprintf(osd_ui_font_path, sizeof(osd_ui_font_path),
-                                     "%s", path);
-                        }
-                        pclose(fp);
-                    }
+                char path[512];
+                if (osd_fc_match(env, path, sizeof(path))) {
+                    snprintf(osd_ui_font_path, sizeof(osd_ui_font_path), "%s", path);
                 }
             }
 #endif
@@ -1847,17 +1874,12 @@ void osd_init_fonts(void) {
 
 #if !defined(_WIN32) && !defined(__APPLE__)
     {
-        FILE *fp = popen("fc-match --format=%{file} emoji 2>/dev/null", "r");
-        if (fp) {
-            char path[512] = {0};
-            if (fgets(path, sizeof(path), fp) && path[0]) {
-                osd_emoji_font = TTF_OpenFont(path, 64.0f);
-                if (osd_emoji_font) {
-                    snprintf(seen_paths[num_seen++], sizeof(seen_paths[0]), "%s",
-                             path);
-                }
+        char path[512];
+        if (osd_fc_match("emoji", path, sizeof(path))) {
+            osd_emoji_font = TTF_OpenFont(path, 64.0f);
+            if (osd_emoji_font) {
+                snprintf(seen_paths[num_seen++], sizeof(seen_paths[0]), "%s", path);
             }
-            pclose(fp);
         }
     }
 #else
@@ -1892,39 +1914,32 @@ void osd_init_fonts(void) {
     for (int pi = 0; fallback_patterns[pi] &&
          osd_num_fallback_fonts < OSD_MAX_FALLBACK_FONTS;
          pi++) {
-        char cmd[128];
-        snprintf(cmd, sizeof(cmd), "fc-match --format=%%{file} \"%s\" 2>/dev/null",
-                 fallback_patterns[pi]);
-        FILE *fp = popen(cmd, "r");
-        if (!fp) {
+        char path[512];
+        if (!osd_fc_match(fallback_patterns[pi], path, sizeof(path))) {
             continue;
         }
-        char path[512] = {0};
-        if (fgets(path, sizeof(path), fp) && path[0]) {
-            int dup = 0;
-            for (int si = 0; si < num_seen; si++) {
-                if (!strcmp(seen_paths[si], path)) {
-                    dup = 1;
-                    break;
-                }
-            }
-            if (!dup) {
-                TTF_Font *fb = TTF_OpenFont(path, px);
-                if (fb) {
-                    if (TTF_AddFallbackFont(ui, fb)) {
-                        if (ui_ol) {
-                            TTF_AddFallbackFont(ui_ol, fb);
-                        }
-                        snprintf(seen_paths[num_seen++], sizeof(seen_paths[0]),
-                                 "%s", path);
-                        osd_fallback_fonts[osd_num_fallback_fonts++] = fb;
-                    } else {
-                        TTF_CloseFont(fb);
-                    }
-                }
+        int dup = 0;
+        for (int si = 0; si < num_seen; si++) {
+            if (!strcmp(seen_paths[si], path)) {
+                dup = 1;
+                break;
             }
         }
-        pclose(fp);
+        if (dup) {
+            continue;
+        }
+        TTF_Font *fb = TTF_OpenFont(path, px);
+        if (fb) {
+            if (TTF_AddFallbackFont(ui, fb)) {
+                if (ui_ol) {
+                    TTF_AddFallbackFont(ui_ol, fb);
+                }
+                snprintf(seen_paths[num_seen++], sizeof(seen_paths[0]), "%s", path);
+                osd_fallback_fonts[osd_num_fallback_fonts++] = fb;
+            } else {
+                TTF_CloseFont(fb);
+            }
+        }
     }
 #else
     static const char *const fallback_paths[] = {

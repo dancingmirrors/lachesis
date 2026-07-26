@@ -118,8 +118,7 @@ static void uninit_opts(void) {
 
 static void init_dynload(void) {
 #ifdef _WIN32
-    /* Remove the current working directory from the DLL search path as a
-     * security precaution. */
+    /* Remove the current working directory from the DLL search path as a security precaution. */
     SetDllDirectoryW(L"");
 #endif
 }
