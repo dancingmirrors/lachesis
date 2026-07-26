@@ -27,7 +27,6 @@
 #endif
 
 #include <errno.h>
-#include <float.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <math.h>
@@ -184,9 +183,6 @@ fail:
 #define REFRESH_RATE 0.01
 
 #define OSD_ONLY_REFRESH_RATE (1.0 / 30.0)
-
-#define FS_MAX_REFRESH_FOLD 6
-#define FS_REFRESH_EPSILON 0.001
 
 #define CURSOR_HIDE_DELAY 1000000
 
@@ -1331,86 +1327,6 @@ static char *make_default_window_title(const char *path,
     return title;
 }
 
-static double display_mode_hz(const SDL_DisplayMode *mode) {
-    if (mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0) {
-        return (double)mode->refresh_rate_numerator / mode->refresh_rate_denominator;
-    }
-    return mode->refresh_rate;
-}
-
-static double refresh_mismatch(double hz, double fps) {
-    double folds;
-
-    if (!(hz > 0) || !(fps > 0) || hz < fps - 0.01) {
-        return DBL_MAX;
-    }
-    folds = floor(hz / fps + 0.5);
-    if (folds < 1 || folds > FS_MAX_REFRESH_FOLD) {
-        return DBL_MAX;
-    }
-
-    return fabs(hz - folds * fps) / fps;
-}
-
-static void apply_fullscreen_mode(VideoState *is) {
-    const SDL_DisplayMode *desktop, *best = NULL;
-    SDL_DisplayMode **modes;
-    double fps = 0, desktop_err, best_err = 0, best_hz = 0;
-    SDL_DisplayID display;
-    int count = 0;
-
-    if (!window) {
-        return;
-    }
-    if (!fs_refresh_match || !is_fullscreen) {
-        SDL_SetWindowFullscreenMode(window, NULL);
-        return;
-    }
-
-    if (is && is->ic && is->video_st) {
-        AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
-        if (fr.num > 0 && fr.den > 0) {
-            fps = av_q2d(fr);
-        }
-    }
-    display = SDL_GetDisplayForWindow(window);
-    desktop = display ? SDL_GetDesktopDisplayMode(display) : NULL;
-    if (!(fps > 0) || !desktop) {
-        SDL_SetWindowFullscreenMode(window, NULL);
-        return;
-    }
-
-    desktop_err = refresh_mismatch(display_mode_hz(desktop), fps);
-
-    modes = SDL_GetFullscreenDisplayModes(display, &count);
-    for (int i = 0; modes && i < count; i++) {
-        const SDL_DisplayMode *mode = modes[i];
-        double hz, err;
-
-        if (mode->w != desktop->w || mode->h != desktop->h ||
-            mode->pixel_density != desktop->pixel_density) {
-            continue;
-        }
-        hz = display_mode_hz(mode);
-        err = refresh_mismatch(hz, fps);
-        if (err > desktop_err - FS_REFRESH_EPSILON) {
-            continue;
-        }
-        if (!best || err < best_err - FS_REFRESH_EPSILON ||
-            (err < best_err + FS_REFRESH_EPSILON && hz > best_hz)) {
-            best = mode;
-            best_err = err;
-            best_hz = hz;
-        }
-    }
-
-    if (best) {
-        log_verbose("Switching to a %.3f Hz mode for %.3f fps video.\n", best_hz, fps);
-    }
-    SDL_SetWindowFullscreenMode(window, best);
-    SDL_free(modes);
-}
-
 static int video_open(VideoState *is) {
     int w, h;
 
@@ -1426,7 +1342,6 @@ static int video_open(VideoState *is) {
 
     SDL_SetWindowSize(window, w, h);
     SDL_SetWindowPosition(window, screen_left, screen_top);
-    apply_fullscreen_mode(is);
     SDL_SetWindowFullscreen(window, is_fullscreen);
     SDL_ShowWindow(window);
     SDL_SyncWindow(window);
@@ -2642,7 +2557,6 @@ the_end:
 
 void toggle_fullscreen(VideoState *is) {
     is_fullscreen = !is_fullscreen;
-    apply_fullscreen_mode(is);
     SDL_SetWindowFullscreen(window, is_fullscreen);
     if (!is_fullscreen) {
         SDL_SetWindowSize(window, default_width, default_height);

@@ -112,7 +112,6 @@ int enable_360sbs = 0;
 int enable_360tb = 0;
 int is_fullscreen = 1;
 int start_windowed = 0;
-int fs_refresh_match = 0;
 float autofit_larger = 0.85f;
 int global_muted = 0;
 int ytdl_disable = 0;
@@ -251,7 +250,6 @@ const OptionDef options[] = {
     {"x", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_width}, "force displayed width", "width"},
     {"y", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_height}, "force displayed height", "height"},
     {"windowed", OPT_TYPE_BOOL, 0, {&start_windowed}, "start windowed instead of fullscreen"},
-    {"fs-refresh-match", OPT_TYPE_BOOL, 0, {&fs_refresh_match}, "switch to the display mode whose refresh rate best matches the video in fullscreen", ""},
     {"autofit", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_autofit}, "limit windowed size to this fraction of the display (default 0.85)", "fraction"},
     {"an", OPT_TYPE_BOOL, 0, {&audio_disable}, "disable audio"},
     {"vn", OPT_TYPE_BOOL, 0, {&video_disable}, "disable video"},

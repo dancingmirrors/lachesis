@@ -148,7 +148,6 @@ extern int enable_360sbs;
 extern int enable_360tb;
 extern int is_fullscreen;
 extern int start_windowed;
-extern int fs_refresh_match;
 
 #define AUTOFIT_MIN 0.05
 #define AUTOFIT_MAX 10.0
