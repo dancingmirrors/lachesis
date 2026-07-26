@@ -193,6 +193,8 @@ static TTF_Font *osd_open_ui(float px) {
     return TTF_OpenFontIO(rw, true, px);
 }
 
+static void osd_invalidate_measurements(void);
+
 static void osd_faces_ensure(int canvas_h) {
     if (canvas_h <= 0 || !osd_faces[OSD_FACE_UI].fill) {
         return;
@@ -209,6 +211,8 @@ static void osd_faces_ensure(int canvas_h) {
     }
     osd_base_px = px;
     osd_ss = OSD_SUPERSAMPLE > 0 ? OSD_SUPERSAMPLE : 1;
+    osd_invalidate_textures();
+    osd_invalidate_measurements();
     osd_outline_px = (int)(px * OSD_OUTLINE_RATIO + 0.5);
     if (osd_outline_px < 1) {
         osd_outline_px = 1;
@@ -231,17 +235,105 @@ static void osd_faces_ensure(int canvas_h) {
     }
 }
 
+#define OSD_RUN_MAX 11
+#define OSD_MEASURE_CACHE_SIZE 128
+#define OSD_GLYPH_CACHE_SIZE 128
+
+typedef struct {
+    char text[OSD_RUN_MAX + 1];
+    const void *font;
+    int base_px, ss;
+    int w, h;
+    unsigned valid : 1;
+} OsdMeasureEntry;
+
+typedef struct {
+    char text[OSD_RUN_MAX + 1];
+    const void *faces;
+    SDL_Renderer *renderer;
+    SDL_Color fg;
+    int base_px, ss;
+    SDL_Texture *fill;
+    SDL_Texture *outline;
+    float fill_w, fill_h;
+    float outline_w, outline_h;
+    unsigned valid : 1;
+} OsdGlyphEntry;
+
+static OsdMeasureEntry osd_measure_cache[OSD_MEASURE_CACHE_SIZE];
+static OsdGlyphEntry osd_glyph_cache[OSD_GLYPH_CACHE_SIZE];
+
+static unsigned osd_cache_hash(const char *text, size_t len, const void *ptr) {
+    unsigned h = 2166136261u;
+
+    for (size_t i = 0; i < len; i++) {
+        h = (h ^ (unsigned char)text[i]) * 16777619u;
+    }
+    for (size_t i = 0; i < sizeof(ptr); i++) {
+        h = (h ^ (unsigned)(((uintptr_t)ptr >> (i * 8)) & 0xff)) * 16777619u;
+    }
+
+    return h;
+}
+
+static void osd_invalidate_measurements(void) {
+    memset(osd_measure_cache, 0, sizeof(osd_measure_cache));
+}
+
+static void osd_invalidate_glyphs(void) {
+    for (int i = 0; i < OSD_GLYPH_CACHE_SIZE; i++) {
+        OsdGlyphEntry *e = &osd_glyph_cache[i];
+
+        SDL_DestroyTexture(e->fill);
+        SDL_DestroyTexture(e->outline);
+        e->fill = NULL;
+        e->outline = NULL;
+        e->valid = 0;
+    }
+}
+
 static void osd_ui_measure(TTF_Font *font, const char *text, int *w, int *h) {
     int tw = 0, th = 0;
+    int ss = osd_ss > 0 ? osd_ss : 1;
+    size_t len = text ? strlen(text) : 0;
+    OsdMeasureEntry *e = NULL;
+
+    if (font && len > 0 && len <= OSD_RUN_MAX) {
+        e = &osd_measure_cache[osd_cache_hash(text, len, font) %
+                               OSD_MEASURE_CACHE_SIZE];
+        if (e->valid && e->font == font && e->base_px == osd_base_px &&
+            e->ss == ss && !memcmp(e->text, text, len + 1)) {
+            if (w) {
+                *w = e->w;
+            }
+            if (h) {
+                *h = e->h;
+            }
+            return;
+        }
+    }
+
     if (font && text && text[0]) {
         TTF_GetStringSize(font, text, 0, &tw, &th);
     }
-    int ss = osd_ss > 0 ? osd_ss : 1;
+    tw /= ss;
+    th /= ss;
+
+    if (e) {
+        memcpy(e->text, text, len + 1);
+        e->font = font;
+        e->base_px = osd_base_px;
+        e->ss = ss;
+        e->w = tw;
+        e->h = th;
+        e->valid = 1;
+    }
+
     if (w) {
-        *w = tw / ss;
+        *w = tw;
     }
     if (h) {
-        *h = th / ss;
+        *h = th;
     }
 }
 
@@ -300,6 +392,7 @@ static OsdCachedTexture osd_sub_tex;
 void osd_invalidate_textures(void) {
     osd_cached_texture_clear(&osd_info_tex);
     osd_cached_texture_clear(&osd_sub_tex);
+    osd_invalidate_glyphs();
 }
 
 static SDL_Surface *osd_scale_down(SDL_Surface *raw, int tw, int th) {
@@ -344,9 +437,86 @@ static int osd_is_tabular(const char *p, const char *start) {
         p[-1] <= '9' && p[1] >= '0' && p[1] <= '9';
 }
 
+static SDL_Texture *osd_texture_from_surface(SDL_Renderer *r, SDL_Surface *s,
+                                             float *w, float *h) {
+    SDL_Texture *t = s ? SDL_CreateTextureFromSurface(r, s) : NULL;
+
+    if (t) {
+        *w = (float)s->w;
+        *h = (float)s->h;
+    }
+
+    return t;
+}
+
+static int osd_renderer_is_persistent(SDL_Renderer *r) {
+    return r && (r == renderer || r == osd_sw_renderer);
+}
+
+static OsdGlyphEntry *osd_cache_run(SDL_Renderer *r, OsdFaceSet *fs,
+                                    const char *text, size_t len, SDL_Color fg) {
+    SDL_Color black = {0, 0, 0, 255};
+    int ss = osd_ss > 0 ? osd_ss : 1;
+    OsdGlyphEntry *e = &osd_glyph_cache[osd_cache_hash(text, len, fs) %
+                                        OSD_GLYPH_CACHE_SIZE];
+
+    if (e->valid && e->faces == fs && e->renderer == r &&
+        e->base_px == osd_base_px && e->ss == ss &&
+        !memcmp(&e->fg, &fg, sizeof(fg)) && e->text[len] == '\0' &&
+        !memcmp(e->text, text, len)) {
+        return e;
+    }
+
+    SDL_DestroyTexture(e->fill);
+    SDL_DestroyTexture(e->outline);
+    memset(e, 0, sizeof(*e));
+
+    SDL_Surface *ft = TTF_RenderText_Blended(fs->fill, text, len, fg);
+    e->fill = osd_texture_from_surface(r, ft, &e->fill_w, &e->fill_h);
+    SDL_DestroySurface(ft);
+    if (!e->fill) {
+        return NULL;
+    }
+    if (fs->outline) {
+        SDL_Surface *os = TTF_RenderText_Blended(fs->outline, text, len, black);
+        e->outline = osd_texture_from_surface(r, os, &e->outline_w, &e->outline_h);
+        SDL_DestroySurface(os);
+    }
+
+    memcpy(e->text, text, len);
+    e->text[len] = '\0';
+    e->faces = fs;
+    e->renderer = r;
+    e->fg = fg;
+    e->base_px = osd_base_px;
+    e->ss = ss;
+    e->valid = 1;
+
+    return e;
+}
+
 static void osd_blit_run(SDL_Renderer *r, OsdFaceSet *fs, const char *text,
                          size_t len, int x, int y, SDL_Color fg, double fscale) {
     SDL_Color black = {0, 0, 0, 255};
+    double off = (double)osd_outline_px * osd_ss * fscale;
+    size_t run_len = len ? len : strlen(text);
+
+    if (run_len <= OSD_RUN_MAX && osd_renderer_is_persistent(r)) {
+        OsdGlyphEntry *e = osd_cache_run(r, fs, text, run_len, fg);
+
+        if (!e) {
+            return;
+        }
+        if (e->outline) {
+            osd_blit_tex(r, e->outline, e->outline_w, e->outline_h,
+                         (float)(x - off), (float)(y - off), fscale,
+                         SDL_BLENDMODE_BLEND);
+        }
+        osd_blit_tex(r, e->fill, e->fill_w, e->fill_h, (float)x, (float)y,
+                     fscale, SDL_BLENDMODE_BLEND);
+        return;
+    }
+
     SDL_Surface *os =
         fs->outline ? TTF_RenderText_Blended(fs->outline, text, len, black) : NULL;
     SDL_Surface *ft = TTF_RenderText_Blended(fs->fill, text, len, fg);
@@ -355,7 +525,6 @@ static void osd_blit_run(SDL_Renderer *r, OsdFaceSet *fs, const char *text,
         return;
     }
     if (os) {
-        double off = (double)osd_outline_px * osd_ss * fscale;
         osd_draw_tex(r, os, (float)(x - off), (float)(y - off), fscale,
                      SDL_BLENDMODE_BLEND);
         SDL_DestroySurface(os);
