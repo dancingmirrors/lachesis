@@ -38,6 +38,7 @@
 #include "lachesis_delete.h"
 #include "lachesis_internal.h"
 #include "lachesis_keys.h"
+#include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_present.h"
@@ -609,6 +610,14 @@ void event_loop(VideoState **pis) {
             [[fallthrough]];
         case SDL_EVENT_WINDOW_EXPOSED:
             cur_stream->force_refresh = 1;
+            break;
+        case SDL_EVENT_RENDER_TARGETS_RESET:
+        case SDL_EVENT_RENDER_DEVICE_RESET:
+            renderer_device_reset(cur_stream, 0);
+            break;
+        case SDL_EVENT_RENDER_DEVICE_LOST:
+            log_warn("The render device was lost. Recreating the renderer.\n");
+            renderer_device_reset(cur_stream, 1);
             break;
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
             present_update_display_mode();

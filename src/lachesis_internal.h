@@ -336,6 +336,7 @@ void apply_degraded_decode(AVCodecContext *avctx);
 void set_default_window_size(int width, int height, AVRational sar);
 void update_screen_size(void);
 float window_pixel_density(void);
+void renderer_device_reset(VideoState *is, int device_lost);
 Frame *frame_queue_peek_writable(FrameQueue *f);
 Frame *frame_queue_peek_readable(FrameQueue *f);
 void frame_queue_push(FrameQueue *f);

@@ -2347,6 +2347,38 @@ static void create_sdl_renderer_for_window(void) {
     }
 }
 
+void renderer_device_reset(VideoState *is, int device_lost) {
+    if (is) {
+        FrameQueue *queues[] = {&is->pictq, &is->subpq};
+
+        if (is->vid_texture) {
+            SDL_DestroyTexture(is->vid_texture);
+            is->vid_texture = NULL;
+        }
+        if (is->sub_texture) {
+            SDL_DestroyTexture(is->sub_texture);
+            is->sub_texture = NULL;
+        }
+        for (size_t q = 0; q < FF_ARRAY_ELEMS(queues); q++) {
+            FrameQueue *f = queues[q];
+
+            SDL_LockMutex(f->mutex);
+            for (int i = 0; i < FRAME_QUEUE_SIZE; i++) {
+                f->queue[i].uploaded = 0;
+            }
+            SDL_UnlockMutex(f->mutex);
+        }
+        is->force_refresh = 1;
+    }
+
+    if (device_lost && renderer) {
+        SDL_DestroyRenderer(renderer);
+        renderer = NULL;
+        renderer_texture_formats = NULL;
+        create_sdl_renderer_for_window();
+    }
+}
+
 static void apply_startup_window_title(void) {
     const char *initial_title = window_title ? window_title : window_title_auto;
     char *initial_title_alloc = NULL;
