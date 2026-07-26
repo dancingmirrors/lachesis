@@ -2378,6 +2378,8 @@ void renderer_device_reset(VideoState *is, int device_lost) {
         is->force_refresh = 1;
     }
 
+    osd_invalidate_textures();
+
     if (device_lost && renderer) {
         SDL_DestroyRenderer(renderer);
         renderer = NULL;

@@ -45,6 +45,7 @@ void osd_set_info_provider(OsdInfoProvider provider);
 void osd_set_stats_provider(OsdInfoProvider provider);
 void osd_toggle_info_page(int page);
 void osd_invalidate_info(void);
+void osd_invalidate_textures(void);
 
 void osd_show_delete_prompt(const char *name);
 void osd_hide_delete_prompt(void);

@@ -245,17 +245,61 @@ static void osd_ui_measure(TTF_Font *font, const char *text, int *w, int *h) {
     }
 }
 
+static void osd_blit_tex(SDL_Renderer *r, SDL_Texture *t, float w, float h,
+                         float x, float y, double scale, SDL_BlendMode blend) {
+    SDL_SetTextureBlendMode(t, blend);
+    SDL_SetTextureScaleMode(t, scale == 1.0 ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
+    SDL_FRect d = {x, y, (float)(w * scale), (float)(h * scale)};
+    SDL_RenderTexture(r, t, NULL, &d);
+}
+
 static void osd_draw_tex(SDL_Renderer *r, SDL_Surface *s, float x, float y,
                          double scale, SDL_BlendMode blend) {
     SDL_Texture *t = SDL_CreateTextureFromSurface(r, s);
     if (!t) {
         return;
     }
-    SDL_SetTextureBlendMode(t, blend);
-    SDL_SetTextureScaleMode(t, scale == 1.0 ? SDL_SCALEMODE_NEAREST : SDL_SCALEMODE_LINEAR);
-    SDL_FRect d = {x, y, (float)(s->w * scale), (float)(s->h * scale)};
-    SDL_RenderTexture(r, t, NULL, &d);
+    osd_blit_tex(r, t, (float)s->w, (float)s->h, x, y, scale, blend);
     SDL_DestroyTexture(t);
+}
+
+typedef struct {
+    SDL_Texture *tex;
+    SDL_Renderer *renderer;
+    SDL_Surface *surf;
+} OsdCachedTexture;
+
+static void osd_cached_texture_clear(OsdCachedTexture *ct) {
+    SDL_DestroyTexture(ct->tex);
+    ct->tex = NULL;
+    ct->renderer = NULL;
+    ct->surf = NULL;
+}
+
+static void osd_draw_cached_surface(SDL_Renderer *r, OsdCachedTexture *ct,
+                                    SDL_Surface *s, float x, float y,
+                                    SDL_BlendMode blend) {
+    if (!r || !s) {
+        return;
+    }
+    if (!ct->tex || ct->renderer != r || ct->surf != s) {
+        osd_cached_texture_clear(ct);
+        ct->tex = SDL_CreateTextureFromSurface(r, s);
+        if (!ct->tex) {
+            return;
+        }
+        ct->renderer = r;
+        ct->surf = s;
+    }
+    osd_blit_tex(r, ct->tex, (float)s->w, (float)s->h, x, y, 1.0, blend);
+}
+
+static OsdCachedTexture osd_info_tex;
+static OsdCachedTexture osd_sub_tex;
+
+void osd_invalidate_textures(void) {
+    osd_cached_texture_clear(&osd_info_tex);
+    osd_cached_texture_clear(&osd_sub_tex);
 }
 
 static SDL_Surface *osd_scale_down(SDL_Surface *raw, int tw, int th) {
@@ -756,6 +800,7 @@ typedef struct {
 } OsdSubToken;
 
 static void osd_sub_cache_clear(void) {
+    osd_cached_texture_clear(&osd_sub_tex);
     if (osd_sub_cache.surf) {
         SDL_DestroySurface(osd_sub_cache.surf);
         osd_sub_cache.surf = NULL;
@@ -1014,8 +1059,9 @@ static void osd_draw_subtitle(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     L->subs_top = y0;
 
     int x = (cw - c->content_w) / 2 - c->pad;
-    osd_draw_tex(r, c->surf, (float)x, (float)(y0 - c->pad), 1.0,
-                 SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+    osd_draw_cached_surface(r, &osd_sub_tex, c->surf, (float)x,
+                            (float)(y0 - c->pad),
+                            SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 }
 
 static void osd_layout_init(OsdLayout *L, int cw, int ch) {
@@ -1162,6 +1208,7 @@ static int osd_text_subtitles_present(const VideoState *is) {
 }
 
 static void osd_info_cache_clear(void) {
+    osd_cached_texture_clear(&osd_info_tex);
     if (osd_info_cache.surf) {
         SDL_DestroySurface(osd_info_cache.surf);
         osd_info_cache.surf = NULL;
@@ -1262,9 +1309,9 @@ static void osd_draw_info(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     }
 
     if (c->surf) {
-        osd_draw_tex(r, c->surf, (float)(box.x - c->pad),
-                     (float)(box.y - c->pad), 1.0,
-                     SDL_BLENDMODE_BLEND_PREMULTIPLIED);
+        osd_draw_cached_surface(r, &osd_info_tex, c->surf,
+                                (float)(box.x - c->pad), (float)(box.y - c->pad),
+                                SDL_BLENDMODE_BLEND_PREMULTIPLIED);
     }
 }
 
@@ -1444,6 +1491,7 @@ void osd_prepare_vulkan(VideoState *is) {
     osd_canvas_size(is, &cw, &ch);
     if (!osd_surface || osd_surface->w != cw || osd_surface->h != ch) {
         if (osd_sw_renderer) {
+            osd_invalidate_textures();
             SDL_DestroyRenderer(osd_sw_renderer);
             osd_sw_renderer = NULL;
         }
