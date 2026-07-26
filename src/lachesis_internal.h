@@ -383,7 +383,7 @@ extern int playlist_pos;
 extern int playlist_size;
 extern int playlist_nav_dir;
 
-void do_exit(VideoState *is);
+av_noreturn void do_exit(VideoState *is);
 void toggle_pause(VideoState *is);
 void toggle_mute(VideoState *is);
 void update_volume(VideoState *is, int sign, double step);

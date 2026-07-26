@@ -1155,7 +1155,7 @@ static void stream_close(VideoState *is) {
     av_free(is);
 }
 
-void do_exit(VideoState *is) {
+av_noreturn void do_exit(VideoState *is) {
     if (is) {
         stream_close(is);
     }

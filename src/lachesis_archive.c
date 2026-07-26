@@ -86,7 +86,9 @@ int playlist_from_directory(const char *dir_path,
     }
     closedir(d);
 
-    qsort(names, n, sizeof(*names), cmp_str);
+    if (n > 1) {
+        qsort(names, n, sizeof(*names), cmp_str);
+    }
 
     PlaylistEntry *entries = av_calloc(n, sizeof(*entries));
     if (!entries) {
@@ -206,7 +208,9 @@ int playlist_from_archive(const char *archive_path,
 
     archive_read_free(arch);
 
-    qsort(entries, n, sizeof(*entries), entry_cmp);
+    if (n > 1) {
+        qsort(entries, n, sizeof(*entries), entry_cmp);
+    }
 
     *out = entries;
     *count = n;
