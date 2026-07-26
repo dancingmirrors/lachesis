@@ -2581,7 +2581,12 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             cursor_hidden = 1;
         }
         if (!benchmark && remaining_time > 0.0) {
-            av_usleep((int64_t)(remaining_time * 1000000.0));
+            uint64_t ns = (uint64_t)(remaining_time * 1000000000.0);
+            if (remaining_time < REFRESH_RATE) {
+                SDL_DelayPrecise(ns);
+            } else {
+                SDL_DelayNS(ns);
+            }
         }
         remaining_time = REFRESH_RATE;
         ab_loop_check(is);
