@@ -231,7 +231,10 @@ void sbs360_reset_view(void) {
 SDL_Window *window;
 SDL_Renderer *renderer;
 
-static SDL_AtomicInt pending_window_resize;
+static SDL_Mutex *window_size_req_lock;
+static int window_size_req_w;
+static int window_size_req_h;
+static AVRational window_size_req_sar;
 
 const SDL_PixelFormat *renderer_texture_formats = NULL;
 
@@ -1194,9 +1197,17 @@ static void sigterm_handler(int sig av_unused) {
     _Exit(123);
 }
 
-void set_default_window_size(int width, int height, AVRational sar) {
+static void SDLCALL apply_default_window_size(void *unused av_unused) {
     SDL_Rect rect;
     int max_width, max_height;
+    int width, height;
+    AVRational sar;
+
+    SDL_LockMutex(window_size_req_lock);
+    width = window_size_req_w;
+    height = window_size_req_h;
+    sar = window_size_req_sar;
+    SDL_UnlockMutex(window_size_req_lock);
 
     if (cmd_width || cmd_height) {
         max_width = cmd_width ? cmd_width : INT_MAX;
@@ -1215,11 +1226,36 @@ void set_default_window_size(int width, int height, AVRational sar) {
         max_height = height;
     }
     calculate_display_rect(&rect, 0, 0, max_width, max_height, width, height, sar);
+    if (rect.w == default_width && rect.h == default_height) {
+        return;
+    }
     default_width = rect.w;
     default_height = rect.h;
 
     if (window && !is_fullscreen && !cmd_width && !cmd_height) {
-        SDL_SetAtomicInt(&pending_window_resize, 1);
+        SDL_SetWindowSize(window, default_width, default_height);
+    }
+}
+
+void set_default_window_size(int width, int height, AVRational sar) {
+    int changed;
+
+    if (!window_size_req_lock) {
+        return;
+    }
+
+    SDL_LockMutex(window_size_req_lock);
+    changed = width != window_size_req_w || height != window_size_req_h ||
+        av_cmp_q(sar, window_size_req_sar) != 0;
+    if (changed) {
+        window_size_req_w = width;
+        window_size_req_h = height;
+        window_size_req_sar = sar;
+    }
+    SDL_UnlockMutex(window_size_req_lock);
+
+    if (changed) {
+        SDL_RunOnMainThread(apply_default_window_size, NULL, false);
     }
 }
 
@@ -2474,9 +2510,6 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             av_usleep((int64_t)(remaining_time * 1000000.0));
         }
         remaining_time = REFRESH_RATE;
-        if (SDL_CompareAndSwapAtomicInt(&pending_window_resize, 1, 0) && window && !is_fullscreen) {
-            SDL_SetWindowSize(window, default_width, default_height);
-        }
         ab_loop_check(is);
         if (is->audio_start_pending &&
             av_gettime_relative() - is->audio_start_pending_since > AUDIO_START_MAX_WAIT_US) {
@@ -2785,6 +2818,11 @@ int main(int argc, char **argv) {
     }
     if (!SDL_Init(flags)) {
         fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
+    }
+
+    window_size_req_lock = SDL_CreateMutex();
+    if (!window_size_req_lock) {
+        fatal_quit("Could not create a mutex: %s!\n", SDL_GetError());
     }
 
     SDL_SetEventEnabled(SDL_EVENT_USER, false);
