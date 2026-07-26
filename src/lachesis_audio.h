@@ -44,6 +44,7 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout,
 int configure_audio_filters(VideoState *is, const char *afilters, int force_output_format);
 int audio_thread(void *arg);
 
+void audio_update_gain(VideoState *is);
 void audio_device_resume(void);
 void audio_device_close(void);
 

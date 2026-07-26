@@ -460,14 +460,14 @@ static void SDLCALL sdl_audio_stream_callback(void *opaque, SDL_AudioStream *str
     SDL_PutAudioStreamData(stream, audio_cb_buf, additional_amount);
 }
 
-/* SDL_MixAudio() multiplies without saturating. */
-static void audio_amplify_s16(uint8_t *dst, const uint8_t *src, int len, float gain) {
-    int16_t *d = (int16_t *)dst;
-    const int16_t *s = (const int16_t *)src;
-    int n = len / (int)sizeof(int16_t);
-    for (int i = 0; i < n; i++) {
-        d[i] = (int16_t)av_clip_int16((int)lrintf(s[i] * gain));
+void audio_update_gain(VideoState *is) {
+    float gain;
+
+    if (!audio_stream_dev) {
+        return;
     }
+    gain = is->muted ? 0.0f : is->audio_volume / (float)FFP_MIX_MAXVOLUME;
+    SDL_SetAudioStreamGain(audio_stream_dev, gain);
 }
 
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
@@ -492,22 +492,10 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         if (len1 > len) {
             len1 = len;
         }
-        if (!is->muted && is->audio_buf && is->audio_volume == FFP_MIX_MAXVOLUME) {
+        if (is->audio_buf) {
             memcpy(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1);
-        } else if (!is->muted && is->audio_buf && is->audio_volume > FFP_MIX_MAXVOLUME) {
-            audio_amplify_s16(stream,
-                              (uint8_t *)is->audio_buf + is->audio_buf_index,
-                              len1, is->audio_volume / (float)FFP_MIX_MAXVOLUME);
         } else {
             memset(stream, 0, len1);
-            if (!is->muted && is->audio_buf) {
-                /* clang-format off */
-                SDL_MixAudio(stream,
-                             (uint8_t *)is->audio_buf + is->audio_buf_index,
-                             SDL_AUDIO_S16, len1,
-                             is->audio_volume / (float)FFP_MIX_MAXVOLUME);
-                /* clang-format on */
-            }
         }
         len -= len1;
         stream += len1;
@@ -583,6 +571,7 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
         return -1;
     }
     audio_dev = SDL_GetAudioStreamDevice(audio_stream_dev);
+    audio_update_gain(is);
 
     {
         SDL_AudioSpec dev_spec;
@@ -629,6 +618,7 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
 void toggle_mute(VideoState *is) {
     is->muted = !is->muted;
     global_muted = is->muted;
+    audio_update_gain(is);
     osd_show_volume();
 }
 
@@ -648,6 +638,7 @@ void update_volume(VideoState *is, int sign, double step) {
         target_pct = max_pct;
     }
     is->audio_volume = av_clip((int)lrint(FFP_MIX_MAXVOLUME * target_pct / 100.0), 0, vol_max);
+    audio_update_gain(is);
     osd_show_volume();
     is->force_refresh = 1;
 }
