@@ -240,6 +240,7 @@ const SDL_PixelFormat *renderer_texture_formats = NULL;
 VkRenderer *vk_renderer;
 
 #define VK_DISPLAY_FAULT_LIMIT 8
+#define VK_DISPLAY_FAULT_LIMIT_LATE 90
 static int vk_display_fail_streak;
 static int vk_display_ever_ok;
 static int vk_fault_event_sent;
@@ -920,11 +921,12 @@ static void video_image_display(VideoState *is) {
         is->render_params.rotate = video_rotate;
         int ret = vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
         if (ret < 0) {
+            int limit = vk_display_ever_ok ? VK_DISPLAY_FAULT_LIMIT_LATE
+                                           : VK_DISPLAY_FAULT_LIMIT;
             /* Can't be used to determine the renderer's health. */
             if (!(SDL_GetWindowFlags(window) &
                   (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) &&
-                !vk_fault_event_sent && !vk_display_ever_ok &&
-                ++vk_display_fail_streak >= VK_DISPLAY_FAULT_LIMIT) {
+                !vk_fault_event_sent && ++vk_display_fail_streak >= limit) {
                 SDL_Event event;
                 SDL_zero(event);
                 event.type = FF_VULKAN_FAULT_EVENT;
@@ -2449,17 +2451,18 @@ static void drop_vulkan_renderer(void) {
 }
 
 void vulkan_fault_fallback(VideoState **pis) {
+    double resume_at = NAN;
     int keep_paused;
 
     if (!vk_renderer) {
         return;
     }
 
-    log_warn("The Vulkan renderer initialized but never displayed a frame. "
-             "Falling back to the SDL renderer.\n");
-
     keep_paused = *pis && (*pis)->paused;
     if (*pis) {
+        if (vk_display_ever_ok && seek_by_bytes <= 0) {
+            resume_at = effective_playhead(*pis);
+        }
         stream_close(*pis);
         *pis = NULL;
     }
@@ -2472,6 +2475,9 @@ void vulkan_fault_fallback(VideoState **pis) {
     if (!*pis) {
         log_dead("Failed to open playlist entry %d!\n", playlist_pos);
         do_exit(NULL);
+    }
+    if (!isnan(resume_at) && resume_at > 0) {
+        stream_seek(*pis, (int64_t)(resume_at * AV_TIME_BASE), 0, 0);
     }
 }
 

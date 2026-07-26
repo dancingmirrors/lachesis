@@ -55,6 +55,7 @@
 #include <libavutil/bprint.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/time.h>
 #include <libavutil/version.h>
 
@@ -1274,7 +1275,14 @@ static inline int check_hw_transfer(RendererContext *ctx, AVFrame *frame) {
 }
 
 static inline int move_to_output_frame(RendererContext *ctx, AVFrame *frame) {
-    int ret = av_frame_copy_props(ctx->vk_frame, frame);
+    int ret;
+
+    if (ctx->vk_frame->width < frame->width ||
+        ctx->vk_frame->height < frame->height) {
+        return AVERROR_INVALIDDATA;
+    }
+
+    ret = av_frame_copy_props(ctx->vk_frame, frame);
     if (ret < 0) {
         return ret;
     }
@@ -1498,6 +1506,10 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
         return ret;
+    }
+
+    if (frame->width <= 0 || frame->height <= 0) {
+        return AVERROR_INVALIDDATA;
     }
 
     if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
