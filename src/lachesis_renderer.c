@@ -1479,8 +1479,16 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     }
 }
 
-/* XXX */
 #define LACHESIS_STAT_EMA_FRAMES 30
+
+static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx,
+                                                      const RenderParams *params) {
+    if (ctx->benchmark || params->disable_linear_scaling || !params->still_image) {
+        return &pl_filter_bilinear;
+    }
+
+    return &pl_filter_catmull_rom;
+}
 
 static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     struct pl_swapchain_frame swap_frame = {0};
@@ -1489,7 +1497,7 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     RendererContext *ctx = (RendererContext *)renderer;
     struct pl_render_params pl_params = {
         .upscaler = &pl_filter_bilinear,
-        .downscaler = &pl_filter_bilinear,
+        .downscaler = pick_downscaler(ctx, params),
         .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
         .color_adjustment = pl_render_default_params.color_adjustment,
         .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
@@ -1622,7 +1630,7 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
     struct pl_frame target = {0};
     struct pl_render_params pl_params = {
         .upscaler = &pl_filter_bilinear,
-        .downscaler = &pl_filter_bilinear,
+        .downscaler = pick_downscaler(ctx, params),
         .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
         .color_adjustment = pl_render_default_params.color_adjustment,
         .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,

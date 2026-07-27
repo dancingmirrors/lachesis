@@ -266,6 +266,7 @@ static int screenshot_window(VideoState *is, const char *path) {
                                is->ytop, is->width, is->height, vp->width,
                                vp->height, vp->sar);
         is->render_params.rotate = video_rotate;
+        is->render_params.still_image = is->is_still_image;
         ret = vk_renderer_capture(vk_renderer, vp->frame, &is->render_params,
                                   w, h, rgba->data[0], rgba->linesize[0]);
         if (ret >= 0) {

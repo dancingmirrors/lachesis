@@ -915,6 +915,7 @@ static void video_image_display(VideoState *is) {
         if (enable_360sbs) {
             vk_renderer_update_360(vk_renderer, sbs360_yaw, sbs360_pitch, sbs360_roll, sbs360_hfov);
         }
+        is->render_params.still_image = is->is_still_image;
         is->render_params.disable_linear_scaling = is->render_low_quality;
         is->render_params.skip_anti_aliasing = is->render_low_quality;
         is->render_params.deinterlace = deinterlace;
