@@ -242,7 +242,7 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
             snprintf(sync_line, sizeof(sync_line), "A-V: %+.3fs",
                      is->last_av_diff);
         } else {
-            snprintf(sync_line, sizeof(sync_line), "A-V: n/a");
+            snprintf(sync_line, sizeof(sync_line), "A-V: unavailable");
         }
 
         char disp_line[96];
