@@ -25,6 +25,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if !defined(_WIN32) && !defined(__APPLE__)
+#include <errno.h>
+#include <fcntl.h>
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
 
@@ -1794,47 +1802,64 @@ static void osd_open_face_set(OsdFaceSet *fs, TTF_Font *(*open)(float), float px
 }
 
 #if !defined(_WIN32) && !defined(__APPLE__)
+extern char **environ;
+
 static int osd_fc_match(const char *pattern, char *path, size_t path_size) {
-    const char *args[] = {"fc-match", "--format=%{file}", pattern, NULL};
-    SDL_PropertiesID props;
-    SDL_Process *proc;
+    char *const args[] = {(char *)"fc-match", (char *)"--format=%{file}",
+                          (char *)pattern, NULL};
+    posix_spawn_file_actions_t fa;
+    int fds[2];
+    pid_t pid;
     size_t len = 0;
-    int exitcode = -1;
-    char *data;
+    int status = 0;
     int ok = 0;
 
-    props = SDL_CreateProperties();
-    if (!props) {
+    if (path_size < 2 || pipe(fds) != 0) {
         return 0;
     }
-    SDL_SetPointerProperty(props, SDL_PROP_PROCESS_CREATE_ARGS_POINTER, (void *)args);
-    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDOUT_NUMBER,
-                          SDL_PROCESS_STDIO_APP);
-    SDL_SetNumberProperty(props, SDL_PROP_PROCESS_CREATE_STDERR_NUMBER,
-                          SDL_PROCESS_STDIO_NULL);
-    proc = SDL_CreateProcessWithProperties(props);
-    SDL_DestroyProperties(props);
-    if (!proc) {
+    if (posix_spawn_file_actions_init(&fa) != 0) {
+        close(fds[0]);
+        close(fds[1]);
         return 0;
+    }
+    if (posix_spawn_file_actions_adddup2(&fa, fds[1], STDOUT_FILENO) ||
+        posix_spawn_file_actions_addopen(&fa, STDERR_FILENO, "/dev/null",
+                                         O_WRONLY, 0) ||
+        posix_spawn_file_actions_addclose(&fa, fds[0]) ||
+        posix_spawnp(&pid, "fc-match", &fa, NULL, args, environ)) {
+        posix_spawn_file_actions_destroy(&fa);
+        close(fds[0]);
+        close(fds[1]);
+        return 0;
+    }
+    posix_spawn_file_actions_destroy(&fa);
+    close(fds[1]);
+
+    while (len < path_size - 1) {
+        ssize_t n = read(fds[0], path + len, path_size - 1 - len);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            break;
+        }
+        len += (size_t)n;
+    }
+    close(fds[0]);
+
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+        ;
     }
 
-    data = SDL_ReadProcess(proc, &len, &exitcode);
-    SDL_DestroyProcess(proc);
-    if (!data) {
-        return 0;
-    }
-
-    if (exitcode == 0) {
-        while (len > 0 && (unsigned char)data[len - 1] <= ' ') {
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+        while (len > 0 && (unsigned char)path[len - 1] <= ' ') {
             len--;
         }
-        if (len > 0 && len < path_size) {
-            memcpy(path, data, len);
+        if (len > 0) {
             path[len] = '\0';
             ok = 1;
         }
     }
-    SDL_free(data);
 
     return ok;
 }

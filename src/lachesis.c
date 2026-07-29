@@ -81,6 +81,7 @@
 #define NOMINMAX
 /* clang-format off */
 #include <direct.h>
+#include <io.h>
 #include <windows.h>
 #include <shellapi.h>
 /* clang-format on */
@@ -2321,6 +2322,56 @@ static VideoState *stream_open(const char *filename,
     return is;
 }
 
+static int path_is_readable(const char *path) {
+#if defined(_WIN32)
+    return _access(path, 4) == 0;
+#else
+    return access(path, R_OK) == 0;
+#endif
+}
+
+static int playlist_entry_is_reachable(int pos) {
+    const PlaylistEntry *e = &playlist_entries[pos];
+    const char *path = e->archive_path ? e->archive_path : e->display_path;
+    const char *proto;
+    struct stat st;
+    int err;
+
+    if (!path) {
+        return 1;
+    }
+    proto = avio_find_protocol_name(path);
+    if (!proto || strcmp(proto, "file")) {
+        return 1;
+    }
+    if (!strncmp(path, "file:", 5)) {
+        path += 5;
+    }
+
+    if (stat(path, &st) != 0) {
+        err = AVERROR(errno);
+    } else if (S_ISDIR(st.st_mode)) {
+        err = AVERROR(EISDIR);
+    } else if (!path_is_readable(path)) {
+        err = AVERROR(errno);
+    } else {
+        return 1;
+    }
+    av_log(NULL, AV_LOG_ERROR, "%s: %s\n", e->display_path, av_err2str(err));
+
+    return 0;
+}
+
+static void playlist_skip_unreachable(void) {
+    while (playlist_pos < playlist_size &&
+           !playlist_entry_is_reachable(playlist_pos)) {
+        playlist_pos++;
+    }
+    if (playlist_pos >= playlist_size) {
+        do_exit(NULL);
+    }
+}
+
 static VideoState *stream_open_playlist_entry(int pos) {
     if (pos < 0 || pos >= playlist_size) {
         return NULL;
@@ -2890,6 +2941,10 @@ int main(int argc, char **argv) {
     if (benchmark) {
         audio_disable = 1;
     }
+
+    playlist_pos = 0;
+    playlist_skip_unreachable();
+
     flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO;
     if (audio_disable) {
         flags &= ~SDL_INIT_AUDIO;
@@ -3058,7 +3113,6 @@ int main(int argc, char **argv) {
         }
     }
 
-    playlist_pos = 0;
     is = stream_open_playlist_entry(playlist_pos);
     if (!is) {
         do_exit(NULL);
