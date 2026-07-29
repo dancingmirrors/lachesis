@@ -61,6 +61,8 @@
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
 #define MIN_FRAMES 25
 
+#define HWACCEL_EXTRA_FRAMES (VIDEO_PICTURE_QUEUE_SIZE + 3)
+
 static double read_ahead_secs = 1.0;
 static int64_t max_queue_bytes = MAX_QUEUE_SIZE;
 
@@ -70,8 +72,6 @@ static void print_error(const char *filename, int err) {
     av_log(NULL, AV_LOG_ERROR, "%s: %s\n", filename, av_err2str(err));
 }
 
-/* Fail if any option in m was left unconsumed by the libav* call it was
- * passed to. */
 static int check_avoptions(AVDictionary *m) {
     const AVDictionaryEntry *t = av_dict_iterate(m, NULL);
     if (t) {
@@ -144,6 +144,21 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     }
 
     return 0;
+}
+
+static int hwaccel_usable(const AVCodec *codec, const AVBufferRef *device_ctx) {
+    const AVHWDeviceContext *dev = (const AVHWDeviceContext *)device_ctx->data;
+
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config) {
+            return 0;
+        }
+        if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+            config->device_type == dev->type) {
+            return 1;
+        }
+    }
 }
 
 static int format_lacks_timestamps(const AVFormatContext *ic) {
@@ -223,14 +238,21 @@ int stream_component_open(VideoState *is, int stream_index) {
         if (ret < 0) {
             goto fail;
         }
+        if (avctx->hw_device_ctx && !hwaccel_usable(codec, avctx->hw_device_ctx)) {
+            av_buffer_unref(&avctx->hw_device_ctx);
+            media_info_set_hwaccel(NULL);
+        }
     }
 
-    if (avctx->hw_device_ctx && avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+    if (avctx->hw_device_ctx) {
+        avctx->extra_hw_frames = HWACCEL_EXTRA_FRAMES;
 #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)
         av_dict_set(&opts, "threads", "1", 0);
 #else
         av_dict_set(&opts, "threads", "auto", 0);
 #endif
+    } else {
+        av_dict_set(&opts, "threads", "auto", 0);
     }
 
     av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);

@@ -139,6 +139,7 @@ typedef struct Decoder {
     int64_t next_pts;
     AVRational next_pts_tb;
     SDL_Thread *decoder_tid;
+    int64_t wait_us;
 } Decoder;
 
 typedef struct VideoState {

@@ -442,6 +442,8 @@ int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_Cond
 int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
     int ret = AVERROR(EAGAIN);
 
+    d->wait_us = 0;
+
     for (;;) {
         if (d->queue->serial == d->pkt_serial) {
             do {
@@ -496,9 +498,11 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                 d->packet_pending = 0;
             } else {
                 int old_serial = d->pkt_serial;
+                int64_t wait_t0 = av_gettime_relative();
                 if (packet_queue_get(d->queue, d->pkt, 1, &d->pkt_serial) < 0) {
                     return -1;
                 }
+                d->wait_us += av_gettime_relative() - wait_t0;
                 if (old_serial != d->pkt_serial) {
                     avcodec_flush_buffers(d->avctx);
                     d->finished = 0;
@@ -1957,7 +1961,10 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
 
     if (got_picture) {
         double dpts = NAN;
-        int64_t decode_us = av_gettime_relative() - decode_t0;
+        int64_t decode_us = av_gettime_relative() - decode_t0 - is->viddec.wait_us;
+        if (decode_us < 0) {
+            decode_us = 0;
+        }
 
         if (frame->pts != AV_NOPTS_VALUE) {
             dpts = av_q2d(is->video_st->time_base) * frame->pts;
@@ -1965,10 +1972,11 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
 
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
+        AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
+        int64_t interval_us =
+            (fr.num > 0 && fr.den > 0) ? (int64_t)(1000000.0 * fr.den / fr.num) : 0;
+
         if (had_packets) {
-            AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
-            int64_t interval_us =
-                (fr.num > 0 && fr.den > 0) ? (int64_t)(1000000.0 * fr.den / fr.num) : 0;
             if (interval_us > 0 && decode_us > interval_us) {
                 if (is->decode_behind_streak < DECODE_BEHIND_LATCH_FRAMES) {
                     is->decode_behind_streak++;
@@ -2014,8 +2022,10 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
         if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
             if (frame->pts != AV_NOPTS_VALUE) {
                 double diff = dpts - get_master_clock(is);
+                double slack = interval_us > 0 ? interval_us / 1000000.0
+                                               : AV_SYNC_THRESHOLD_MIN;
                 if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
-                    diff - is->frame_last_filter_delay < 0 &&
+                    diff - is->frame_last_filter_delay < -slack &&
                     is->viddec.pkt_serial == is->vidclk.serial &&
                     is->videoq.nb_packets &&
                     frame_queue_nb_remaining(&is->pictq) > 0) {
