@@ -435,6 +435,23 @@ static const OptionDef *find_option(const OptionDef *po, const char *name) {
     return po;
 }
 
+#define OPTION_NAME_MAX 128
+
+static const char *split_option_name(const char *opt, char *buf, size_t size) {
+    const char *eq = strchr(opt, '=');
+    if (!eq) {
+        return NULL;
+    }
+
+    size_t len = eq - opt;
+    if (len >= size) {
+        len = size - 1;
+    }
+    av_strlcpy(buf, opt, len + 1);
+
+    return eq + 1;
+}
+
 static int opt_has_arg(const OptionDef *o) {
     if (o->type == OPT_TYPE_BOOL) {
         return 0;
@@ -443,6 +460,24 @@ static int opt_has_arg(const OptionDef *o) {
         return !!(o->flags & OPT_FUNC_ARG);
     }
     return 1;
+}
+
+static int config_parse_bool(const char *val) {
+    static const char *const yes[] = {"1", "yes", "true", "on", "enable", "enabled"};
+    static const char *const no[] = {"0", "no", "false", "off", "disable", "disabled"};
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(yes); i++) {
+        if (!av_strcasecmp(val, yes[i])) {
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(no); i++) {
+        if (!av_strcasecmp(val, no[i])) {
+            return 0;
+        }
+    }
+
+    return -1;
 }
 
 static int write_option(void *optctx, const OptionDef *po, const char *opt,
@@ -506,25 +541,48 @@ static int write_option(void *optctx, const OptionDef *po, const char *opt,
 
 int parse_option(void *optctx, const char *opt, const char *arg,
                  const OptionDef *defs) {
+    char name[OPTION_NAME_MAX];
+    const char *inline_arg = split_option_name(opt, name, sizeof(name));
     const OptionDef *po;
+    int negated = 0;
     int ret;
+
+    if (inline_arg) {
+        opt = name;
+    }
 
     po = find_option(defs, opt);
     if (!po->name && opt[0] == 'n' && opt[1] == 'o') {
-        /* handle 'no' bool option */
         po = find_option(defs, opt + 2);
-        if (po->name && po->type == OPT_TYPE_BOOL) {
-            arg = "0";
-        }
-    } else if (po->type == OPT_TYPE_BOOL) {
-        arg = "1";
+        negated = po->name && po->type == OPT_TYPE_BOOL;
     }
 
     if (!po->name) {
         av_log(NULL, AV_LOG_ERROR, "Unrecognized option '%s'\n", opt);
         return AVERROR(EINVAL);
     }
-    if (opt_has_arg(po) && !arg) {
+
+    if (!opt_has_arg(po)) {
+        if (inline_arg) {
+            int on = config_parse_bool(inline_arg);
+            if (on < 0) {
+                av_log(NULL, AV_LOG_ERROR,
+                       "Option '%s' wants yes or no, got '%s'\n", opt, inline_arg);
+                return AVERROR(EINVAL);
+            }
+            if (negated) {
+                on = !on;
+            }
+            if (po->type != OPT_TYPE_BOOL && !on) {
+                return 0;
+            }
+            arg = on ? "1" : "0";
+        } else {
+            arg = negated ? "0" : "1";
+        }
+    } else if (inline_arg) {
+        arg = inline_arg;
+    } else if (!arg) {
         av_log(NULL, AV_LOG_ERROR, "Missing argument for option '%s'\n", opt);
         return AVERROR(EINVAL);
     }
@@ -534,24 +592,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
         return ret;
     }
 
-    return opt_has_arg(po);
-}
-
-static int config_parse_bool(const char *val) {
-    static const char *const yes[] = {"1", "yes", "true", "on", "enable", "enabled"};
-    static const char *const no[] = {"0", "no", "false", "off", "disable", "disabled"};
-
-    for (size_t i = 0; i < FF_ARRAY_ELEMS(yes); i++) {
-        if (!av_strcasecmp(val, yes[i])) {
-            return 1;
-        }
-    }
-    for (size_t i = 0; i < FF_ARRAY_ELEMS(no); i++) {
-        if (!av_strcasecmp(val, no[i])) {
-            return 0;
-        }
-    }
-    return -1;
+    return inline_arg ? 0 : opt_has_arg(po);
 }
 
 int parse_config_option(void *optctx, const char *opt, const char *arg,
@@ -639,12 +680,16 @@ int parse_options(void *optctx, int argc, char **argv, const OptionDef *defs,
 }
 
 static int locate_option(int argc, char **argv, const OptionDef *defs,
-                         const char *optname) {
+                         const char *optname, const char **value_out) {
     const OptionDef *po;
     int i;
 
+    *value_out = NULL;
+
     for (i = 1; i < argc; i++) {
+        char name[OPTION_NAME_MAX];
         const char *cur_opt = argv[i];
+        const char *inline_arg;
 
         if (!(cur_opt[0] == '-' && cur_opt[1])) {
             continue;
@@ -655,6 +700,11 @@ static int locate_option(int argc, char **argv, const OptionDef *defs,
             cur_opt++;
         }
 
+        inline_arg = split_option_name(cur_opt, name, sizeof(name));
+        if (inline_arg) {
+            cur_opt = name;
+        }
+
         po = find_option(defs, cur_opt);
         if (!po->name && cur_opt[0] == 'n' && cur_opt[1] == 'o') {
             po = find_option(defs, cur_opt + 2);
@@ -662,10 +712,11 @@ static int locate_option(int argc, char **argv, const OptionDef *defs,
 
         if ((!po->name && !strcmp(cur_opt, optname)) ||
             (po->name && !strcmp(optname, po->name))) {
+            *value_out = inline_arg;
             return i;
         }
 
-        if (!po->name || opt_has_arg(po)) {
+        if (!inline_arg && (!po->name || opt_has_arg(po))) {
             i++;
         }
     }
@@ -696,8 +747,6 @@ int opt_loglevel(void *optctx av_unused, const char *opt av_unused, const char *
     int cmd;
     size_t i = 0;
 
-    /* Optional leading "repeat+"/"+repeat" flags, '+'-separated from the
-     * level. */
     while (*arg) {
         token = arg;
         if (*token == '+' || *token == '-') {
@@ -752,9 +801,16 @@ end:
 }
 
 void parse_loglevel(int argc, char **argv, const OptionDef *defs) {
-    int idx = locate_option(argc, argv, defs, "loglevel");
-    if (idx && argv[idx + 1]) {
-        opt_loglevel(NULL, "loglevel", argv[idx + 1]);
+    const char *value;
+    int idx = locate_option(argc, argv, defs, "loglevel", &value);
+    if (!idx) {
+        return;
+    }
+    if (!value) {
+        value = argv[idx + 1];
+    }
+    if (value) {
+        opt_loglevel(NULL, "loglevel", value);
     }
 }
 
@@ -767,7 +823,12 @@ int opt_quiet(void *optctx av_unused, const char *opt av_unused,
 }
 
 void parse_quiet(int argc, char **argv, const OptionDef *defs) {
-    if (locate_option(argc, argv, defs, "quiet")) {
-        opt_quiet(NULL, "quiet", NULL);
+    const char *value;
+    if (!locate_option(argc, argv, defs, "quiet", &value)) {
+        return;
     }
+    if (value && config_parse_bool(value) == 0) {
+        return;
+    }
+    opt_quiet(NULL, "quiet", NULL);
 }
