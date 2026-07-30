@@ -86,6 +86,7 @@ jobs:
           ninja -C build install
 
           lachesis -h
+          lachesis --version
 
       - name: Package portable bundle
         run: |
