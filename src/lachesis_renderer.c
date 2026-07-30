@@ -73,6 +73,8 @@
 #endif
 #define LACHESIS_SHADER_CACHE_LIMIT (64u << 20)
 
+#define LACHESIS_MAX_OVERLAYS 2
+
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #define LACHESIS_CAN_ITERATE_LIBS 1
@@ -129,6 +131,9 @@ typedef struct RendererContext {
     VkSurfaceKHR vk_surface;
     pl_renderer renderer;
     pl_tex tex[4];
+    pl_tex prev_tex[4];
+    pl_tex next_tex[4];
+    AVFrame *deint_prev;
 
     pl_log vk_log;
 
@@ -164,6 +169,7 @@ typedef struct RendererContext {
     bool have_hint;
 
     pl_tex osd_tex;
+    pl_tex sub_tex;
 
     AVFrame *blank_frame;
 
@@ -1368,6 +1374,40 @@ static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
     return ret;
 }
 
+static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
+                                            struct pl_frame *out,
+                                            const struct pl_frame *cur,
+                                            AVFrame *frame) {
+    if (!frame) {
+        return NULL;
+    }
+    if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, out,
+                           pl_avframe_params(.frame = frame, .tex = tex))) {
+        return NULL;
+    }
+    if (out->num_planes != cur->num_planes) {
+        goto reject;
+    }
+    for (int i = 0; i < cur->num_planes; i++) {
+        const struct pl_tex_params *a, *b;
+        if (!cur->planes[i].texture || !out->planes[i].texture) {
+            goto reject;
+        }
+        a = &cur->planes[i].texture->params;
+        b = &out->planes[i].texture->params;
+        if (a->w != b->w || a->h != b->h ||
+            a->format->num_components != b->format->num_components) {
+            goto reject;
+        }
+    }
+
+    return out;
+
+reject:
+    pl_unmap_avframe(ctx->placebo_vulkan->gpu, out);
+    return NULL;
+}
+
 static void apply_deinterlace(struct pl_frame *pl_frame,
                               struct pl_render_params *pl_params,
                               const AVFrame *frame, const RenderParams *params) {
@@ -1470,10 +1510,39 @@ static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target
     *dst = vis;
 }
 
+static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
+                             int w, int h, int stride) {
+    if (!*slot || (int)(*slot)->params.w != w || (int)(*slot)->params.h != h) {
+        pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
+        pl_tex_destroy(ctx->placebo_vulkan->gpu, slot);
+        if (!fmt) {
+            return NULL;
+        }
+        *slot = pl_tex_create(ctx->placebo_vulkan->gpu, &(struct pl_tex_params){
+                                                            .w = w,
+                                                            .h = h,
+                                                            .format = fmt,
+                                                            .sampleable = true,
+                                                            .host_writable = true,
+                                                        });
+        if (!*slot) {
+            return NULL;
+        }
+    }
+
+    pl_tex_upload(ctx->placebo_vulkan->gpu, &(struct pl_tex_transfer_params){
+                                                .tex = *slot,
+                                                .ptr = pixels,
+                                                .row_pitch = stride,
+                                            });
+
+    return *slot;
+}
+
 static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                          struct pl_frame *target, struct pl_render_params *pl_params,
-                         RenderParams *params, struct pl_overlay *osd_overlay,
-                         struct pl_overlay_part *osd_part) {
+                         RenderParams *params, struct pl_overlay *overlays,
+                         struct pl_overlay_part *parts) {
     SDL_Rect *rect = &params->target_rect;
     target->crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
 
@@ -1511,37 +1580,46 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         pl_params->num_hooks = 1;
     }
 
-    if (params->osd_pixels && params->osd_width > 0 && params->osd_height > 0) {
-        bool tex_ok = ctx->osd_tex &&
-            (int)ctx->osd_tex->params.w == params->osd_width &&
-            (int)ctx->osd_tex->params.h == params->osd_height;
-        if (!tex_ok) {
-            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
-            pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
-            if (fmt) {
-                struct pl_tex_params tp = {
-                    .w = params->osd_width,
-                    .h = params->osd_height,
-                    .format = fmt,
-                    .sampleable = true,
-                    .host_writable = true,
-                };
-                ctx->osd_tex = pl_tex_create(ctx->placebo_vulkan->gpu, &tp);
-            }
-        }
-        if (ctx->osd_tex) {
-            struct pl_tex_transfer_params xfer = {
-                .tex = ctx->osd_tex,
-                .ptr = params->osd_pixels,
-                .row_pitch = params->osd_stride,
+    int num_overlays = 0;
+
+    if (params->sub_pixels && params->sub_width > 0 && params->sub_height > 0) {
+        pl_tex tex = overlay_upload(ctx, &ctx->sub_tex, params->sub_pixels,
+                                    params->sub_width, params->sub_height,
+                                    params->sub_stride);
+        if (tex) {
+            parts[num_overlays] = (struct pl_overlay_part){
+                .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->sub_width, .y1 = (float)params->sub_height},
+                .dst = {.x0 = rect->x, .y0 = rect->y, .x1 = rect->x + rect->w, .y1 = rect->y + rect->h},
             };
-            pl_tex_upload(ctx->placebo_vulkan->gpu, &xfer);
-            *osd_part = (struct pl_overlay_part){
+            overlays[num_overlays] = (struct pl_overlay){
+                .tex = tex,
+                .mode = PL_OVERLAY_NORMAL,
+                .coords = PL_OVERLAY_COORDS_DST_FRAME,
+                .repr = {
+                    .sys = PL_COLOR_SYSTEM_RGB,
+                    .levels = PL_COLOR_LEVELS_FULL,
+                    /* swscale writes straight alpha here, unlike the OSD. */
+                    .alpha = PL_ALPHA_INDEPENDENT,
+                },
+                .color = pl_color_space_srgb,
+                .parts = &parts[num_overlays],
+                .num_parts = 1,
+            };
+            num_overlays++;
+        }
+    }
+
+    if (params->osd_pixels && params->osd_width > 0 && params->osd_height > 0) {
+        pl_tex tex = overlay_upload(ctx, &ctx->osd_tex, params->osd_pixels,
+                                    params->osd_width, params->osd_height,
+                                    params->osd_stride);
+        if (tex) {
+            parts[num_overlays] = (struct pl_overlay_part){
                 .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
                 .dst = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
             };
-            *osd_overlay = (struct pl_overlay){
-                .tex = ctx->osd_tex,
+            overlays[num_overlays] = (struct pl_overlay){
+                .tex = tex,
                 .mode = PL_OVERLAY_NORMAL,
                 .coords = PL_OVERLAY_COORDS_DST_FRAME,
                 .repr = {
@@ -1550,12 +1628,16 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                     .alpha = PL_ALPHA_PREMULTIPLIED,
                 },
                 .color = pl_color_space_srgb,
-                .parts = osd_part,
+                .parts = &parts[num_overlays],
                 .num_parts = 1,
             };
-            target->overlays = osd_overlay;
-            target->num_overlays = 1;
+            num_overlays++;
         }
+    }
+
+    if (num_overlays > 0) {
+        target->overlays = overlays;
+        target->num_overlays = num_overlays;
     }
 }
 
@@ -1619,6 +1701,8 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
 
     static int64_t t_acq, t_rnd, t_prs, t_n;
     int64_t _ts0 = av_gettime_relative();
+    struct pl_frame pl_prev, pl_next;
+    bool mapped_prev = false, mapped_next = false;
 
     if (!pl_swapchain_start_frame(ctx->swapchain, &swap_frame)) {
         ret = AVERROR_EXTERNAL;
@@ -1642,11 +1726,21 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         pl_hdr_metadata_merge(&target.color.hdr, &ctx->display_hdr);
     }
 
-    struct pl_overlay osd_overlay;
-    struct pl_overlay_part osd_part;
+    struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
+    struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
 
-    setup_render(ctx, &pl_frame, &target, &pl_params, params, &osd_overlay, &osd_part);
+    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
     apply_deinterlace(&pl_frame, &pl_params, frame, params);
+
+    if (pl_params.deinterlace_params &&
+        pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
+        pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
+                                      ctx->deint_prev);
+        pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
+                                      params->next_frame);
+        mapped_prev = pl_frame.prev != NULL;
+        mapped_next = pl_frame.next != NULL;
+    }
 
     _ts2 = av_gettime_relative();
     if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
@@ -1705,7 +1799,26 @@ out:
         }
     }
 
+    if (mapped_prev) {
+        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_prev);
+    }
+    if (mapped_next) {
+        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_next);
+    }
     pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_frame);
+
+    if (params->deinterlace == DEINTERLACE_YADIF) {
+        if (!ctx->deint_prev) {
+            ctx->deint_prev = av_frame_alloc();
+        }
+        if (ctx->deint_prev) {
+            av_frame_unref(ctx->deint_prev);
+            av_frame_ref(ctx->deint_prev, frame);
+        }
+    } else if (ctx->deint_prev) {
+        av_frame_free(&ctx->deint_prev);
+    }
+
     return ret;
 }
 
@@ -1770,9 +1883,9 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
     };
     target.color = pl_color_space_srgb;
 
-    struct pl_overlay osd_overlay;
-    struct pl_overlay_part osd_part;
-    setup_render(ctx, &pl_frame, &target, &pl_params, params, &osd_overlay, &osd_part);
+    struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
+    struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
+    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
     apply_deinterlace(&pl_frame, &pl_params, frame, params);
 
     if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
@@ -1923,6 +2036,12 @@ static void destroy(VkRenderer *renderer) {
         av_freep(&ctx->cache_path);
 #endif
         pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
+        pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->sub_tex);
+        av_frame_free(&ctx->deint_prev);
+        for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->prev_tex); i++) {
+            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->prev_tex[i]);
+            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->next_tex[i]);
+        }
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
             pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->tex[i]);
         }

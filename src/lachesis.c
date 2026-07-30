@@ -916,6 +916,102 @@ static void draw_video_background(VideoState *is) {
     }
 }
 
+static void prepare_vulkan_subtitles(VideoState *is, Frame *vp) {
+    Frame *sp;
+    int plane_w, plane_h, max_dim;
+    size_t need;
+
+    is->render_params.sub_pixels = NULL;
+    is->render_params.sub_width = 0;
+    is->render_params.sub_height = 0;
+    is->render_params.sub_stride = 0;
+
+    if (!is->subtitle_st || frame_queue_nb_remaining(&is->subpq) <= 0) {
+        return;
+    }
+    sp = frame_queue_peek(&is->subpq);
+    if (sp->sub.format != 0 ||
+        vp->pts < sp->pts + ((float)sp->sub.start_display_time / 1000)) {
+        return;
+    }
+
+    if (!sp->width || !sp->height) {
+        sp->width = vp->width;
+        sp->height = vp->height;
+    }
+    plane_w = sp->width;
+    plane_h = sp->height;
+    max_dim = display_max_texture_size();
+    if (max_dim > 0 && (plane_w > max_dim || plane_h > max_dim)) {
+        fit_within_max_dim(sp->width, sp->height, max_dim, &plane_w, &plane_h);
+    }
+
+    if (!sp->uploaded) {
+        if (is->sub_rgba && (is->sub_rgba_w != plane_w || is->sub_rgba_h != plane_h)) {
+            av_freep(&is->sub_rgba);
+        }
+        need = (size_t)plane_w * plane_h * 4;
+        if (!is->sub_rgba) {
+            is->sub_rgba = av_malloc(need);
+            if (!is->sub_rgba) {
+                return;
+            }
+            is->sub_rgba_w = plane_w;
+            is->sub_rgba_h = plane_h;
+        }
+        memset(is->sub_rgba, 0, need);
+
+        for (unsigned int i = 0; i < sp->sub.num_rects; i++) {
+            AVSubtitleRect *sub_rect = sp->sub.rects[i];
+            uint8_t *dst[4] = {NULL};
+            int dst_pitch[4] = {0};
+            int src_w, src_h;
+
+            sub_rect->x = av_clip(sub_rect->x, 0, sp->width);
+            sub_rect->y = av_clip(sub_rect->y, 0, sp->height);
+            sub_rect->w = av_clip(sub_rect->w, 0, sp->width - sub_rect->x);
+            sub_rect->h = av_clip(sub_rect->h, 0, sp->height - sub_rect->y);
+            src_w = sub_rect->w;
+            src_h = sub_rect->h;
+            if (src_w <= 0 || src_h <= 0) {
+                continue;
+            }
+
+            if (plane_w != sp->width || plane_h != sp->height) {
+                sub_rect->x = av_clip((int)((int64_t)sub_rect->x * plane_w / sp->width), 0, plane_w - 1);
+                sub_rect->y = av_clip((int)((int64_t)sub_rect->y * plane_h / sp->height), 0, plane_h - 1);
+                sub_rect->w = av_clip((int)((int64_t)src_w * plane_w / sp->width), 1, plane_w - sub_rect->x);
+                sub_rect->h = av_clip((int)((int64_t)src_h * plane_h / sp->height), 1, plane_h - sub_rect->y);
+            }
+
+            is->sub_convert_ctx = sws_getCachedContext(is->sub_convert_ctx,
+                                                       src_w, src_h, AV_PIX_FMT_PAL8,
+                                                       sub_rect->w, sub_rect->h, AV_PIX_FMT_RGBA,
+                                                       0, NULL, NULL, NULL);
+            if (!is->sub_convert_ctx) {
+                return;
+            }
+            dst_pitch[0] = plane_w * 4;
+            dst[0] = is->sub_rgba + (size_t)sub_rect->y * dst_pitch[0] +
+                (size_t)sub_rect->x * 4;
+            sws_scale(is->sub_convert_ctx, (const uint8_t *const *)sub_rect->data,
+                      sub_rect->linesize, 0, src_h, dst, dst_pitch);
+        }
+
+        sp->width = plane_w;
+        sp->height = plane_h;
+        sp->uploaded = 1;
+    }
+
+    if (!is->sub_rgba) {
+        return;
+    }
+    is->render_params.sub_pixels = is->sub_rgba;
+    is->render_params.sub_width = is->sub_rgba_w;
+    is->render_params.sub_height = is->sub_rgba_h;
+    is->render_params.sub_stride = is->sub_rgba_w * 4;
+}
+
 static void video_image_display(VideoState *is) {
     Frame *vp;
     Frame *sp = NULL;
@@ -932,6 +1028,17 @@ static void video_image_display(VideoState *is) {
         is->render_params.skip_anti_aliasing = is->render_low_quality;
         is->render_params.deinterlace = deinterlace;
         is->render_params.rotate = video_rotate;
+        is->render_params.next_frame = NULL;
+        if (deinterlace == DEINTERLACE_YADIF &&
+            frame_queue_nb_remaining(&is->pictq) > 0) {
+            Frame *nextvp = frame_queue_peek(&is->pictq);
+            if (nextvp != vp) {
+                is->render_params.next_frame = nextvp->frame;
+            }
+        }
+        if (!subtitle_disable) {
+            prepare_vulkan_subtitles(is, vp);
+        }
         int ret = vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
         if (ret == AVERROR(ERANGE)) {
             /* Doesn't imply the renderer doesn't work. */
@@ -1193,6 +1300,7 @@ static void stream_close(VideoState *is) {
     if (is->sub_texture) {
         SDL_DestroyTexture(is->sub_texture);
     }
+    av_freep(&is->sub_rgba);
     av_free(is);
 }
 
