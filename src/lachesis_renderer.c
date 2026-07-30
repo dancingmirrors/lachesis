@@ -1429,13 +1429,14 @@ static void apply_deinterlace(struct pl_frame *pl_frame,
         return;
     }
 
+    enum pl_field first;
     if (!(frame->flags & AV_FRAME_FLAG_INTERLACED)) {
-        pl_params->deinterlace_params = NULL;
-        return;
+        first = PL_FIELD_TOP;
+    } else {
+        /* See libplacebo's validate_structs() if there are mysterious failures. */
+        first = (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? PL_FIELD_TOP : PL_FIELD_BOTTOM;
     }
 
-    /* See libplacebo's validate_structs() if there are mysterious failures. */
-    enum pl_field first = (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? PL_FIELD_TOP : PL_FIELD_BOTTOM;
     pl_frame->field = first;
     pl_frame->first_field = first;
 }
