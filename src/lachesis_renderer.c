@@ -26,6 +26,8 @@
 #include "lachesis_view360.h"
 /* clang-format on */
 
+#include <limits.h>
+
 #if LACHESIS_HAVE_VULKAN && LACHESIS_HAVE_LIBPLACEBO
 #define HAVE_VULKAN_RENDERER 1
 #endif
@@ -1510,6 +1512,7 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     bool frame_started = false;
     struct pl_color_space hint = {0};
     int64_t _ts1, _ts2, _ts3 = 0, prs_us = 0;
+    uint32_t max_dim;
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
@@ -1518,6 +1521,11 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
 
     if (frame->width <= 0 || frame->height <= 0) {
         return AVERROR_INVALIDDATA;
+    }
+
+    max_dim = ctx->placebo_vulkan->gpu->limits.max_tex_2d_dim;
+    if (max_dim && ((unsigned)frame->width > max_dim || (unsigned)frame->height > max_dim)) {
+        return AVERROR(ERANGE);
     }
 
     if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
@@ -2006,6 +2014,23 @@ unsigned vk_renderer_video_decode_caps(VkRenderer *renderer) {
         return 0;
     }
     return ((RendererContext *)renderer)->decode_caps;
+#else
+    (void)renderer;
+    return 0;
+#endif
+}
+
+int vk_renderer_max_texture_size(VkRenderer *renderer) {
+#if HAVE_VULKAN_RENDERER
+    RendererContext *ctx = (RendererContext *)renderer;
+    uint32_t max_dim;
+
+    if (!ctx || !ctx->placebo_vulkan || !ctx->placebo_vulkan->gpu) {
+        return 0;
+    }
+    max_dim = ctx->placebo_vulkan->gpu->limits.max_tex_2d_dim;
+
+    return max_dim > INT_MAX ? INT_MAX : (int)max_dim;
 #else
     (void)renderer;
     return 0;

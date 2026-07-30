@@ -702,6 +702,13 @@ int realloc_texture(SDL_Texture **texture, Uint32 new_format,
             SDL_DestroyTexture(*texture);
         }
         if (!(*texture = SDL_CreateTexture(renderer, new_format, SDL_TEXTUREACCESS_STREAMING, new_width, new_height))) {
+            static int failed_w, failed_h;
+            if (failed_w != new_width || failed_h != new_height) {
+                failed_w = new_width;
+                failed_h = new_height;
+                log_warn("The renderer refused a %dx%d texture: %s.\n",
+                         new_width, new_height, SDL_GetError());
+            }
             return -1;
         }
         if (!SDL_SetTextureBlendMode(*texture, blendmode)) {
@@ -926,7 +933,9 @@ static void video_image_display(VideoState *is) {
         is->render_params.deinterlace = deinterlace;
         is->render_params.rotate = video_rotate;
         int ret = vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
-        if (ret < 0) {
+        if (ret == AVERROR(ERANGE)) {
+            /* Doesn't imply the renderer doesn't work. */
+        } else if (ret < 0) {
             int limit = vk_display_ever_ok ? VK_DISPLAY_FAULT_LIMIT_LATE
                                            : VK_DISPLAY_FAULT_LIMIT;
             /* Can't be used to determine the renderer's health. */
@@ -957,24 +966,47 @@ static void video_image_display(VideoState *is) {
                     uint8_t *pixels[4];
                     int pitch[4];
                     unsigned int i;
+                    int max_dim = display_max_texture_size();
+                    int plane_w, plane_h;
+
                     if (!sp->width || !sp->height) {
                         sp->width = vp->width;
                         sp->height = vp->height;
                     }
-                    if (realloc_texture(&is->sub_texture, SDL_PIXELFORMAT_ARGB8888, sp->width, sp->height, SDL_BLENDMODE_BLEND, 1) < 0) {
+
+                    plane_w = sp->width;
+                    plane_h = sp->height;
+                    if (max_dim > 0 && (plane_w > max_dim || plane_h > max_dim)) {
+                        fit_within_max_dim(sp->width, sp->height, max_dim, &plane_w, &plane_h);
+                    }
+
+                    if (realloc_texture(&is->sub_texture, SDL_PIXELFORMAT_ARGB8888, plane_w, plane_h, SDL_BLENDMODE_BLEND, 1) < 0) {
                         return;
                     }
 
                     for (i = 0; i < sp->sub.num_rects; i++) {
                         AVSubtitleRect *sub_rect = sp->sub.rects[i];
+                        int src_w, src_h;
 
                         sub_rect->x = av_clip(sub_rect->x, 0, sp->width);
                         sub_rect->y = av_clip(sub_rect->y, 0, sp->height);
                         sub_rect->w = av_clip(sub_rect->w, 0, sp->width - sub_rect->x);
                         sub_rect->h = av_clip(sub_rect->h, 0, sp->height - sub_rect->y);
+                        src_w = sub_rect->w;
+                        src_h = sub_rect->h;
+                        if (src_w <= 0 || src_h <= 0) {
+                            continue;
+                        }
+
+                        if (plane_w != sp->width || plane_h != sp->height) {
+                            sub_rect->x = av_clip((int)((int64_t)sub_rect->x * plane_w / sp->width), 0, plane_w - 1);
+                            sub_rect->y = av_clip((int)((int64_t)sub_rect->y * plane_h / sp->height), 0, plane_h - 1);
+                            sub_rect->w = av_clip((int)((int64_t)src_w * plane_w / sp->width), 1, plane_w - sub_rect->x);
+                            sub_rect->h = av_clip((int)((int64_t)src_h * plane_h / sp->height), 1, plane_h - sub_rect->y);
+                        }
 
                         is->sub_convert_ctx = sws_getCachedContext(is->sub_convert_ctx,
-                                                                   sub_rect->w, sub_rect->h, AV_PIX_FMT_PAL8,
+                                                                   src_w, src_h, AV_PIX_FMT_PAL8,
                                                                    sub_rect->w, sub_rect->h, AV_PIX_FMT_BGRA,
                                                                    0, NULL, NULL, NULL);
                         if (!is->sub_convert_ctx) {
@@ -982,10 +1014,13 @@ static void video_image_display(VideoState *is) {
                         }
                         if (SDL_LockTexture(is->sub_texture, (SDL_Rect *)sub_rect, (void **)pixels, pitch)) {
                             sws_scale(is->sub_convert_ctx, (const uint8_t *const *)sub_rect->data, sub_rect->linesize,
-                                      0, sub_rect->h, pixels, pitch);
+                                      0, src_h, pixels, pitch);
                             SDL_UnlockTexture(is->sub_texture);
                         }
                     }
+
+                    sp->width = plane_w;
+                    sp->height = plane_h;
                     sp->uploaded = 1;
                 }
             } else {
@@ -2429,6 +2464,33 @@ static void create_sdl_renderer_for_window(void) {
         renderer_texture_formats[0] == SDL_PIXELFORMAT_UNKNOWN) {
         fatal_quit("Failed to create window or renderer: %s!\n", SDL_GetError());
     }
+}
+
+int display_max_texture_size(void) {
+    Sint64 sdl_max;
+
+    if (max_texture_size) {
+        return max_texture_size > 0 ? max_texture_size : 0;
+    }
+
+    if (vk_renderer) {
+        return vk_renderer_max_texture_size(vk_renderer);
+    }
+    if (!renderer) {
+        return 0;
+    }
+
+#ifdef SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER
+    sdl_max = SDL_GetNumberProperty(SDL_GetRendererProperties(renderer),
+                                    SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
+#else
+    sdl_max = 0;
+#endif
+    if (sdl_max <= 0) {
+        return 0;
+    }
+
+    return sdl_max > INT_MAX ? INT_MAX : (int)sdl_max;
 }
 
 void renderer_device_reset(VideoState *is, int device_lost) {

@@ -273,6 +273,7 @@ typedef struct VideoState {
     int64_t audio_start_pending_since;
 
     int vfilter_idx;
+    int oversize_warned_w, oversize_warned_h;
     AVFilterContext *in_video_filter; /* The first filter in the video chain. */
     AVFilterContext *out_video_filter; /* The last filter in the video chain. */
     AVFilterContext *in_audio_filter; /* The first filter in the audio chain. */
@@ -338,6 +339,16 @@ void apply_degraded_decode(AVCodecContext *avctx);
 void set_default_window_size(int width, int height, AVRational sar);
 void update_screen_size(void);
 float window_pixel_density(void);
+
+int display_max_texture_size(void);
+
+static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int *out_h) {
+    double scale = (double)max_dim / FFMAX(w, h);
+
+    *out_w = FFMAX(2, FFMIN(max_dim, (int)(w * scale)) & ~1);
+    *out_h = FFMAX(2, FFMIN(max_dim, (int)(h * scale)) & ~1);
+}
+
 void renderer_device_reset(VideoState *is, int device_lost);
 Frame *frame_queue_peek_writable(FrameQueue *f);
 Frame *frame_queue_peek_readable(FrameQueue *f);

@@ -146,6 +146,43 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     return 0;
 }
 
+static int hwaccel_size_usable(AVBufferRef *device_ctx, int width, int height) {
+    int max_w = 0, max_h = 0;
+
+    if (hwaccel_max_size < 0 || width <= 0 || height <= 0) {
+        return 1;
+    }
+
+    if (hwaccel_max_size > 0) {
+        max_w = max_h = hwaccel_max_size;
+    } else {
+        AVHWFramesConstraints *c =
+            av_hwdevice_get_hwframe_constraints(device_ctx, NULL);
+        if (!c) {
+            return 1;
+        }
+        max_w = c->max_width;
+        max_h = c->max_height;
+        av_hwframe_constraints_free(&c);
+    }
+
+    if ((max_w > 0 && width > max_w) || (max_h > 0 && height > max_h)) {
+        char limit[64];
+
+        if (max_w > 0 && max_h > 0) {
+            snprintf(limit, sizeof(limit), "%dx%d", max_w, max_h);
+        } else if (max_w > 0) {
+            snprintf(limit, sizeof(limit), "%d wide", max_w);
+        } else {
+            snprintf(limit, sizeof(limit), "%d high", max_h);
+        }
+        log_warn("%dx%d exceeds %s.\n", width, height, limit);
+        return 0;
+    }
+
+    return 1;
+}
+
 static int hwaccel_usable(const AVCodec *codec, const AVBufferRef *device_ctx) {
     const AVHWDeviceContext *dev = (const AVHWDeviceContext *)device_ctx->data;
 
@@ -270,7 +307,11 @@ int stream_component_open(VideoState *is, int stream_index) {
         if (ret < 0) {
             goto fail;
         }
-        if (avctx->hw_device_ctx && !hwaccel_usable(codec, avctx->hw_device_ctx)) {
+        if (avctx->hw_device_ctx &&
+            (!hwaccel_usable(codec, avctx->hw_device_ctx) ||
+             !hwaccel_size_usable(avctx->hw_device_ctx,
+                                  FFMAX(avctx->coded_width, avctx->width),
+                                  FFMAX(avctx->coded_height, avctx->height)))) {
             av_buffer_unref(&avctx->hw_device_ctx);
             media_info_set_hwaccel(NULL);
         }

@@ -71,6 +71,9 @@ VkRenderer *vk_get_renderer(void);
 
 unsigned vk_renderer_video_decode_caps(VkRenderer *renderer);
 
+/* Safe to call with a NULL renderer. */
+int vk_renderer_max_texture_size(VkRenderer *renderer);
+
 int vk_renderer_is_vsync_blocked(VkRenderer *renderer);
 
 /* Safe to call with a NULL renderer. */

@@ -109,6 +109,8 @@ int no_display_hdr = 0;
 char *video_background = NULL;
 const char *hwaccel = NULL;
 int no_hwaccel = 0;
+int hwaccel_max_size = 0;
+int max_texture_size = 0;
 int video_unscaled = 0;
 int enable_360sbs = 0;
 int enable_360tb = 0;
@@ -302,6 +304,8 @@ const OptionDef options[] = {
     {"video_bg", OPT_TYPE_STRING, 0, {&video_background}, "set the video background for transparent content"},
     {"hwaccel", OPT_TYPE_STRING, 0, {&hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none"},
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},
+    {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
+    {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
     {"video_unscaled", OPT_TYPE_BOOL, 0, {&video_unscaled}, "display video at native size and scale down only if the input is too large for the display"},
     {"360-sbs", OPT_TYPE_BOOL, 0, {&enable_360sbs}, "enable 360\xc2\xb0 equirectangular projection for side-by-side video"},
     {"360-tb", OPT_TYPE_BOOL, 0, {&enable_360tb}, "enable 360\xc2\xb0 equirectangular projection for top-bottom video"},

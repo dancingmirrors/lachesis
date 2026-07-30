@@ -45,6 +45,7 @@
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
+#include "lachesis_log.h"
 #include "lachesis_options.h"
 
 static enum AVColorSpace sdl_supported_color_spaces[] = {
@@ -98,6 +99,7 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     AVCodecParameters *codecpar = is->video_st->codecpar;
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
     int nb_pix_fmts = 0;
+    int max_dim;
     int i;
     size_t j;
     AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
@@ -202,6 +204,46 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         last_filter = filt_ctx;                                                 \
     } while (0)
     /* clang-format on */
+
+    max_dim = display_max_texture_size();
+    if (max_dim > 0 && (frame->width > max_dim || frame->height > max_dim)) {
+        AVFilterContext *scale_ctx = NULL;
+        int target_w, target_h, scale_ret;
+        char scale_buf[256];
+
+        fit_within_max_dim(frame->width, frame->height, max_dim,
+                           &target_w, &target_h);
+
+        snprintf(scale_buf, sizeof(scale_buf),
+                 "w=max(2,2*floor(min(iw,iw*%d/max(iw,ih))/2))"
+                 ":h=max(2,2*floor(min(ih,ih*%d/max(iw,ih))/2))"
+                 ":flags=area",
+                 max_dim, max_dim);
+
+        scale_ret = avfilter_graph_create_filter(&scale_ctx,
+                                                 avfilter_get_by_name("scale"),
+                                                 "lachesis_autoscale", scale_buf,
+                                                 NULL, graph);
+        if (scale_ret >= 0 && scale_ctx) {
+            scale_ret = avfilter_link(scale_ctx, 0, last_filter, 0);
+            if (scale_ret < 0) {
+                avfilter_free(scale_ctx);
+            }
+        }
+        if (scale_ret < 0 || !scale_ctx) {
+            log_verbose("Failed to create the scale filter.\n");
+        } else {
+            last_filter = scale_ctx;
+            if (is->oversize_warned_w != frame->width ||
+                is->oversize_warned_h != frame->height) {
+                is->oversize_warned_w = frame->width;
+                is->oversize_warned_h = frame->height;
+                log_warn("%dx%d exceeds %d. Scaling to %dx%d.\n",
+                         frame->width, frame->height, max_dim, target_w, target_h);
+            }
+        }
+    }
+
     if (fps_convert > 0) {
         char fps_buf[32];
         snprintf(fps_buf, sizeof(fps_buf), "fps=%.6g", fps_convert);
@@ -266,6 +308,7 @@ void report_filter_output(AVFilterContext *filt_out,
     int oh = av_buffersink_get_h(filt_out);
     AVRational osar = av_buffersink_get_sample_aspect_ratio(filt_out);
     AVRational ofr = av_buffersink_get_frame_rate(filt_out);
+    int max_dim;
 
     if (ow == *last_w && oh == *last_h && !av_cmp_q(osar, *last_sar) &&
         ofr.num == last_fr->num && ofr.den == last_fr->den) {
@@ -275,6 +318,11 @@ void report_filter_output(AVFilterContext *filt_out,
     *last_h = oh;
     *last_sar = osar;
     *last_fr = ofr;
+
+    max_dim = display_max_texture_size();
+    if (max_dim > 0 && (ow > max_dim || oh > max_dim)) {
+        log_warn("%d exceeds %dx%d.\n", max_dim, ow, oh);
+    }
 
     media_info_note_video_output(ow, oh, osar, ofr);
 }

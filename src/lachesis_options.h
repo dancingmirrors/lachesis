@@ -145,6 +145,8 @@ extern int no_display_hdr;
 extern char *video_background;
 extern const char *hwaccel;
 extern int no_hwaccel;
+extern int hwaccel_max_size;
+extern int max_texture_size;
 extern int video_unscaled;
 extern int enable_360sbs;
 extern int enable_360tb;
