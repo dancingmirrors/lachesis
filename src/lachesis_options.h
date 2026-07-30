@@ -128,6 +128,8 @@ extern const char *video_codec_name;
 extern const char **vfilters_list;
 extern int nb_vfilters;
 extern char *afilters_opt;
+extern const char *audio_spdif_opt;
+extern int audio_spdif_force;
 extern int autorotate;
 extern int disable_autorotate;
 extern int video_rotate;

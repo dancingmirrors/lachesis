@@ -32,6 +32,7 @@
 #include <libavfilter/avfilter.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
+#include <libavformat/avformat.h>
 #include <libavutil/attributes.h>
 #include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
@@ -57,6 +58,9 @@
 static SDL_AudioDeviceID audio_dev;
 static SDL_AudioStream *audio_stream_dev;
 
+static SDL_AudioSpec audio_dev_spec;
+static int audio_dev_spec_valid;
+
 static uint8_t *audio_cb_buf;
 static unsigned int audio_cb_buf_size;
 
@@ -65,6 +69,334 @@ int audio_speed_serial = 0;
 
 #define AUDCLK_SMOOTH_ALPHA 0.05
 #define AUDCLK_RESET_THRESHOLD 0.3
+
+#define SPDIF_BURST_MAX 131072
+
+typedef struct SpdifContext {
+    volatile int active;
+    AVFormatContext *muxer;
+    enum AVCodecID codec_id;
+    int rate;
+    int channels;
+    int dtshd_rate;
+    AVChannelLayout ch_layout;
+    int frame_bytes;
+    uint8_t burst[SPDIF_BURST_MAX];
+    int burst_len;
+    int overflowed;
+    int mux_errors;
+    int bursts_emitted;
+    double burst_secs;
+    double source_secs;
+    int period_check_off;
+} SpdifContext;
+
+static SpdifContext spdif;
+
+static const struct {
+    const char *name;
+    enum AVCodecID id;
+    int hd;
+} spdif_codec_names[] = {
+    {"ac3", AV_CODEC_ID_AC3, 0},
+    {"eac3", AV_CODEC_ID_EAC3, 0},
+    {"e-ac3", AV_CODEC_ID_EAC3, 0},
+    {"dts", AV_CODEC_ID_DTS, 0},
+    {"dts-hd", AV_CODEC_ID_DTS, 1},
+    {"truehd", AV_CODEC_ID_TRUEHD, 0},
+    {"mp1", AV_CODEC_ID_MP1, 0},
+    {"mp2", AV_CODEC_ID_MP2, 0},
+    {"mp3", AV_CODEC_ID_MP3, 0},
+    {"aac", AV_CODEC_ID_AAC, 0},
+};
+
+static size_t spdif_element(const char **p) {
+    const char *s = *p;
+    size_t len;
+
+    while (*s == ' ' || *s == '\t') {
+        s++;
+    }
+    len = strcspn(s, ",");
+    while (len && (s[len - 1] == ' ' || s[len - 1] == '\t')) {
+        len--;
+    }
+    *p = s;
+
+    return len;
+}
+
+static const char *spdif_next_element(const char *p) {
+    p += strcspn(p, ",");
+
+    return *p == ',' ? p + 1 : p;
+}
+
+static int spdif_selected(enum AVCodecID codec_id, int *want_hd) {
+    const char *p = audio_spdif_opt;
+    int found = 0;
+
+    if (want_hd) {
+        *want_hd = 0;
+    }
+    if (!p) {
+        return 0;
+    }
+
+    while (*p) {
+        size_t len = spdif_element(&p);
+        int all = len == 3 && !av_strncasecmp(p, "all", 3);
+        size_t i;
+
+        for (i = 0; i < FF_ARRAY_ELEMS(spdif_codec_names); i++) {
+            const char *name = spdif_codec_names[i].name;
+            if (!all && (strlen(name) != len || av_strncasecmp(p, name, len))) {
+                continue;
+            }
+            if (spdif_codec_names[i].id != codec_id) {
+                continue;
+            }
+            if (all && spdif_codec_names[i].hd) {
+                continue;
+            }
+            found = 1;
+            if (want_hd && spdif_codec_names[i].hd) {
+                *want_hd = 1;
+            }
+        }
+        p = spdif_next_element(p);
+    }
+
+    return found;
+}
+
+int audio_spdif_active(void) {
+    return spdif.active;
+}
+
+static void spdif_warn_unknown_names(void) {
+    static int warned;
+    const char *p = audio_spdif_opt;
+
+    if (warned || !p) {
+        return;
+    }
+    warned = 1;
+
+    while (*p) {
+        size_t len = spdif_element(&p);
+        int known = len == 3 && !av_strncasecmp(p, "all", 3);
+        size_t i;
+
+        for (i = 0; !known && i < FF_ARRAY_ELEMS(spdif_codec_names); i++) {
+            const char *name = spdif_codec_names[i].name;
+            known = strlen(name) == len && !av_strncasecmp(p, name, len);
+        }
+        p = spdif_next_element(p);
+    }
+}
+
+static void spdif_muxer_close(void) {
+    if (spdif.muxer) {
+        if (spdif.muxer->pb) {
+            av_freep(&spdif.muxer->pb->buffer);
+            avio_context_free(&spdif.muxer->pb);
+        }
+        avformat_free_context(spdif.muxer);
+        spdif.muxer = NULL;
+    }
+    spdif.burst_len = 0;
+    spdif.overflowed = 0;
+    spdif.burst_secs = 0;
+    spdif.source_secs = 0;
+}
+
+static void spdif_close(void) {
+    spdif_muxer_close();
+    av_channel_layout_uninit(&spdif.ch_layout);
+    memset(&spdif, 0, sizeof(spdif));
+    media_info_clear_audio_passthrough();
+}
+
+static int spdif_write_burst(void *opaque, const uint8_t *buf, int buf_size) {
+    SpdifContext *ctx = opaque;
+    int left = SPDIF_BURST_MAX - ctx->burst_len;
+
+    if (buf_size > left) {
+        ctx->overflowed = 1;
+        buf_size = left;
+    }
+    memcpy(ctx->burst + ctx->burst_len, buf, buf_size);
+    ctx->burst_len += buf_size;
+
+    return buf_size;
+}
+
+static int spdif_muxer_open(void) {
+    AVFormatContext *s = NULL;
+    AVDictionary *opts = NULL;
+    AVStream *st;
+    uint8_t *buffer;
+    int ret;
+
+    spdif_muxer_close();
+
+    ret = avformat_alloc_output_context2(&s, NULL, "spdif", NULL);
+    if (ret < 0) {
+        return ret;
+    }
+    spdif.muxer = s;
+
+    buffer = av_mallocz(SPDIF_BURST_MAX);
+    if (!buffer) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    s->pb = avio_alloc_context(buffer, SPDIF_BURST_MAX, 1, &spdif, NULL,
+                               spdif_write_burst, NULL);
+    if (!s->pb) {
+        av_free(buffer);
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    s->pb->direct = 1;
+
+    st = avformat_new_stream(s, NULL);
+    if (!st) {
+        ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    st->codecpar->codec_type = AVMEDIA_TYPE_AUDIO;
+    st->codecpar->codec_id = spdif.codec_id;
+    st->codecpar->sample_rate = spdif.rate;
+
+    if (spdif.dtshd_rate) {
+        av_dict_set_int(&opts, "dtshd_rate", spdif.dtshd_rate, 0);
+    }
+#if SDL_BYTEORDER == SDL_BIG_ENDIAN
+    av_dict_set(&opts, "spdif_flags", "+be", 0);
+#endif
+
+    ret = avformat_write_header(s, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        goto fail;
+    }
+
+    return 0;
+
+fail:
+    spdif_muxer_close();
+
+    return ret;
+}
+
+static int spdif_profile_maybe_hd(int profile) {
+    switch (profile) {
+    case AV_PROFILE_DTS_HD_HRA:
+    case AV_PROFILE_DTS_HD_MA:
+#ifdef AV_PROFILE_DTS_HD_MA_X
+    case AV_PROFILE_DTS_HD_MA_X:
+#endif
+#ifdef AV_PROFILE_DTS_HD_MA_X_IMAX
+    case AV_PROFILE_DTS_HD_MA_X_IMAX:
+#endif
+    case AV_PROFILE_UNKNOWN:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int spdif_output_params(const AVCodecParameters *par, int want_hd) {
+    int fs = par->sample_rate > 0 ? par->sample_rate : 48000;
+
+    spdif.codec_id = par->codec_id;
+    spdif.channels = 2;
+    spdif.dtshd_rate = 0;
+
+    switch (par->codec_id) {
+    case AV_CODEC_ID_AC3:
+        spdif.rate = fs;
+        break;
+    case AV_CODEC_ID_MP1:
+    case AV_CODEC_ID_MP2:
+    case AV_CODEC_ID_MP3:
+        spdif.rate = fs < 32000 ? 2 * fs : fs;
+        break;
+    case AV_CODEC_ID_AAC:
+        if (par->extradata_size > 0) {
+            return 0;
+        }
+        if (par->profile == AV_PROFILE_AAC_HE ||
+            par->profile == AV_PROFILE_AAC_HE_V2) {
+            fs /= 2;
+        }
+        spdif.rate = fs;
+        break;
+    case AV_CODEC_ID_EAC3:
+        spdif.rate = 4 * fs;
+        break;
+    case AV_CODEC_ID_DTS:
+        if (want_hd && fs % 11025 == 0) {
+            want_hd = 0;
+        }
+        if (want_hd && spdif_profile_maybe_hd(par->profile)) {
+            spdif.channels = par->profile == AV_PROFILE_DTS_HD_HRA ? 2 : 8;
+            spdif.dtshd_rate = spdif.channels * 96000;
+            spdif.rate = 192000;
+            break;
+        }
+        if (par->profile == AV_PROFILE_DTS_EXPRESS) {
+            return 0;
+        }
+        while (fs > 48000) {
+            fs /= 2;
+        }
+        spdif.rate = fs;
+        break;
+    case AV_CODEC_ID_TRUEHD:
+        spdif.channels = 8;
+        spdif.rate = fs % 11025 == 0 ? 176400 : 192000;
+        break;
+    default:
+        return 0;
+    }
+
+    if (spdif.rate <= 0) {
+        return 0;
+    }
+    spdif.frame_bytes = spdif.channels * (int)sizeof(int16_t);
+    av_channel_layout_uninit(&spdif.ch_layout);
+    av_channel_layout_default(&spdif.ch_layout, spdif.channels);
+
+    return 1;
+}
+
+static void spdif_check_burst_period(int64_t pkt_duration, AVRational tb,
+                                     int nb_samples) {
+    if (spdif.period_check_off) {
+        return;
+    }
+    if (pkt_duration <= 0) {
+        spdif.period_check_off = 1;
+        return;
+    }
+
+    spdif.burst_secs += (double)nb_samples / spdif.rate;
+    spdif.source_secs += pkt_duration * av_q2d(tb);
+
+    if (spdif.source_secs < 2.0) {
+        return;
+    }
+    if (fabs(spdif.burst_secs - spdif.source_secs) <=
+        0.05 * spdif.source_secs) {
+        spdif.burst_secs = 0;
+        spdif.source_secs = 0;
+        return;
+    }
+    spdif.period_check_off = 1;
+}
 
 static inline int cmp_audio_fmts(enum AVSampleFormat fmt1, int64_t channel_count1,
                                  enum AVSampleFormat fmt2, int64_t channel_count2) {
@@ -207,9 +539,121 @@ end:
     return ret;
 }
 
+static int spdif_queue_packet(VideoState *is, AVPacket *pkt) {
+    AVRational tb = is->audio_st->time_base;
+    int64_t pts = pkt->pts;
+    int64_t pos = pkt->pos;
+    int64_t duration = pkt->duration;
+    int nb_samples;
+    AVFrame *frame;
+    Frame *af;
+    int ret;
+
+    if (!spdif.muxer && (ret = spdif_muxer_open()) < 0) {
+        return ret;
+    }
+
+    spdif.burst_len = 0;
+    spdif.overflowed = 0;
+
+    pkt->stream_index = 0;
+    pkt->pts = pkt->dts = 0;
+
+    ret = av_write_frame(spdif.muxer, pkt);
+    avio_flush(spdif.muxer->pb);
+    if (ret < 0) {
+        if (spdif.mux_errors == 50 && !spdif.bursts_emitted) {
+            log_dead("%s passthrough has produced no output at all.\n", avcodec_get_name(spdif.codec_id));
+        }
+        return 0;
+    }
+    if (spdif.overflowed) {
+        return 0;
+    }
+
+    nb_samples = spdif.burst_len / spdif.frame_bytes;
+    if (nb_samples <= 0) {
+        spdif_check_burst_period(duration, tb, 0);
+        return 0;
+    }
+    spdif.bursts_emitted++;
+    spdif_check_burst_period(duration, tb, nb_samples);
+
+    if (!(af = frame_queue_peek_writable(&is->sampq))) {
+        return AVERROR_EXIT;
+    }
+    frame = af->frame;
+    av_frame_unref(frame);
+    frame->format = AV_SAMPLE_FMT_S16;
+    frame->sample_rate = spdif.rate;
+    frame->nb_samples = nb_samples;
+    if ((ret = av_channel_layout_copy(&frame->ch_layout, &spdif.ch_layout)) < 0) {
+        return ret;
+    }
+    if ((ret = av_frame_get_buffer(frame, 0)) < 0) {
+        return ret;
+    }
+    memcpy(frame->data[0], spdif.burst, (size_t)nb_samples * spdif.frame_bytes);
+
+    af->pts = pts == AV_NOPTS_VALUE ? NAN : pts * av_q2d(tb);
+    af->pos = pos;
+    af->serial = is->auddec.pkt_serial;
+    af->duration = av_q2d((AVRational){nb_samples, spdif.rate});
+    frame->pts = pts;
+
+    frame_queue_push(&is->sampq);
+
+    return 0;
+}
+
+static int spdif_audio_thread(VideoState *is) {
+    Decoder *d = &is->auddec;
+    int last_serial = -1;
+    int ret = 0;
+
+    for (;;) {
+        AVPacket *pkt = d->pkt;
+        int64_t wait_t0;
+
+        if (d->queue->nb_packets == 0) {
+            SDL_SignalCondition(d->empty_queue_cond);
+        }
+        wait_t0 = av_gettime_relative();
+        d->wait_us = 0;
+        if (packet_queue_get(d->queue, pkt, 1, &d->pkt_serial) < 0) {
+            break;
+        }
+        d->wait_us = av_gettime_relative() - wait_t0;
+
+        if (d->queue->serial != d->pkt_serial) {
+            av_packet_unref(pkt);
+            continue;
+        }
+        if (d->pkt_serial != last_serial) {
+            spdif_muxer_close();
+            d->finished = 0;
+            last_serial = d->pkt_serial;
+        }
+        if (!pkt->data) {
+            d->finished = d->pkt_serial;
+            av_packet_unref(pkt);
+            continue;
+        }
+
+        ret = spdif_queue_packet(is, pkt);
+        av_packet_unref(pkt);
+        if (ret < 0) {
+            d->finished = d->pkt_serial;
+            break;
+        }
+    }
+
+    return ret == AVERROR_EXIT ? 0 : ret;
+}
+
 int audio_thread(void *arg) {
     VideoState *is = arg;
-    AVFrame *frame = av_frame_alloc();
+    AVFrame *frame;
     Frame *af;
     int last_serial = -1;
     int last_speed_serial = audio_speed_serial;
@@ -219,6 +663,11 @@ int audio_thread(void *arg) {
     AVRational tb;
     int ret = 0;
 
+    if (spdif.active) {
+        return spdif_audio_thread(is);
+    }
+
+    frame = av_frame_alloc();
     if (!frame) {
         return AVERROR(ENOMEM);
     }
@@ -302,6 +751,10 @@ the_end:
 
 static int synchronize_audio(VideoState *is, int nb_samples) {
     int wanted_nb_samples = nb_samples;
+
+    if (spdif.active) {
+        return nb_samples;
+    }
 
     if (get_master_sync_type(is) != AV_SYNC_AUDIO_MASTER) {
         double diff, avg_diff;
@@ -466,12 +919,18 @@ void audio_update_gain(VideoState *is) {
     if (!audio_stream_dev) {
         return;
     }
+    if (spdif.active) {
+        SDL_SetAudioStreamGain(audio_stream_dev, 1.0f);
+        return;
+    }
     gain = is->muted ? 0.0f : is->audio_volume / (float)FFP_MIX_MAXVOLUME;
     SDL_SetAudioStreamGain(audio_stream_dev, gain);
 }
 
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     VideoState *is = opaque;
+    Uint8 *const stream_start = stream;
+    const int len_total = len;
     int audio_size, len1;
 
     audio_callback_time = av_gettime_relative();
@@ -501,8 +960,10 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         stream += len1;
         is->audio_buf_index += len1;
     }
+    if (spdif.active && is->muted) {
+        memset(stream_start, 0, len_total);
+    }
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
-    /* Let's assume the audio driver used by SDL has two periods. */
     if (!isnan(is->audio_clock) && is->audio_buf && !is->paused) {
         double cb_time = audio_callback_time / 1000000.0;
         double raw_pts = is->audio_clock -
@@ -579,6 +1040,8 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
         media_info_note_audio_driver(drv, wanted_spec.channels,
                                      wanted_spec.freq);
         if (SDL_GetAudioDeviceFormat(audio_dev, &dev_spec, &dev_frames)) {
+            audio_dev_spec = dev_spec;
+            audio_dev_spec_valid = 1;
             media_info_note_audio_format((unsigned)dev_spec.format,
                                          dev_spec.channels, dev_spec.freq,
                                          dev_frames);
@@ -615,6 +1078,110 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
     return buffer_frames * audio_hw_params->frame_size;
 }
 
+static int spdif_driver_can_passthrough(void) {
+    const char *drv = SDL_GetCurrentAudioDriver();
+
+    if (!drv) {
+        return 0;
+    }
+
+    return !strcmp(drv, "alsa") || !strcmp(drv, "disk") || !strcmp(drv, "dummy");
+}
+
+static int spdif_device_takes_bits_verbatim(void) {
+    int *chmap;
+    int nb_chmap = 0;
+
+    if (!audio_dev_spec_valid) {
+        return 0;
+    }
+
+    if (!spdif_driver_can_passthrough()) {
+        return 0;
+    }
+
+    if (audio_dev_spec.format != SDL_AUDIO_S16 ||
+        audio_dev_spec.channels != spdif.channels ||
+        audio_dev_spec.freq != spdif.rate) {
+        return 0;
+    }
+
+    chmap = SDL_GetAudioDeviceChannelMap(audio_dev, &nb_chmap);
+    if (chmap) {
+        SDL_free(chmap);
+        return 0;
+    }
+
+    return 1;
+}
+
+int audio_spdif_open(VideoState *is, AVStream *st, int *hw_buf_size) {
+    AVChannelLayout layout = {0};
+    int want_hd;
+    int buf_size;
+    int ret;
+
+    spdif_warn_unknown_names();
+
+    if (!spdif_selected(st->codecpar->codec_id, &want_hd)) {
+        return 0;
+    }
+
+    spdif_close();
+    if (!spdif_output_params(st->codecpar, want_hd)) {
+        spdif_close();
+        return 0;
+    }
+    if (spdif_muxer_open() < 0) {
+        spdif_close();
+        return 0;
+    }
+
+    if ((ret = av_channel_layout_copy(&layout, &spdif.ch_layout)) < 0) {
+        spdif_close();
+        return ret;
+    }
+    buf_size = audio_open(is, &layout, spdif.rate, &is->audio_tgt);
+    av_channel_layout_uninit(&layout);
+    if (buf_size < 0) {
+        log_warn("Could not open the device for %dch @ %d Hz.\n",
+                 spdif.channels, spdif.rate);
+        audio_device_close();
+        return 0;
+    }
+
+    if (is->audio_tgt.fmt != AV_SAMPLE_FMT_S16 ||
+        is->audio_tgt.freq != spdif.rate ||
+        av_channel_layout_compare(&is->audio_tgt.ch_layout, &spdif.ch_layout)) {
+        audio_device_close();
+        return 0;
+    }
+    if (!spdif_device_takes_bits_verbatim()) {
+        if (!audio_spdif_force) {
+            audio_device_close();
+            return 0;
+        }
+    }
+
+    spdif.active = 1;
+    *hw_buf_size = buf_size;
+    audio_update_gain(is);
+
+    if (playback_speed != 1.0) {
+        playback_speed = 1.0;
+        audio_speed_serial++;
+    }
+
+    if (is->av_sync_type != AV_SYNC_AUDIO_MASTER) {
+        is->av_sync_type = AV_SYNC_AUDIO_MASTER;
+    }
+    media_info_note_audio_passthrough(avcodec_get_name(spdif.codec_id),
+                                      spdif.dtshd_rate, spdif.channels,
+                                      spdif.rate);
+
+    return 1;
+}
+
 void toggle_mute(VideoState *is) {
     is->muted = !is->muted;
     global_muted = is->muted;
@@ -623,7 +1190,13 @@ void toggle_mute(VideoState *is) {
 }
 
 void update_volume(VideoState *is, int sign, double step) {
-    int vol_max = is->audio_volume_max > 0 ? is->audio_volume_max : FFP_MIX_MAXVOLUME;
+    int vol_max;
+
+    if (spdif.active) {
+        return;
+    }
+
+    vol_max = is->audio_volume_max > 0 ? is->audio_volume_max : FFP_MIX_MAXVOLUME;
     int max_pct = (int)lrint(100.0 * vol_max / FFP_MIX_MAXVOLUME);
     double cur_pct = lrint(100.0 * is->audio_volume / FFP_MIX_MAXVOLUME);
     if (cur_pct > max_pct) {
@@ -651,6 +1224,8 @@ void audio_device_close(void) {
     SDL_DestroyAudioStream(audio_stream_dev);
     audio_stream_dev = NULL;
     audio_dev = 0;
+    audio_dev_spec_valid = 0;
     av_freep(&audio_cb_buf);
     audio_cb_buf_size = 0;
+    spdif_close();
 }

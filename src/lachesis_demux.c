@@ -188,10 +188,31 @@ int stream_component_open(VideoState *is, int stream_index) {
     AVDictionary *opts = NULL;
     int sample_rate;
     AVChannelLayout ch_layout = {0};
+    int spdif = 0;
     int ret = 0;
 
     if (stream_index < 0 || stream_index >= (int)ic->nb_streams) {
         return -1;
+    }
+
+    switch (ic->streams[stream_index]->codecpar->codec_type) {
+    case AVMEDIA_TYPE_AUDIO:
+        if (is->audio_stream >= 0) {
+            return 0;
+        }
+        break;
+    case AVMEDIA_TYPE_VIDEO:
+        if (is->video_stream >= 0) {
+            return 0;
+        }
+        break;
+    case AVMEDIA_TYPE_SUBTITLE:
+        if (is->subtitle_stream >= 0) {
+            return 0;
+        }
+        break;
+    default:
+        break;
     }
 
     avctx = avcodec_alloc_context3(NULL);
@@ -226,12 +247,23 @@ int stream_component_open(VideoState *is, int stream_index) {
     if (forced_codec_name) {
         codec = avcodec_find_decoder_by_name(forced_codec_name);
     }
-    if (!codec) {
+
+    if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+        spdif = audio_spdif_open(is, ic->streams[stream_index],
+                                 &is->audio_hw_buf_size);
+        if (spdif < 0) {
+            ret = spdif;
+            goto fail;
+        }
+    }
+
+    if (!codec && !spdif) {
         ret = AVERROR(EINVAL);
         goto fail;
     }
-
-    avctx->codec_id = codec->id;
+    if (codec) {
+        avctx->codec_id = codec->id;
+    }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
         ret = create_hwaccel(&avctx->hw_device_ctx);
@@ -257,41 +289,44 @@ int stream_component_open(VideoState *is, int stream_index) {
 
     av_dict_set(&opts, "flags", "+copy_opaque", AV_DICT_MULTIKEY);
 
-    if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
-        goto fail;
-    }
-    ret = check_avoptions(opts);
-    if (ret < 0) {
-        goto fail;
+    if (!spdif) {
+        if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
+            goto fail;
+        }
+        ret = check_avoptions(opts);
+        if (ret < 0) {
+            goto fail;
+        }
     }
 
     is->eof = 0;
     ic->streams[stream_index]->discard = AVDISCARD_DEFAULT;
     switch (avctx->codec_type) {
-    case AVMEDIA_TYPE_AUDIO: {
-        AVFilterContext *sink;
+    case AVMEDIA_TYPE_AUDIO:
+        if (!spdif) {
+            AVFilterContext *sink;
 
-        is->audio_filter_src.freq = avctx->sample_rate;
-        ret = av_channel_layout_copy(&is->audio_filter_src.ch_layout, &avctx->ch_layout);
-        if (ret < 0) {
-            goto fail;
-        }
-        is->audio_filter_src.fmt = avctx->sample_fmt;
-        if ((ret = configure_audio_filters(is, afilters_opt, 0)) < 0) {
-            goto fail;
-        }
-        sink = is->out_audio_filter;
-        sample_rate = av_buffersink_get_sample_rate(sink);
-        ret = av_buffersink_get_ch_layout(sink, &ch_layout);
-        if (ret < 0) {
-            goto fail_audio_graph;
-        }
-    }
+            is->audio_filter_src.freq = avctx->sample_rate;
+            ret = av_channel_layout_copy(&is->audio_filter_src.ch_layout, &avctx->ch_layout);
+            if (ret < 0) {
+                goto fail;
+            }
+            is->audio_filter_src.fmt = avctx->sample_fmt;
+            if ((ret = configure_audio_filters(is, afilters_opt, 0)) < 0) {
+                goto fail;
+            }
+            sink = is->out_audio_filter;
+            sample_rate = av_buffersink_get_sample_rate(sink);
+            ret = av_buffersink_get_ch_layout(sink, &ch_layout);
+            if (ret < 0) {
+                goto fail_audio_graph;
+            }
 
-        if ((ret = audio_open(is, &ch_layout, sample_rate, &is->audio_tgt)) < 0) {
-            goto fail_audio_graph;
+            if ((ret = audio_open(is, &ch_layout, sample_rate, &is->audio_tgt)) < 0) {
+                goto fail_audio_graph;
+            }
+            is->audio_hw_buf_size = ret;
         }
-        is->audio_hw_buf_size = ret;
         is->audio_src = is->audio_tgt;
         is->audio_buf_size = 0;
         is->audio_buf_index = 0;
@@ -355,6 +390,9 @@ int stream_component_open(VideoState *is, int stream_index) {
 fail_audio_graph:
     avfilter_graph_free(&is->agraph);
 fail:
+    if (spdif) {
+        audio_device_close();
+    }
     avcodec_free_context(&avctx);
 out:
     av_channel_layout_uninit(&ch_layout);

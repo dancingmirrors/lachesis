@@ -48,4 +48,8 @@ void audio_update_gain(VideoState *is);
 void audio_device_resume(void);
 void audio_device_close(void);
 
+int audio_spdif_open(VideoState *is, AVStream *st, int *hw_buf_size);
+
+int audio_spdif_active(void);
+
 #endif /* LACHESIS_AUDIO_H */

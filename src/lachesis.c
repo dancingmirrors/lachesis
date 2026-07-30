@@ -389,7 +389,7 @@ static void packet_queue_start(PacketQueue *q) {
     SDL_UnlockMutex(q->mutex);
 }
 
-static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial) {
+int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial) {
     MyAVPacketList pkt1;
     int ret;
 
@@ -1628,6 +1628,9 @@ static void ab_loop_check(VideoState *is) {
 }
 
 void set_playback_speed(double speed) {
+    if (audio_spdif_active()) {
+        return;
+    }
     speed = round(speed / PLAYBACK_SPEED_STEP) * PLAYBACK_SPEED_STEP;
     speed = FFMAX(PLAYBACK_SPEED_MIN, FFMIN(PLAYBACK_SPEED_MAX, speed));
     osd_show_position();

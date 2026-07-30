@@ -92,6 +92,8 @@ const char *video_codec_name;
 const char **vfilters_list = NULL;
 int nb_vfilters = 0;
 char *afilters_opt = NULL;
+const char *audio_spdif_opt = NULL;
+int audio_spdif_force = 0;
 int autorotate = 1;
 int disable_autorotate = 0;
 int video_rotate = 0;
@@ -284,6 +286,8 @@ const OptionDef options[] = {
     {"top", OPT_TYPE_INT, 0, {&screen_top}, "set the y position for the top of the window", "y pos"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
+    {"audio-spdif", OPT_TYPE_STRING, 0, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ':'", "codecs"},
+    {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match", ""},
     {"acodec", OPT_TYPE_STRING, 0, {&audio_codec_name}, "force an audio decoder", "decoder_name"},
     {"scodec", OPT_TYPE_STRING, 0, {&subtitle_codec_name}, "force a subtitle decoder", "decoder_name"},
     {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},

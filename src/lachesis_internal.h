@@ -325,6 +325,7 @@ int64_t frame_queue_last_pos(FrameQueue *f);
 
 int packet_queue_put(PacketQueue *q, AVPacket *pkt);
 int packet_queue_put_nullpacket(PacketQueue *q, AVPacket *pkt, int stream_index);
+int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial);
 void packet_queue_flush(PacketQueue *q);
 int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue);
 int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_Condition *empty_queue_cond);

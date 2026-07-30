@@ -35,6 +35,7 @@ static const char *active_hwaccel = NULL;
 
 static char audio_device_driver_line[96] = "";
 static char audio_device_format_line[96] = "";
+static char audio_passthrough_line[96] = "";
 static char media_info_vout_line[128] = "";
 
 static char playback_stats_cached[384] = "";
@@ -178,6 +179,9 @@ void format_media_info(const VideoState *is, char *buf, size_t bufsz) {
     if (audio_device_format_line[0]) {
         MI_LINE("SDL audio device format: %s", audio_device_format_line);
     }
+    if (audio_passthrough_line[0]) {
+        MI_LINE("Audio passthrough: %s", audio_passthrough_line);
+    }
 
     MI_LINE("Using renderer: %s", media_info_renderer());
     MI_LINE("Using hwaccel: %s", media_info_hwaccel());
@@ -272,6 +276,7 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
 void media_info_reset(void) {
     audio_device_driver_line[0] = '\0';
     audio_device_format_line[0] = '\0';
+    audio_passthrough_line[0] = '\0';
     media_info_vout_line[0] = '\0';
     active_hwaccel = NULL;
     playback_stats_cached[0] = '\0';
@@ -296,6 +301,18 @@ void media_info_note_audio_format(unsigned fmt, int channels, int freq,
              "fmt=0x%x %dch @ %dHz, buffer=%d frames", fmt, channels, freq,
              buffer_frames);
     log_info("SDL audio device format: %s\n", audio_device_format_line);
+}
+
+void media_info_clear_audio_passthrough(void) {
+    audio_passthrough_line[0] = '\0';
+}
+
+void media_info_note_audio_passthrough(const char *codec, int hd, int channels,
+                                       int freq) {
+    snprintf(audio_passthrough_line, sizeof(audio_passthrough_line),
+             "IEC 61937 (%s%s), %dch @ %d Hz", codec ? codec : "(unknown)",
+             hd ? " HD" : "", channels, freq);
+    log_info("Audio passthrough: %s\n", audio_passthrough_line);
 }
 
 void media_info_note_video_output(int width, int height, AVRational sar,
