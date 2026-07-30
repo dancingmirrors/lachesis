@@ -1374,11 +1374,26 @@ static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
     return ret;
 }
 
+static bool frames_alias(const AVFrame *a, const AVFrame *b) {
+    if (!a || !b) {
+        return false;
+    }
+    if (a == b) {
+        return true;
+    }
+    for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
+        if (a->buf[i] && b->buf[i] && a->buf[i]->buffer == b->buf[i]->buffer) {
+            return true;
+        }
+    }
+    return a->data[0] && a->data[0] == b->data[0];
+}
+
 static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
                                             struct pl_frame *out,
                                             const struct pl_frame *cur,
-                                            AVFrame *frame) {
-    if (!frame) {
+                                            AVFrame *frame, const AVFrame *self) {
+    if (!frame || frames_alias(frame, self)) {
         return NULL;
     }
     if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, out,
@@ -1736,9 +1751,9 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     if (pl_params.deinterlace_params &&
         pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
         pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
-                                      ctx->deint_prev);
+                                      ctx->deint_prev, frame);
         pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
-                                      params->next_frame);
+                                      params->next_frame, frame);
         mapped_prev = pl_frame.prev != NULL;
         mapped_next = pl_frame.next != NULL;
     }
