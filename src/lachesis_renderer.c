@@ -1069,6 +1069,7 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     struct pl_log_params vk_log_params = {
         .log_cb = vk_log_cb,
+        /* Not PL_LOG_WARN due to useless spam. */
         .log_level = enable_debug(opt) ? PL_LOG_DEBUG : PL_LOG_ERR,
         .log_priv = renderer,
     };
@@ -1388,6 +1389,11 @@ static void apply_deinterlace(struct pl_frame *pl_frame,
         return;
     }
 
+    if (!(frame->flags & AV_FRAME_FLAG_INTERLACED)) {
+        pl_params->deinterlace_params = NULL;
+        return;
+    }
+
     /* See libplacebo's validate_structs() if there are mysterious failures. */
     enum pl_field first = (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? PL_FIELD_TOP : PL_FIELD_BOTTOM;
     pl_frame->field = first;
@@ -1541,7 +1547,7 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                 .repr = {
                     .sys = PL_COLOR_SYSTEM_RGB,
                     .levels = PL_COLOR_LEVELS_FULL,
-                    .alpha = PL_ALPHA_INDEPENDENT,
+                    .alpha = PL_ALPHA_PREMULTIPLIED,
                 },
                 .color = pl_color_space_srgb,
                 .parts = osd_part,
