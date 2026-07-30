@@ -1857,6 +1857,8 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
     pl_tex cap_tex = NULL;
     struct pl_tex_params cap_params;
     struct pl_tex_transfer_params xfer;
+    struct pl_frame pl_prev, pl_next;
+    bool mapped_prev = false, mapped_next = false;
     int ret = 0;
 
     ret = convert_frame(renderer, frame);
@@ -1904,6 +1906,16 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
     setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
     apply_deinterlace(&pl_frame, &pl_params, frame, params);
 
+    if (pl_params.deinterlace_params &&
+        pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
+        pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
+                                      ctx->deint_prev, frame);
+        pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
+                                      params->next_frame, frame);
+        mapped_prev = pl_frame.prev != NULL;
+        mapped_next = pl_frame.next != NULL;
+    }
+
     if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
         ret = AVERROR_EXTERNAL;
         goto out;
@@ -1922,6 +1934,12 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
 out:
     if (cap_tex) {
         pl_tex_destroy(ctx->placebo_vulkan->gpu, &cap_tex);
+    }
+    if (mapped_prev) {
+        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_prev);
+    }
+    if (mapped_next) {
+        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_next);
     }
     pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_frame);
     return ret;
