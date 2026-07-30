@@ -1394,6 +1394,76 @@ static void apply_deinterlace(struct pl_frame *pl_frame,
     pl_frame->first_field = first;
 }
 
+static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target,
+                                 pl_rotation rotation) {
+    pl_tex tex = target->num_planes > 0 ? target->planes[0].texture : NULL;
+    pl_rect2df *dst = &target->crop;
+    pl_rect2df *src = &image->crop;
+    float dst_w = dst->x1 - dst->x0, dst_h = dst->y1 - dst->y0;
+    float src_w = src->x1 - src->x0, src_h = src->y1 - src->y0;
+    float sx = src->x0, sy = src->y0;
+    float u0, u1, v0, v1;
+    float p0, p1, q0, q1;
+    pl_rect2df vis;
+
+    if (!tex || dst_w <= 0 || dst_h <= 0 || src_w == 0 || src_h == 0) {
+        return;
+    }
+    vis = (pl_rect2df){
+        .x0 = FFMAX(dst->x0, 0.0f),
+        .y0 = FFMAX(dst->y0, 0.0f),
+        .x1 = FFMIN(dst->x1, (float)tex->params.w),
+        .y1 = FFMIN(dst->y1, (float)tex->params.h),
+    };
+    if (vis.x1 <= vis.x0 || vis.y1 <= vis.y0) {
+        return;
+    }
+    if (vis.x0 == dst->x0 && vis.y0 == dst->y0 &&
+        vis.x1 == dst->x1 && vis.y1 == dst->y1) {
+        return;
+    }
+
+    u0 = (vis.x0 - dst->x0) / dst_w;
+    u1 = (vis.x1 - dst->x0) / dst_w;
+    v0 = (vis.y0 - dst->y0) / dst_h;
+    v1 = (vis.y1 - dst->y0) / dst_h;
+
+    switch (rotation) {
+    case PL_ROTATION_90:
+        p0 = v0;
+        p1 = v1;
+        q0 = 1.0f - u1;
+        q1 = 1.0f - u0;
+        break;
+    case PL_ROTATION_180:
+        p0 = 1.0f - u1;
+        p1 = 1.0f - u0;
+        q0 = 1.0f - v1;
+        q1 = 1.0f - v0;
+        break;
+    case PL_ROTATION_270:
+        p0 = 1.0f - v1;
+        p1 = 1.0f - v0;
+        q0 = u0;
+        q1 = u1;
+        break;
+    default:
+        p0 = u0;
+        p1 = u1;
+        q0 = v0;
+        q1 = v1;
+        break;
+    }
+
+    *src = (pl_rect2df){
+        .x0 = sx + p0 * src_w,
+        .y0 = sy + q0 * src_h,
+        .x1 = sx + p1 * src_w,
+        .y1 = sy + q1 * src_h,
+    };
+    *dst = vis;
+}
+
 static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                          struct pl_frame *target, struct pl_render_params *pl_params,
                          RenderParams *params, struct pl_overlay *osd_overlay,
@@ -1401,11 +1471,13 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     SDL_Rect *rect = &params->target_rect;
     target->crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
 
-    pl_rotation rotation = pl_rotation_normalize(pl_frame->rotation + params->rotate / 90);
+    pl_rotation rotation = pl_rotation_normalize(params->rotate / 90);
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
         pl_frame->rotation = PL_ROTATION_0;
     } else {
         pl_frame->rotation = rotation;
+        clip_crops_to_target(pl_frame, target,
+                             pl_rotation_normalize(rotation - target->rotation));
     }
     switch (params->video_background_type) {
     case VIDEO_BACKGROUND_TILES:
