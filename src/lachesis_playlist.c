@@ -20,19 +20,36 @@
 
 #include "lachesis_playlist.h"
 
+#include <dirent.h>
 #include <errno.h>
-#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+/* clang-format off */
+#include <io.h>
+#include <windows.h>
+/* clang-format on */
+#else
+#include <unistd.h>
+#endif
 
 #include <libavformat/avio.h>
 #include <libavutil/avstring.h>
-#include <libavutil/avutil.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
+#include <libavutil/lfg.h>
+#include <libavutil/log.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
+#include <libavutil/random_seed.h>
 
 #include "lachesis_archive.h"
 #include "lachesis_log.h"
+#include "lachesis_options.h"
 
 #define UNSAFE_MAX_BYTES (1 << 20)
 #define UNSAFE_MAX_ENTRIES 10000
@@ -84,8 +101,12 @@ static int has_url_scheme(const char *s) {
     return 0;
 }
 
+static int is_separator(char c) {
+    return c == '/' || c == '\\';
+}
+
 static int is_absolute_path(const char *p) {
-    if (p[0] == '/' || p[0] == '\\') {
+    if (is_separator(p[0])) {
         return 1;
     }
     if (is_alpha(p[0]) && p[1] == ':') {
@@ -95,8 +116,34 @@ static int is_absolute_path(const char *p) {
     return 0;
 }
 
+static int is_printable(const char *s, size_t len) {
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+
+        if (c < 0x20 || c == 0x7f) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 const char *playlist_protocol_whitelist(const char *url) {
-    const char *proto = avio_find_protocol_name(url);
+    const char *proto;
+    char scheme[16];
+
+    if (has_url_scheme(url)) {
+        size_t len = strcspn(url, ":");
+
+        if (len >= sizeof(scheme)) {
+            return NULL;
+        }
+        memcpy(scheme, url, len);
+        scheme[len] = '\0';
+        proto = scheme;
+    } else {
+        proto = avio_find_protocol_name(url);
+    }
 
     if (!proto) {
         return NULL;
@@ -110,15 +157,705 @@ const char *playlist_protocol_whitelist(const char *url) {
     return NULL;
 }
 
-int is_supported_playlist(const char *path) {
-    const char *ext = strrchr(path, '.');
-    if (!ext) {
+static PlaylistEntry *playlist_entries;
+
+int playlist_size;
+int playlist_pos;
+int playlist_nav_dir = 1;
+
+const PlaylistEntry *playlist_get(int pos) {
+    if (pos < 0 || pos >= playlist_size) {
+        return NULL;
+    }
+
+    return &playlist_entries[pos];
+}
+
+static int playlist_add(char *display_path, char *archive_path, char *entry_name,
+                        int from_playlist) {
+    PlaylistEntry *tmp;
+
+    if (!display_path || (!!archive_path != !!entry_name)) {
+        goto fail;
+    }
+    tmp = av_realloc_array(playlist_entries, playlist_size + 1,
+                           sizeof(*playlist_entries));
+    if (!tmp) {
+        goto fail;
+    }
+    playlist_entries = tmp;
+
+    PlaylistEntry *e = &playlist_entries[playlist_size++];
+    e->display_path = display_path;
+    e->archive_path = archive_path;
+    e->entry_name = entry_name;
+    e->from_playlist = from_playlist;
+
+    return 0;
+
+fail:
+    av_free(display_path);
+    av_free(archive_path);
+    av_free(entry_name);
+
+    return AVERROR(ENOMEM);
+}
+
+static int playlist_add_file(const char *path, int from_playlist) {
+    return playlist_add(av_strdup(path), NULL, NULL, from_playlist);
+}
+
+static int playlist_add_archive_entry(const char *archive_path,
+                                      const char *entry_name) {
+    return playlist_add(av_asprintf("%s|%s", archive_path, entry_name),
+                        av_strdup(archive_path), av_strdup(entry_name), 0);
+}
+
+static void playlist_truncate(int size) {
+    while (playlist_size > size) {
+        PlaylistEntry *e = &playlist_entries[--playlist_size];
+
+        av_freep(&e->display_path);
+        av_freep(&e->archive_path);
+        av_freep(&e->entry_name);
+    }
+}
+
+void playlist_remove_at(int pos) {
+    if (pos < 0 || pos >= playlist_size) {
+        return;
+    }
+
+    PlaylistEntry *e = &playlist_entries[pos];
+    av_free(e->display_path);
+    av_free(e->archive_path);
+    av_free(e->entry_name);
+    memmove(e, e + 1, (playlist_size - pos - 1) * sizeof(*playlist_entries));
+    playlist_size--;
+}
+
+void playlist_clear(void) {
+    playlist_truncate(0);
+    av_freep(&playlist_entries);
+}
+
+/* A Fisher-Yates shuffle. */
+void playlist_shuffle(void) {
+    if (playlist_size < 2) {
+        return;
+    }
+
+    AVLFG lfg;
+    av_lfg_init(&lfg, av_get_random_seed());
+
+    for (int i = playlist_size - 1; i > 0; i--) {
+        int j = av_lfg_get(&lfg) % (unsigned)(i + 1);
+        PlaylistEntry tmp = playlist_entries[i];
+        playlist_entries[i] = playlist_entries[j];
+        playlist_entries[j] = tmp;
+    }
+}
+
+void playlist_reverse(void) {
+    if (playlist_size < 2) {
+        return;
+    }
+
+    for (int i = 0, j = playlist_size - 1; i < j; i++, j--) {
+        PlaylistEntry tmp = playlist_entries[i];
+        playlist_entries[i] = playlist_entries[j];
+        playlist_entries[j] = tmp;
+    }
+}
+
+static int path_is_readable(const char *path) {
+#if defined(_WIN32)
+    return _access(path, 4) == 0;
+#else
+    return access(path, R_OK) == 0;
+#endif
+}
+
+int playlist_entry_is_reachable(int pos) {
+    const PlaylistEntry *e = playlist_get(pos);
+    const char *path;
+    const char *proto;
+    struct stat st;
+    int err;
+
+    if (!e) {
         return 0;
     }
-    ext++;
+    path = e->archive_path ? e->archive_path : e->display_path;
+    if (!path) {
+        return 1;
+    }
+    proto = avio_find_protocol_name(path);
+    if (!proto || strcmp(proto, "file")) {
+        return 1;
+    }
+    if (!strncmp(path, "file:", 5)) {
+        path += 5;
+    }
 
-    /* XXX: Finish me. */
-    return av_strcasecmp(ext, "m3u") == 0 || av_strcasecmp(ext, "m3u8") == 0;
+    if (stat(path, &st) != 0) {
+        err = AVERROR(errno);
+    } else if (S_ISDIR(st.st_mode)) {
+        err = AVERROR(EISDIR);
+    } else if (!path_is_readable(path)) {
+        err = AVERROR(errno);
+    } else {
+        return 1;
+    }
+    av_log(NULL, AV_LOG_ERROR, "%s: %s\n", e->display_path, av_err2str(err));
+
+    return 0;
+}
+
+typedef struct PlaylistParser PlaylistParser;
+typedef int (*PlaylistSink)(PlaylistParser *p, const char *location);
+
+#define PLAYLIST_DEMUXED (1 << 0)
+#define PLAYLIST_DIRECTIVES (1 << 1)
+
+typedef struct PlaylistFormat {
+    const char *name;
+    const char *const *extensions;
+    int (*parse)(PlaylistParser *p);
+    int flags;
+} PlaylistFormat;
+
+struct PlaylistParser {
+    const char *name;
+    const PlaylistFormat *fmt;
+    char *buf;
+    size_t len;
+    size_t pos;
+    int lineno;
+    int warnings;
+    int count;
+    int stopped;
+    PlaylistSink sink;
+    void *opaque;
+};
+
+static void parser_init(PlaylistParser *p, const char *name,
+                        const PlaylistFormat *fmt, char *buf,
+                        size_t len, PlaylistSink sink, void *opaque) {
+    memset(p, 0, sizeof(*p));
+    p->name = name;
+    p->fmt = fmt;
+    p->buf = buf;
+    p->len = len;
+    /* A UTF-8 BOM. */
+    p->pos = (len >= 3 && !memcmp(buf, "\xef\xbb\xbf", 3)) ? 3 : 0;
+    p->sink = sink;
+    p->opaque = opaque;
+}
+
+static void parser_skip(PlaylistParser *p, const char *why, const char *what) {
+    if (p->warnings++ >= UNSAFE_MAX_WARNINGS) {
+        return;
+    }
+    if (p->lineno) {
+        log_warn("%s:%d: skipping %s%s%s.\n", p->name, p->lineno, why,
+                 what ? ": " : "", what ? what : "");
+    } else {
+        log_warn("%s: skipping %s%s%s.\n", p->name, why,
+                 what ? ": " : "", what ? what : "");
+    }
+}
+
+static void parser_summarize(const PlaylistParser *p) {
+    if (p->warnings > UNSAFE_MAX_WARNINGS) {
+        log_warn("%s: %d further entries were skipped.\n",
+                 p->name, p->warnings - UNSAFE_MAX_WARNINGS);
+    }
+}
+
+static char *parser_line(PlaylistParser *p) {
+    while (p->pos < p->len) {
+        size_t end = p->pos;
+        while (end < p->len && p->buf[end] != '\n') {
+            end++;
+        }
+
+        char *line = p->buf + p->pos;
+        size_t line_len = end - p->pos;
+        p->pos = end < p->len ? end + 1 : p->len;
+        p->lineno++;
+
+        if (line_len && line[line_len - 1] == '\r') {
+            /* Tolerate CRLF. */
+            line_len--;
+        }
+        while (line_len && (unsigned char)line[0] <= ' ') {
+            line++;
+            line_len--;
+        }
+        while (line_len && (unsigned char)line[line_len - 1] <= ' ') {
+            line_len--;
+        }
+        line[line_len] = '\0';
+
+        if (line_len) {
+            return line;
+        }
+    }
+
+    return NULL;
+}
+
+static int parser_add(PlaylistParser *p, const char *location) {
+    size_t len = strlen(location);
+    int ret;
+
+    if (!len) {
+        return 0;
+    }
+    if (len > UNSAFE_MAX_LINE || !is_printable(location, len)) {
+        parser_skip(p, "a malformed entry", NULL);
+        return 0;
+    }
+    /* "\\host\share" and "//host/share" would leak credentials to a peer. */
+    if (is_separator(location[0]) && is_separator(location[1])) {
+        parser_skip(p, "a network share", location);
+        return 0;
+    }
+    if (p->count >= UNSAFE_MAX_ENTRIES) {
+        log_warn("%s: stopping after %d entries.\n", p->name, UNSAFE_MAX_ENTRIES);
+        p->stopped = 1;
+        return 0;
+    }
+
+    ret = p->sink(p, location);
+    if (ret > 0) {
+        p->count++;
+    }
+
+    return ret;
+}
+
+#define XML_NAME_MAX 32
+#define XML_DEPTH_MAX 16
+
+typedef struct XmlScanner {
+    const char *pos;
+    const char *end;
+} XmlScanner;
+
+typedef struct XmlElement {
+    char name[XML_NAME_MAX];
+    const char *attrs;
+    size_t attrs_len;
+    int closing;
+    int empty;
+} XmlElement;
+
+static void xml_name(char *dst, size_t dst_size, const char *src, size_t len) {
+    for (size_t i = len; i > 0; i--) {
+        if (src[i - 1] == ':') {
+            src += i;
+            len -= i;
+            break;
+        }
+    }
+    if (len > dst_size - 1) {
+        len = dst_size - 1;
+    }
+    for (size_t i = 0; i < len; i++) {
+        dst[i] = (char)av_tolower((unsigned char)src[i]);
+    }
+    dst[len] = '\0';
+}
+
+static const char *xml_find(const char *s, size_t len, const char *marker) {
+    size_t n = strlen(marker);
+
+    while (len >= n) {
+        const char *hit = memchr(s, marker[0], len - n + 1);
+        if (!hit) {
+            break;
+        }
+        if (!memcmp(hit, marker, n)) {
+            return hit;
+        }
+        len -= (size_t)(hit - s) + 1;
+        s = hit + 1;
+    }
+
+    return NULL;
+}
+
+static void xml_skip_past(XmlScanner *s, const char *marker) {
+    const char *hit = xml_find(s->pos, (size_t)(s->end - s->pos), marker);
+
+    s->pos = hit ? hit + strlen(marker) : s->end;
+}
+
+static size_t utf8_encode(char *out, size_t out_size, unsigned cp) {
+    size_t n = cp < 0x80 ? 1 : cp < 0x800 ? 2
+        : cp < 0x10000                    ? 3
+                                          : 4;
+
+    if (n > out_size) {
+        return 0;
+    }
+    switch (n) {
+    case 1:
+        out[0] = (char)cp;
+        break;
+    case 2:
+        out[0] = (char)(0xc0 | (cp >> 6));
+        out[1] = (char)(0x80 | (cp & 0x3f));
+        break;
+    case 3:
+        out[0] = (char)(0xe0 | (cp >> 12));
+        out[1] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[2] = (char)(0x80 | (cp & 0x3f));
+        break;
+    default:
+        out[0] = (char)(0xf0 | (cp >> 18));
+        out[1] = (char)(0x80 | ((cp >> 12) & 0x3f));
+        out[2] = (char)(0x80 | ((cp >> 6) & 0x3f));
+        out[3] = (char)(0x80 | (cp & 0x3f));
+        break;
+    }
+
+    return n;
+}
+
+static const struct {
+    const char *name;
+    char c;
+} xml_entities[] = {
+    {"amp", '&'},
+    {"lt", '<'},
+    {"gt", '>'},
+    {"quot", '"'},
+    {"apos", '\''},
+};
+
+static void xml_decode(const char *src, size_t len, char *out, size_t out_size) {
+    size_t o = 0;
+
+    for (size_t i = 0; i < len && o + 1 < out_size;) {
+        unsigned cp = 0;
+        size_t j;
+
+        if (src[i] != '&') {
+            out[o++] = src[i++];
+            continue;
+        }
+        for (j = i + 1; j < len && j - i <= 12 && src[j] != ';'; j++) {
+            ;
+        }
+        if (j >= len || src[j] != ';') {
+            out[o++] = src[i++];
+            continue;
+        }
+
+        const char *name = src + i + 1;
+        size_t name_len = j - i - 1;
+
+        if (name_len > 1 && name[0] == '#') {
+            int hex = name[1] == 'x' || name[1] == 'X';
+            size_t k = hex ? 2 : 1;
+
+            for (; k < name_len && cp <= 0x10ffff; k++) {
+                int digit;
+
+                if (name[k] >= '0' && name[k] <= '9') {
+                    digit = name[k] - '0';
+                } else if (hex && (name[k] | 0x20) >= 'a' && (name[k] | 0x20) <= 'f') {
+                    digit = (name[k] | 0x20) - 'a' + 10;
+                } else {
+                    break;
+                }
+                cp = cp * (hex ? 16 : 10) + (unsigned)digit;
+            }
+            if (k != name_len || !cp || cp > 0x10ffff ||
+                (cp >= 0xd800 && cp <= 0xdfff)) {
+                out[o++] = src[i++];
+                continue;
+            }
+        } else {
+            for (size_t k = 0; k < FF_ARRAY_ELEMS(xml_entities); k++) {
+                if (name_len == strlen(xml_entities[k].name) &&
+                    !memcmp(name, xml_entities[k].name, name_len)) {
+                    cp = (unsigned char)xml_entities[k].c;
+                    break;
+                }
+            }
+            if (!cp) {
+                out[o++] = src[i++];
+                continue;
+            }
+        }
+
+        size_t n = utf8_encode(out + o, out_size - o - 1, cp);
+        if (!n) {
+            break;
+        }
+        o += n;
+        i = j + 1;
+    }
+    out[o] = '\0';
+}
+
+static int xml_next(XmlScanner *s, XmlElement *el) {
+    while (s->pos < s->end) {
+        const char *lt = memchr(s->pos, '<', (size_t)(s->end - s->pos));
+        if (!lt) {
+            break;
+        }
+        s->pos = lt + 1;
+
+        size_t left = (size_t)(s->end - s->pos);
+        if (left >= 3 && !memcmp(s->pos, "!--", 3)) {
+            xml_skip_past(s, "-->");
+            continue;
+        }
+        if (left >= 8 && !memcmp(s->pos, "![CDATA[", 8)) {
+            xml_skip_past(s, "]]>");
+            continue;
+        }
+        if (left && (*s->pos == '?' || *s->pos == '!')) {
+            xml_skip_past(s, ">");
+            continue;
+        }
+
+        if (!left) {
+            break;
+        }
+        el->closing = *s->pos == '/';
+        if (el->closing) {
+            s->pos++;
+        }
+
+        const char *name = s->pos;
+        while (s->pos < s->end && (unsigned char)*s->pos > ' ' &&
+               *s->pos != '>' && *s->pos != '/') {
+            s->pos++;
+        }
+        if (s->pos == name) {
+            /* A stray '<'. */
+            continue;
+        }
+        xml_name(el->name, sizeof(el->name), name, (size_t)(s->pos - name));
+
+        const char *attrs = s->pos;
+        char quote = 0;
+        int at_value = 0;
+        while (s->pos < s->end) {
+            char c = *s->pos;
+
+            if (quote) {
+                if (c == quote) {
+                    quote = 0;
+                    at_value = 0;
+                }
+            } else if (c == '>') {
+                break;
+            } else if (c == '=') {
+                at_value = 1;
+            } else if (at_value && (c == '"' || c == '\'')) {
+                quote = c;
+            } else if ((unsigned char)c > ' ') {
+                at_value = 0;
+            }
+            s->pos++;
+        }
+        el->attrs = attrs;
+        el->attrs_len = (size_t)(s->pos - attrs);
+        if (s->pos < s->end) {
+            s->pos++;
+        }
+
+        el->empty = el->closing;
+        for (size_t i = el->attrs_len; i > 0 && !el->empty; i--) {
+            if ((unsigned char)attrs[i - 1] > ' ') {
+                if (attrs[i - 1] == '/') {
+                    el->empty = 1;
+                    el->attrs_len = i - 1;
+                }
+                break;
+            }
+        }
+
+        return 1;
+    }
+    s->pos = s->end;
+
+    return 0;
+}
+
+static int xml_attr(const XmlElement *el, const char *want, char *out,
+                    size_t out_size) {
+    const char *p = el->attrs;
+    const char *end = el->attrs + el->attrs_len;
+
+    while (p < end) {
+        while (p < end && (unsigned char)*p <= ' ') {
+            p++;
+        }
+
+        const char *name = p;
+        while (p < end && (unsigned char)*p > ' ' && *p != '=') {
+            p++;
+        }
+        size_t name_len = (size_t)(p - name);
+        if (!name_len) {
+            p++;
+            continue;
+        }
+
+        while (p < end && (unsigned char)*p <= ' ') {
+            p++;
+        }
+        if (p >= end || *p != '=') {
+            /* An attribute with no value. */
+            continue;
+        }
+        p++;
+        while (p < end && (unsigned char)*p <= ' ') {
+            p++;
+        }
+
+        const char *value = p;
+        size_t value_len;
+        if (p < end && (*p == '"' || *p == '\'')) {
+            char quote = *p++;
+            value = p;
+            while (p < end && *p != quote) {
+                p++;
+            }
+            value_len = (size_t)(p - value);
+            if (p < end) {
+                p++;
+            }
+        } else {
+            while (p < end && (unsigned char)*p > ' ' && *p != '>') {
+                p++;
+            }
+            value_len = (size_t)(p - value);
+        }
+
+        if (name_len >= 5 && !av_strncasecmp(name, "xmlns", 5) &&
+            (name_len == 5 || name[5] == ':')) {
+            continue;
+        }
+
+        char lower[XML_NAME_MAX];
+        xml_name(lower, sizeof(lower), name, name_len);
+        if (!strcmp(lower, want)) {
+            xml_decode(value, value_len, out, out_size);
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static void xml_text(const XmlScanner *s, char *out, size_t out_size) {
+    const char *start = s->pos;
+    const char *stop;
+
+    while (start < s->end && (unsigned char)*start <= ' ') {
+        start++;
+    }
+    int cdata = (size_t)(s->end - start) >= 9 && !memcmp(start, "<![CDATA[", 9);
+
+    if (cdata) {
+        start += 9;
+        stop = xml_find(start, (size_t)(s->end - start), "]]>");
+    } else {
+        stop = memchr(start, '<', (size_t)(s->end - start));
+    }
+    if (!stop) {
+        stop = s->end;
+    }
+
+    while (start < stop && (unsigned char)*start <= ' ') {
+        start++;
+    }
+    while (stop > start && (unsigned char)stop[-1] <= ' ') {
+        stop--;
+    }
+
+    if (cdata) {
+        size_t len = FFMIN((size_t)(stop - start), out_size - 1);
+
+        memcpy(out, start, len);
+        out[len] = '\0';
+    } else {
+        xml_decode(start, (size_t)(stop - start), out, out_size);
+    }
+}
+
+typedef struct XmlRule {
+    const char *element;
+    const char *attribute;
+    const char *parent;
+} XmlRule;
+
+static int xml_enclosed_by(const char stack[][XML_NAME_MAX], int depth,
+                           const char *name) {
+    for (int i = 0; i < depth; i++) {
+        if (!strcmp(stack[i], name)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_xml(PlaylistParser *p, const XmlRule *rules) {
+    XmlScanner s = {p->buf + p->pos, p->buf + p->len};
+    char stack[XML_DEPTH_MAX][XML_NAME_MAX];
+    char location[UNSAFE_MAX_LINE + 2];
+    XmlElement el;
+    int depth = 0;
+
+    while (!p->stopped && xml_next(&s, &el)) {
+        if (el.closing) {
+            for (int i = depth; i > 0; i--) {
+                if (!strcmp(stack[i - 1], el.name)) {
+                    depth = i - 1;
+                    break;
+                }
+            }
+            continue;
+        }
+
+        for (const XmlRule *r = rules; r->element; r++) {
+            int ret;
+
+            if (strcmp(el.name, r->element) ||
+                (r->parent && !xml_enclosed_by(stack, depth, r->parent))) {
+                continue;
+            }
+            if (r->attribute) {
+                if (!xml_attr(&el, r->attribute, location, sizeof(location))) {
+                    continue;
+                }
+            } else if (el.empty) {
+                continue;
+            } else {
+                xml_text(&s, location, sizeof(location));
+            }
+            if ((ret = parser_add(p, location)) < 0) {
+                return ret;
+            }
+            break;
+        }
+
+        if (!el.empty && depth < XML_DEPTH_MAX) {
+            av_strlcpy(stack[depth++], el.name, sizeof(stack[0]));
+        }
+    }
+
+    return 0;
 }
 
 static int is_hls_tag(const char *line) {
@@ -137,259 +874,295 @@ static int is_hls_tag(const char *line) {
     return 0;
 }
 
-static int line_is_printable(const char *s, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        unsigned char c = (unsigned char)s[i];
+static int parse_lines(PlaylistParser *p) {
+    char *line;
 
-        if (c < 0x20 || c == 0x7f) {
-            return 0;
-        }
-    }
+    while (!p->stopped && (line = parser_line(p))) {
+        int ret;
 
-    return 1;
-}
-
-typedef struct M3uReader {
-    const char *name;
-    char *buf;
-    size_t len;
-    size_t pos;
-    int lineno;
-    int warnings;
-    int hls;
-} M3uReader;
-
-static void reader_init(M3uReader *r, const char *name, char *buf, size_t len) {
-    r->name = name;
-    r->buf = buf;
-    r->len = len;
-    /* A UTF-8 BOM. */
-    r->pos = (len >= 3 && !memcmp(buf, "\xef\xbb\xbf", 3)) ? 3 : 0;
-    r->lineno = 0;
-    r->warnings = 0;
-    r->hls = 0;
-}
-
-static void reader_skip(M3uReader *r, const char *why, const char *what) {
-    if (r->warnings++ >= UNSAFE_MAX_WARNINGS) {
-        return;
-    }
-    if (what) {
-        log_warn("%s:%d: skipping %s: '%s'.\n", r->name, r->lineno, why, what);
-    } else {
-        log_warn("%s:%d: skipping %s.\n", r->name, r->lineno, why);
-    }
-}
-
-static void reader_summarize(const M3uReader *r) {
-    if (r->warnings > UNSAFE_MAX_WARNINGS) {
-        log_warn("%s: %d further entries were skipped.\n",
-                 r->name, r->warnings - UNSAFE_MAX_WARNINGS);
-    }
-}
-
-static char *reader_next(M3uReader *r) {
-    while (r->pos < r->len) {
-        size_t end = r->pos;
-        while (end < r->len && r->buf[end] != '\n') {
-            end++;
-        }
-
-        char *line = r->buf + r->pos;
-        size_t line_len = end - r->pos;
-        r->pos = end < r->len ? end + 1 : r->len;
-        r->lineno++;
-
-        if (line_len && line[line_len - 1] == '\r') {
-            /* Tolerate CRLF. */
-            line_len--;
-        }
-        while (line_len && (unsigned char)line[0] <= ' ') {
-            line++;
-            line_len--;
-        }
-        while (line_len && (unsigned char)line[line_len - 1] <= ' ') {
-            line_len--;
-        }
-        line[line_len] = '\0';
-
-        if (!line_len) {
-            continue;
-        }
         if (line[0] == '#') {
             if (is_hls_tag(line)) {
-                r->hls = 1;
-                return NULL;
+                return AVERROR_INVALIDDATA;
             }
             /* The #EXTINF title is intentionally dropped. */
             continue;
         }
-        if (line_len > UNSAFE_MAX_LINE || !line_is_printable(line, line_len)) {
-            reader_skip(r, "a malformed entry", NULL);
+        if ((p->fmt->flags & PLAYLIST_DIRECTIVES) &&
+            (!av_strcasecmp(line, "--stop--") || !av_strcasecmp(line, "--live--"))) {
             continue;
         }
-        /* "\\host\share" and "//host/share" would leak credentials to a peer. */
-        if ((line[0] == '\\' || line[0] == '/') && line[1] == line[0]) {
-            reader_skip(r, "a network share", line);
+        if ((ret = parser_add(p, line)) < 0) {
+            return ret;
+        }
+    }
+
+    return 0;
+}
+
+#if defined(_WIN32)
+static char *env_lookup(const char *name, size_t name_len) {
+    wchar_t wname[128];
+    wchar_t wvalue[1024];
+    char *out;
+    int n;
+
+    n = MultiByteToWideChar(CP_UTF8, 0, name, (int)name_len, wname,
+                            FF_ARRAY_ELEMS(wname) - 1);
+    if (n <= 0) {
+        return NULL;
+    }
+    wname[n] = L'\0';
+
+    DWORD got = GetEnvironmentVariableW(wname, wvalue, FF_ARRAY_ELEMS(wvalue));
+    if (!got || got >= FF_ARRAY_ELEMS(wvalue)) {
+        return NULL;
+    }
+
+    n = WideCharToMultiByte(CP_UTF8, 0, wvalue, -1, NULL, 0, NULL, NULL);
+    if (n <= 0 || !(out = av_malloc((size_t)n))) {
+        return NULL;
+    }
+    if (WideCharToMultiByte(CP_UTF8, 0, wvalue, -1, out, n, NULL, NULL) <= 0) {
+        av_freep(&out);
+    }
+
+    return out;
+}
+
+static int expand_env_vars(const char *src, char *out, size_t out_size) {
+    size_t o = 0;
+    int expanded = 0;
+
+    for (size_t i = 0; src[i];) {
+        const char *close = src[i] == '%' ? strchr(src + i + 1, '%') : NULL;
+        char *value = NULL;
+
+        if (close && close > src + i + 1) {
+            value = env_lookup(src + i + 1, (size_t)(close - src) - i - 1);
+        }
+        if (!value) {
+            if (o + 1 >= out_size) {
+                return 0;
+            }
+            out[o++] = src[i++];
             continue;
         }
 
-        return line;
+        size_t len = strlen(value);
+        if (o + len + 1 >= out_size) {
+            av_free(value);
+            return 0;
+        }
+        memcpy(out + o, value, len);
+        av_free(value);
+        o += len;
+        i = (size_t)(close - src) + 1;
+        expanded = 1;
+    }
+    out[o] = '\0';
+
+    return expanded;
+}
+#endif
+
+typedef struct PlsEntry {
+    long index;
+    const char *location;
+} PlsEntry;
+
+static int pls_cmp(const void *a, const void *b) {
+    long ia = ((const PlsEntry *)a)->index;
+    long ib = ((const PlsEntry *)b)->index;
+
+    return ia < ib ? -1 : ia > ib;
+}
+
+static int parse_pls(PlaylistParser *p) {
+    PlsEntry *list = NULL;
+    int n = 0, cap = 0, ret = 0;
+    char *line;
+
+    while ((line = parser_line(p))) {
+        if (line[0] == '[' || line[0] == ';' || line[0] == '#') {
+            continue;
+        }
+
+        char *eq = strchr(line, '=');
+        if (!eq) {
+            continue;
+        }
+        char *value = eq + 1;
+        while (eq > line && (unsigned char)eq[-1] <= ' ') {
+            eq--;
+        }
+        *eq = '\0';
+        while (*value && (unsigned char)*value <= ' ') {
+            value++;
+        }
+        if (av_strncasecmp(line, "File", 4)) {
+            /* TitleN and LengthN are intentionally dropped. */
+            continue;
+        }
+
+        char *rest;
+        long index = strtol(line + 4, &rest, 10);
+        if (rest == line + 4 || *rest || index < 0) {
+            continue;
+        }
+
+        if (n >= cap) {
+            int new_cap = cap ? cap * 2 : 16;
+            PlsEntry *tmp = av_realloc_array(list, new_cap, sizeof(*list));
+            if (!tmp) {
+                ret = AVERROR(ENOMEM);
+                goto done;
+            }
+            list = tmp;
+            cap = new_cap;
+        }
+        list[n].index = index;
+        list[n].location = value;
+        n++;
+    }
+
+    if (n > 1) {
+        qsort(list, n, sizeof(*list), pls_cmp);
+    }
+
+    p->lineno = 0;
+
+    for (int i = 0; i < n && !p->stopped; i++) {
+        const char *location = list[i].location;
+#if defined(_WIN32)
+        char expanded[UNSAFE_MAX_LINE + 1];
+
+        if (expand_env_vars(location, expanded, sizeof(expanded))) {
+            location = expanded;
+        }
+#endif
+        if ((ret = parser_add(p, location)) < 0) {
+            goto done;
+        }
+    }
+    ret = 0;
+
+done:
+    av_free(list);
+
+    return ret;
+}
+
+static int parse_xspf(PlaylistParser *p) {
+    static const XmlRule rules[] = {
+        {"location", NULL, "track"},
+        {NULL, NULL, NULL},
+    };
+
+    return parse_xml(p, rules);
+}
+
+static int parse_asx(PlaylistParser *p) {
+    static const XmlRule rules[] = {
+        {"ref", "href", NULL},
+        {NULL, NULL, NULL},
+    };
+
+    return parse_xml(p, rules);
+}
+
+static int parse_wpl(PlaylistParser *p) {
+    static const XmlRule rules[] = {
+        {"media", "src", NULL},
+        {NULL, NULL, NULL},
+    };
+
+    return parse_xml(p, rules);
+}
+
+static int parse_b4s(PlaylistParser *p) {
+    static const XmlRule rules[] = {
+        {"entry", "playstring", NULL},
+        {NULL, NULL, NULL},
+    };
+
+    return parse_xml(p, rules);
+}
+
+static int parse_qtl(PlaylistParser *p) {
+    static const XmlRule rules[] = {
+        {"embed", "src", NULL},
+        {NULL, NULL, NULL},
+    };
+
+    return parse_xml(p, rules);
+}
+
+static const char *const m3u_ext[] = {"m3u", "m3u8", NULL};
+static const char *const ram_ext[] = {"ram", NULL};
+static const char *const pls_ext[] = {"pls", NULL};
+static const char *const xspf_ext[] = {"xspf", NULL};
+static const char *const asx_ext[] = {"asx", "wax", "wvx", "wmx", NULL};
+static const char *const wpl_ext[] = {"wpl", NULL};
+static const char *const b4s_ext[] = {"b4s", NULL};
+static const char *const qtl_ext[] = {"qtl", NULL};
+
+static const PlaylistFormat playlist_formats[] = {
+    {"M3U", m3u_ext, parse_lines, PLAYLIST_DEMUXED},
+    {"RAM", ram_ext, parse_lines, PLAYLIST_DIRECTIVES},
+    {"PLS", pls_ext, parse_pls, 0},
+    {"XSPF", xspf_ext, parse_xspf, 0},
+    {"ASX", asx_ext, parse_asx, 0},
+    {"WPL", wpl_ext, parse_wpl, 0},
+    {"B4S", b4s_ext, parse_b4s, 0},
+    {"QTL", qtl_ext, parse_qtl, 0},
+};
+
+static const PlaylistFormat *playlist_format_for(const char *path) {
+    const char *ext = strrchr(path, '.');
+
+    if (!ext) {
+        return NULL;
+    }
+    ext++;
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(playlist_formats); i++) {
+        const char *const *e = playlist_formats[i].extensions;
+
+        for (; *e; e++) {
+            if (!av_strcasecmp(ext, *e)) {
+                return &playlist_formats[i];
+            }
+        }
     }
 
     return NULL;
 }
 
-static int add_entry(PlaylistEntry **entries, int *n, int *cap,
-                     char *display_path, char *archive_path, char *entry_name,
-                     int from_playlist) {
-    if (*n >= *cap) {
-        int new_cap = *cap ? *cap * 2 : 16;
-        PlaylistEntry *tmp = av_realloc_array(*entries, new_cap, sizeof(**entries));
-        if (!tmp) {
-            return AVERROR(ENOMEM);
-        }
-        *entries = tmp;
-        *cap = new_cap;
-    }
-
-    PlaylistEntry *e = &(*entries)[(*n)++];
-    e->display_path = display_path;
-    e->archive_path = archive_path;
-    e->entry_name = entry_name;
-    e->from_playlist = from_playlist;
-
-    return 0;
+static int is_supported_playlist(const char *path) {
+    return playlist_format_for(path) != NULL;
 }
 
-static void free_entries(PlaylistEntry *entries, int n) {
-    for (int i = 0; i < n; i++) {
-        av_free(entries[i].display_path);
-        av_free(entries[i].archive_path);
-        av_free(entries[i].entry_name);
+void playlist_warn_unsafe_disabled(const char *path, int open_failed) {
+    static int warned;
+    const PlaylistFormat *fmt = playlist_format_for(path);
+
+    if (allow_unsafe || warned || !fmt) {
+        return;
     }
-    av_free(entries);
+    if (!open_failed && (fmt->flags & PLAYLIST_DEMUXED)) {
+        return;
+    }
+    warned = 1;
+    log_warn("%s: playlists are only expanded with -allow-unsafe.\n", path);
 }
 
-static char *read_playlist_file(const char *path, size_t *out_len) {
-    char *buf = NULL;
-    long size;
-    size_t got;
-
-    *out_len = 0;
-
-    FILE *f = fopen(path, "rb");
-    if (!f) {
-        log_warn("%s: %s.\n", path, strerror(errno));
-        return NULL;
-    }
-    if (fseek(f, 0, SEEK_END) != 0 || (size = ftell(f)) < 0 ||
-        fseek(f, 0, SEEK_SET) != 0) {
-        log_warn("%s: %s.\n", path, strerror(errno));
-        goto done;
-    }
-    if (size > UNSAFE_MAX_BYTES) {
-        log_warn("%s: the playlist is larger than %d bytes.\n", path, UNSAFE_MAX_BYTES);
-        goto done;
-    }
-
-    buf = av_malloc((size_t)size + 1);
-    if (!buf) {
-        goto done;
-    }
-    got = fread(buf, 1, (size_t)size, f);
-    buf[got] = '\0';
-    *out_len = got;
-
-done:
-    fclose(f);
-    return buf;
-}
-
-int playlist_from_unsafe(const char *unsafe_path, PlaylistEntry **out, int *count) {
-    PlaylistEntry *entries = NULL;
-    M3uReader r;
-    int n = 0, cap = 0;
-    size_t len, dir_len = 0;
-    int ret = AVERROR_INVALIDDATA;
-    char *line;
-
-    *out = NULL;
-    *count = 0;
-
-    if (has_url_scheme(unsafe_path)) {
-        log_warn("%s: only local playlist files can be expanded.\n", unsafe_path);
-        return AVERROR(EINVAL);
-    }
-
-    char *buf = read_playlist_file(unsafe_path, &len);
-    if (!buf) {
-        return AVERROR(EIO);
-    }
-
-    for (size_t i = 0; unsafe_path[i]; i++) {
-        if (unsafe_path[i] == '/' || unsafe_path[i] == '\\') {
-            dir_len = i + 1;
-        }
-    }
-
-    reader_init(&r, unsafe_path, buf, len);
-    while ((line = reader_next(&r))) {
-        if (!playlist_protocol_whitelist(line)) {
-            reader_skip(&r, "an entry with a disallowed protocol", line);
-            continue;
-        }
-        if (n >= UNSAFE_MAX_ENTRIES) {
-            log_warn("%s: stopping after %d entries.\n", unsafe_path, UNSAFE_MAX_ENTRIES);
-            break;
-        }
-
-        char *full = (dir_len && !has_url_scheme(line) && !is_absolute_path(line))
-            ? av_asprintf("%.*s%s", (int)dir_len, unsafe_path, line)
-            : av_strdup(line);
-        if (!full || add_entry(&entries, &n, &cap, full, NULL, NULL, 1) < 0) {
-            av_free(full);
-            ret = AVERROR(ENOMEM);
-            goto fail;
-        }
-    }
-    if (r.hls) {
-        goto fail;
-    }
-    reader_summarize(&r);
-
-    if (!n) {
-    } else {
-        log_verbose("%s: %d playlist entries.\n", unsafe_path, n);
-    }
-
-    av_free(buf);
-    *out = entries;
-    *count = n;
-
-    return 0;
-
-fail:
-    free_entries(entries, n);
-    av_free(buf);
-
-    return ret;
-}
-
-static char *read_archive_member(const char *archive_path, const char *entry_name,
-                                 size_t *out_len) {
-    *out_len = 0;
-
-    AVIOContext *avio = archive_entry_open_avio(archive_path, entry_name);
-    if (!avio) {
-        log_warn("%s|%s: could not be read.\n", archive_path, entry_name);
-        return NULL;
-    }
-
+static char *read_avio(AVIOContext *avio, const char *name, size_t *out_len) {
     char *buf = av_malloc(UNSAFE_MAX_BYTES + 1);
     int got = 0;
+
+    *out_len = 0;
     if (!buf) {
-        goto fail;
+        return NULL;
     }
     while (got < UNSAFE_MAX_BYTES + 1) {
         int r = avio_read(avio, (unsigned char *)buf + got, UNSAFE_MAX_BYTES + 1 - got);
@@ -399,23 +1172,140 @@ static char *read_archive_member(const char *archive_path, const char *entry_nam
         got += r;
     }
     if (got > UNSAFE_MAX_BYTES) {
-        log_warn("%s|%s: the playlist is larger than %d bytes.\n",
-                 archive_path, entry_name, UNSAFE_MAX_BYTES);
-        goto fail;
+        log_warn("%s: the playlist is larger than %d bytes.\n", name, UNSAFE_MAX_BYTES);
+        av_freep(&buf);
+        return NULL;
     }
     buf[got] = '\0';
-
-    archive_entry_close_avio(avio);
     *out_len = (size_t)got;
 
     return buf;
+}
 
-fail:
+static char *read_local_file(const char *path, size_t *out_len) {
+    AVDictionary *opts = NULL;
+    AVIOContext *avio = NULL;
+    char *buf;
+    int ret;
+
+    *out_len = 0;
+    av_dict_set(&opts, "protocol_whitelist", "file", 0);
+    ret = avio_open2(&avio, path, AVIO_FLAG_READ, NULL, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        log_warn("%s: %s.\n", path, av_err2str(ret));
+        return NULL;
+    }
+
+    buf = read_avio(avio, path, out_len);
+    avio_closep(&avio);
+
+    return buf;
+}
+
+static char *read_archive_member(const char *archive_path, const char *entry_name,
+                                 const char *name, size_t *out_len) {
+    AVIOContext *avio = archive_entry_open_avio(archive_path, entry_name);
+    char *buf;
+
+    *out_len = 0;
+    if (!avio) {
+        log_warn("%s: could not be read.\n", name);
+        return NULL;
+    }
+
+    buf = read_avio(avio, name, out_len);
     archive_entry_close_avio(avio);
+
+    return buf;
+}
+
+static int playlist_parse(const PlaylistFormat *fmt, const char *name, char *buf,
+                          size_t len, PlaylistSink sink, void *opaque) {
+    PlaylistParser p;
+    int before = playlist_size;
+    int ret;
+
+    if (!fmt) {
+        return AVERROR_INVALIDDATA;
+    }
+    parser_init(&p, name, fmt, buf, len, sink, opaque);
+    ret = fmt->parse(&p);
+    if (ret < 0) {
+        playlist_truncate(before);
+        return ret;
+    }
+    parser_summarize(&p);
+
+    if (p.count) {
+        log_verbose("%s: %d entries in the %s playlist.\n", name, p.count, fmt->name);
+    }
+
+    return p.count ? 0 : AVERROR_INVALIDDATA;
+}
+
+typedef struct FileContext {
+    const char *path;
+    size_t dir_len;
+} FileContext;
+
+static int file_sink(PlaylistParser *p, const char *location) {
+    const FileContext *ctx = p->opaque;
+
+    if (!playlist_protocol_whitelist(location)) {
+        parser_skip(p, "an entry with a disallowed protocol", location);
+        return 0;
+    }
+
+    char *full = (ctx->dir_len && !has_url_scheme(location) &&
+                  !is_absolute_path(location))
+        ? av_asprintf("%.*s%s", (int)ctx->dir_len, ctx->path, location)
+        : av_strdup(location);
+    if (!full) {
+        return AVERROR(ENOMEM);
+    }
+    if (playlist_add(full, NULL, NULL, 1) < 0) {
+        return AVERROR(ENOMEM);
+    }
+
+    return 1;
+}
+
+static int playlist_add_playlist_file(const char *path) {
+    const PlaylistFormat *fmt = playlist_format_for(path);
+    FileContext ctx = {path, 0};
+    size_t len;
+    int ret;
+
+    if (has_url_scheme(path)) {
+        log_warn("%s: only local playlist files can be expanded.\n", path);
+        return AVERROR(EINVAL);
+    }
+
+    char *buf = read_local_file(path, &len);
+    if (!buf) {
+        return AVERROR(EIO);
+    }
+
+    for (size_t i = 0; path[i]; i++) {
+        if (path[i] == '/' || path[i] == '\\') {
+            ctx.dir_len = i + 1;
+        }
+    }
+
+    ret = playlist_parse(fmt, path, buf, len, file_sink, &ctx);
     av_free(buf);
 
-    return NULL;
+    return ret;
 }
+
+typedef struct ArchiveContext {
+    const char *archive_path;
+    const char *entry_name;
+    size_t base_len;
+    char *const *names;
+    int nb_names;
+} ArchiveContext;
 
 static char *archive_member_resolve(const char *base, size_t base_len,
                                     const char *entry) {
@@ -474,89 +1364,182 @@ static char *archive_member_resolve(const char *base, size_t base_len,
     return out;
 }
 
-int playlist_from_archive_unsafe(const char *archive_path, const char *entry_name,
-                                 const PlaylistEntry *members, int nb_members,
-                                 PlaylistEntry **out, int *count) {
-    PlaylistEntry *entries = NULL;
-    M3uReader r;
-    int n = 0, cap = 0;
-    size_t len, base_len = 0;
-    int ret = AVERROR_INVALIDDATA;
-    char *line;
+static int archive_sink(PlaylistParser *p, const char *location) {
+    const ArchiveContext *ctx = p->opaque;
+    const char *hit = NULL;
 
-    *out = NULL;
-    *count = 0;
+    char *resolved = archive_member_resolve(ctx->entry_name, ctx->base_len, location);
+    if (!resolved) {
+        parser_skip(p, "an entry that leaves the archive", location);
+        return 0;
+    }
+    for (int i = 0; i < ctx->nb_names; i++) {
+        if (!strcmp(ctx->names[i], resolved)) {
+            hit = ctx->names[i];
+            break;
+        }
+    }
+    av_free(resolved);
 
-    char *buf = read_archive_member(archive_path, entry_name, &len);
+    if (!hit) {
+        parser_skip(p, "an entry that is not in the archive", location);
+        return 0;
+    }
+    if (playlist_add_archive_entry(ctx->archive_path, hit) < 0) {
+        return AVERROR(ENOMEM);
+    }
+
+    return 1;
+}
+
+static int playlist_add_archive_playlist(const char *archive_path,
+                                         const char *entry_name,
+                                         char *const *names, int nb_names) {
+    const PlaylistFormat *fmt = playlist_format_for(entry_name);
+    ArchiveContext ctx = {archive_path, entry_name, 0, names, nb_names};
+    size_t len;
+    int ret;
+
+    char *name = av_asprintf("%s|%s", archive_path, entry_name);
+    char *buf = read_archive_member(archive_path, entry_name,
+                                    name ? name : entry_name, &len);
     if (!buf) {
+        av_free(name);
         return AVERROR(EIO);
     }
 
     for (size_t i = 0; entry_name[i]; i++) {
         if (entry_name[i] == '/') {
-            base_len = i + 1;
+            ctx.base_len = i + 1;
         }
     }
 
-    char *name = av_asprintf("%s|%s", archive_path, entry_name);
-    reader_init(&r, name ? name : entry_name, buf, len);
-
-    while ((line = reader_next(&r))) {
-        char *resolved = archive_member_resolve(entry_name, base_len, line);
-        if (!resolved) {
-            reader_skip(&r, "an entry that leaves the archive", line);
-            continue;
-        }
-
-        const PlaylistEntry *hit = NULL;
-        for (int i = 0; i < nb_members; i++) {
-            if (!strcmp(members[i].entry_name, resolved)) {
-                hit = &members[i];
-                break;
-            }
-        }
-        av_free(resolved);
-        if (!hit) {
-            reader_skip(&r, "an entry that is not in the archive", line);
-            continue;
-        }
-        if (n >= UNSAFE_MAX_ENTRIES) {
-            log_warn("%s: stopping after %d entries.\n", r.name, UNSAFE_MAX_ENTRIES);
-            break;
-        }
-
-        char *display = av_strdup(hit->display_path);
-        char *archive = av_strdup(hit->archive_path);
-        char *member = av_strdup(hit->entry_name);
-        if (!display || !archive || !member ||
-            add_entry(&entries, &n, &cap, display, archive, member, 0) < 0) {
-            av_free(display);
-            av_free(archive);
-            av_free(member);
-            ret = AVERROR(ENOMEM);
-            goto fail;
-        }
-    }
-    if (r.hls) {
-        goto fail;
-    }
-    reader_summarize(&r);
-
-    if (n) {
-        log_verbose("%s: %d playlist entries.\n", r.name, n);
-    }
-
-    av_free(name);
-    av_free(buf);
-    *out = entries;
-    *count = n;
-
-    return 0;
-
-fail:
-    free_entries(entries, n);
+    ret = playlist_parse(fmt, name ? name : entry_name, buf, len,
+                         archive_sink, &ctx);
     av_free(name);
     av_free(buf);
 
     return ret;
+}
+
+static int playlist_add_archive(const char *archive_path) {
+    char **names = NULL;
+    int nb_names = 0;
+    int added = 0;
+
+    if (archive_list_entries(archive_path, &names, &nb_names) != 0) {
+        return -1;
+    }
+    if (nb_names <= 0) {
+        archive_free_entries(names, nb_names);
+        return -1;
+    }
+
+    for (int i = 0; allow_unsafe && i < nb_names; i++) {
+        int before = playlist_size;
+
+        if (!is_supported_playlist(names[i]) ||
+            playlist_add_archive_playlist(archive_path, names[i], names, nb_names) < 0) {
+            continue;
+        }
+        added += playlist_size - before;
+    }
+
+    if (!added) {
+        for (int i = 0; i < nb_names; i++) {
+            playlist_add_archive_entry(archive_path, names[i]);
+        }
+    }
+    archive_free_entries(names, nb_names);
+
+    return 0;
+}
+
+int playlist_add_input(const char *path) {
+    if (is_supported_archive(path) && playlist_add_archive(path) == 0) {
+        return 0;
+    }
+    if (allow_unsafe && is_supported_playlist(path) &&
+        playlist_add_playlist_file(path) == 0) {
+        return 0;
+    }
+    playlist_warn_unsafe_disabled(path, 0);
+
+    return playlist_add_file(path, 0);
+}
+
+static int cmp_str(const void *a, const void *b) {
+    return strcmp(*(const char **)a, *(const char **)b);
+}
+
+static void free_names(char **names, int count) {
+    for (int i = 0; i < count; i++) {
+        av_free(names[i]);
+    }
+    av_free(names);
+}
+
+void playlist_add_directory(const char *dir_path) {
+    DIR *d = opendir(dir_path);
+    if (!d) {
+        return;
+    }
+
+    char **names = NULL;
+    int n = 0, cap = 0;
+
+    struct dirent *ent;
+    while ((ent = readdir(d))) {
+        if (ent->d_name[0] == '.') {
+            continue;
+        }
+        if (n >= cap) {
+            int new_cap = cap ? cap * 2 : 16;
+            char **tmp = av_realloc_array(names, new_cap, sizeof(*names));
+            if (!tmp) {
+                goto oom;
+            }
+            names = tmp;
+            cap = new_cap;
+        }
+        if (!(names[n] = av_strdup(ent->d_name))) {
+            goto oom;
+        }
+        n++;
+    }
+    closedir(d);
+
+    if (n > 1) {
+        qsort(names, n, sizeof(*names), cmp_str);
+    }
+
+    size_t dir_len = strlen(dir_path);
+    while (dir_len > 0 && dir_path[dir_len - 1] == '/') {
+        dir_len--;
+    }
+
+    for (int i = 0; i < n; i++) {
+        char *full = av_asprintf("%.*s/%s", (int)dir_len, dir_path, names[i]);
+        struct stat st;
+
+        if (!full) {
+            continue;
+        }
+        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+            av_free(full);
+            continue;
+        }
+        if (!is_supported_archive(full) || playlist_add_archive(full) != 0) {
+            playlist_warn_unsafe_disabled(full, 0);
+            playlist_add_file(full, 0);
+        }
+        av_free(full);
+    }
+    free_names(names, n);
+
+    return;
+
+oom:
+    closedir(d);
+    free_names(names, n);
 }

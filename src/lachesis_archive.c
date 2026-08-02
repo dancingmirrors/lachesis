@@ -22,116 +22,18 @@
 
 #include <archive.h>
 #include <archive_entry.h>
-#include <dirent.h>
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 
 #include <libavformat/avio.h>
 #include <libavutil/avstring.h>
 #include <libavutil/error.h>
-#include <libavutil/log.h>
+#include <libavutil/macros.h>
 #include <libavutil/mem.h>
 
 static int cmp_str(const void *a, const void *b) {
     return strcmp(*(const char **)a, *(const char **)b);
-}
-
-static int entry_cmp(const void *a, const void *b) {
-    const PlaylistEntry *ea = (const PlaylistEntry *)a;
-    const PlaylistEntry *eb = (const PlaylistEntry *)b;
-    return strcmp(ea->display_path, eb->display_path);
-}
-
-int playlist_from_directory(const char *dir_path,
-                            PlaylistEntry **out_ptr, int *count) {
-    DIR *d = opendir(dir_path);
-    if (!d) {
-        return -1;
-    }
-
-    char **names = NULL;
-    int n = 0, cap = 0;
-
-    struct dirent *ent;
-    while ((ent = readdir(d))) {
-        if (ent->d_name[0] == '.') {
-            continue;
-        }
-
-        if (n >= cap) {
-            cap = cap ? cap * 2 : 16;
-            char **tmp = av_realloc_array(names, cap, sizeof(*names));
-            if (!tmp) {
-                closedir(d);
-                for (int i = 0; i < n; i++) {
-                    av_free(names[i]);
-                }
-                av_free(names);
-                return AVERROR(ENOMEM);
-            }
-            names = tmp;
-        }
-        char *dup = av_strdup(ent->d_name);
-        if (!dup) {
-            closedir(d);
-            for (int i = 0; i < n; i++) {
-                av_free(names[i]);
-            }
-            av_free(names);
-            return AVERROR(ENOMEM);
-        }
-        names[n++] = dup;
-    }
-    closedir(d);
-
-    if (n > 1) {
-        qsort(names, n, sizeof(*names), cmp_str);
-    }
-
-    PlaylistEntry *entries = av_calloc(n, sizeof(*entries));
-    if (!entries) {
-        for (int i = 0; i < n; i++) {
-            av_free(names[i]);
-        }
-        av_free(names);
-        return AVERROR(ENOMEM);
-    }
-
-    size_t dir_len = strlen(dir_path);
-    while (dir_len > 0 && dir_path[dir_len - 1] == '/') {
-        dir_len--;
-    }
-
-    int out = 0;
-    for (int i = 0; i < n; i++) {
-        size_t len = dir_len + 1 + strlen(names[i]) + 1;
-        char *full = av_malloc(len);
-        if (!full) {
-            av_free(names[i]);
-            continue;
-        }
-        snprintf(full, len, "%.*s/%s", (int)dir_len, dir_path, names[i]);
-
-        struct stat st;
-        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
-            av_free(full);
-            av_free(names[i]);
-            continue;
-        }
-
-        entries[out].display_path = full;
-        entries[out].archive_path = NULL;
-        entries[out].entry_name = NULL;
-        av_free(names[i]);
-        out++;
-    }
-    av_free(names);
-
-    *out_ptr = entries;
-    *count = out;
-    return 0;
 }
 
 int is_supported_archive(const char *path) {
@@ -148,8 +50,14 @@ int is_supported_archive(const char *path) {
         av_strcasecmp(ext, "cb7") == 0;
 }
 
-int playlist_from_archive(const char *archive_path,
-                          PlaylistEntry **out, int *count) {
+void archive_free_entries(char **names, int count) {
+    for (int i = 0; i < count; i++) {
+        av_free(names[i]);
+    }
+    av_free(names);
+}
+
+int archive_list_entries(const char *archive_path, char ***out, int *count) {
     struct archive *arch = archive_read_new();
     archive_read_support_filter_all(arch);
     archive_read_support_format_zip(arch);
@@ -157,13 +65,16 @@ int playlist_from_archive(const char *archive_path,
     archive_read_support_format_rar5(arch);
     archive_read_support_format_7zip(arch);
 
+    *out = NULL;
+    *count = 0;
+
     int r = archive_read_open_filename(arch, archive_path, 65536);
     if (r != ARCHIVE_OK && r != ARCHIVE_WARN) {
         archive_read_free(arch);
         return -1;
     }
 
-    PlaylistEntry *entries = NULL;
+    char **names = NULL;
     int n = 0, cap = 0;
 
     struct archive_entry *entry;
@@ -182,25 +93,15 @@ int playlist_from_archive(const char *archive_path,
 
         if (n >= cap) {
             cap = cap ? cap * 2 : 16;
-            PlaylistEntry *tmp = av_realloc_array(entries, cap, sizeof(*tmp));
+            char **tmp = av_realloc_array(names, cap, sizeof(*tmp));
             if (!tmp) {
                 goto oom;
             }
-            entries = tmp;
+            names = tmp;
         }
 
-        char display[1024];
-        snprintf(display, sizeof(display), "%s|%s", archive_path, name);
-
-        entries[n].display_path = av_strdup(display);
-        entries[n].archive_path = av_strdup(archive_path);
-        entries[n].entry_name = av_strdup(name);
-        entries[n].from_playlist = 0;
-        if (!entries[n].display_path || !entries[n].archive_path ||
-            !entries[n].entry_name) {
-            av_free(entries[n].display_path);
-            av_free(entries[n].archive_path);
-            av_free(entries[n].entry_name);
+        names[n] = av_strdup(name);
+        if (!names[n]) {
             goto oom;
         }
         n++;
@@ -210,20 +111,15 @@ int playlist_from_archive(const char *archive_path,
     archive_read_free(arch);
 
     if (n > 1) {
-        qsort(entries, n, sizeof(*entries), entry_cmp);
+        qsort(names, n, sizeof(*names), cmp_str);
     }
 
-    *out = entries;
+    *out = names;
     *count = n;
     return 0;
 
 oom:
-    for (int i = 0; i < n; i++) {
-        av_free(entries[i].display_path);
-        av_free(entries[i].archive_path);
-        av_free(entries[i].entry_name);
-    }
-    av_free(entries);
+    archive_free_entries(names, n);
     archive_read_free(arch);
     return AVERROR(ENOMEM);
 }

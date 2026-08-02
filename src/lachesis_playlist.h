@@ -28,13 +28,23 @@ typedef struct PlaylistEntry {
     int from_playlist;
 } PlaylistEntry;
 
-int is_supported_playlist(const char *path);
+extern int playlist_size;
+extern int playlist_pos;
+extern int playlist_nav_dir;
 
-int playlist_from_unsafe(const char *unsafe_path, PlaylistEntry **out, int *count);
+const PlaylistEntry *playlist_get(int pos);
 
-int playlist_from_archive_unsafe(const char *archive_path, const char *entry_name,
-                                 const PlaylistEntry *members, int nb_members,
-                                 PlaylistEntry **out, int *count);
+int playlist_add_input(const char *path);
+
+void playlist_add_directory(const char *dir_path);
+void playlist_remove_at(int pos);
+void playlist_clear(void);
+void playlist_shuffle(void);
+void playlist_reverse(void);
+
+int playlist_entry_is_reachable(int pos);
+
+void playlist_warn_unsafe_disabled(const char *path, int open_failed);
 
 const char *playlist_protocol_whitelist(const char *url);
 

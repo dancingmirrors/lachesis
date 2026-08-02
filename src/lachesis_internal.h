@@ -40,6 +40,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_playlist.h"
 #include "lachesis_renderer.h"
 
 #define FFP_MIX_MAXVOLUME 128
@@ -396,9 +397,6 @@ extern int default_height;
 extern int cursor_hidden;
 extern int64_t cursor_last_shown;
 extern int fatal_error_pending;
-extern int playlist_pos;
-extern int playlist_size;
-extern int playlist_nav_dir;
 
 av_noreturn void do_exit(VideoState *is);
 void toggle_pause(VideoState *is);

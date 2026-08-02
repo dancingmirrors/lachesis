@@ -23,19 +23,13 @@
 
 #include <libavformat/avio.h>
 
-#include "lachesis_playlist.h"
-
-int playlist_from_directory(const char *dir_path,
-                            PlaylistEntry **out_ptr, int *count);
-
-int playlist_from_archive(const char *archive_path,
-                          PlaylistEntry **out, int *count);
-
 int is_supported_archive(const char *path);
+int archive_list_entries(const char *archive_path, char ***out, int *count);
+
+void archive_free_entries(char **names, int count);
 
 AVIOContext *archive_entry_open_avio(const char *archive_path,
                                      const char *entry_name);
-
 void archive_entry_close_avio(AVIOContext *avio);
 
 #endif // LACHESIS_ARCHIVE_H

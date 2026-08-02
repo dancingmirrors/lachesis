@@ -48,13 +48,11 @@
 #include <libavutil/dict.h>
 #include <libavutil/fifo.h>
 #include <libavutil/hwcontext.h>
-#include <libavutil/lfg.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 #include <libavutil/parseutils.h>
 #include <libavutil/pixdesc.h>
-#include <libavutil/random_seed.h>
 #include <libavutil/samplefmt.h>
 #include <libavutil/time.h>
 #include <libavutil/tx.h>
@@ -194,13 +192,8 @@ fail:
 
 static const char *input_filename;
 
-static PlaylistEntry *playlist_entries = NULL;
-
 static int pause_next_stream = 0;
 
-int playlist_size = 0;
-int playlist_pos = 0;
-int playlist_nav_dir = 1;
 static char **pending_dirs = NULL;
 static int n_pending_dirs = 0;
 static int startup_vfilter_idx = 0;
@@ -1331,13 +1324,7 @@ av_noreturn void do_exit(VideoState *is) {
     av_freep(&window_title);
     av_freep(&window_title_auto);
     av_freep(&input_filename);
-    for (int i = 0; i < playlist_size; i++) {
-        av_free(playlist_entries[i].display_path);
-        av_free(playlist_entries[i].archive_path);
-        av_free(playlist_entries[i].entry_name);
-    }
-    av_freep(&playlist_entries);
-    playlist_size = 0;
+    playlist_clear();
     for (int i = 0; i < n_pending_dirs; i++) {
         av_free(pending_dirs[i]);
     }
@@ -2481,46 +2468,6 @@ static VideoState *stream_open(const char *filename,
     return is;
 }
 
-static int path_is_readable(const char *path) {
-#if defined(_WIN32)
-    return _access(path, 4) == 0;
-#else
-    return access(path, R_OK) == 0;
-#endif
-}
-
-static int playlist_entry_is_reachable(int pos) {
-    const PlaylistEntry *e = &playlist_entries[pos];
-    const char *path = e->archive_path ? e->archive_path : e->display_path;
-    const char *proto;
-    struct stat st;
-    int err;
-
-    if (!path) {
-        return 1;
-    }
-    proto = avio_find_protocol_name(path);
-    if (!proto || strcmp(proto, "file")) {
-        return 1;
-    }
-    if (!strncmp(path, "file:", 5)) {
-        path += 5;
-    }
-
-    if (stat(path, &st) != 0) {
-        err = AVERROR(errno);
-    } else if (S_ISDIR(st.st_mode)) {
-        err = AVERROR(EISDIR);
-    } else if (!path_is_readable(path)) {
-        err = AVERROR(errno);
-    } else {
-        return 1;
-    }
-    av_log(NULL, AV_LOG_ERROR, "%s: %s\n", e->display_path, av_err2str(err));
-
-    return 0;
-}
-
 static void playlist_skip_unreachable(void) {
     while (playlist_pos < playlist_size &&
            !playlist_entry_is_reachable(playlist_pos)) {
@@ -2532,18 +2479,14 @@ static void playlist_skip_unreachable(void) {
 }
 
 static VideoState *stream_open_playlist_entry(int pos) {
-    if (pos < 0 || pos >= playlist_size) {
-        return NULL;
-    }
-    PlaylistEntry *e = &playlist_entries[pos];
-    VideoState *is = stream_open(e->display_path, file_iformat,
-                                 e->archive_path, e->entry_name,
-                                 e->from_playlist);
-    if (!is) {
+    const PlaylistEntry *e = playlist_get(pos);
+
+    if (!e) {
         return NULL;
     }
 
-    return is;
+    return stream_open(e->display_path, file_iformat, e->archive_path,
+                       e->entry_name, e->from_playlist);
 }
 
 static int startup_window_flags(void) {
@@ -2644,8 +2587,9 @@ static void apply_startup_window_title(void) {
     char *initial_title_alloc = NULL;
 
     if (!initial_title) {
-        if (playlist_size > 0) {
-            PlaylistEntry *e = &playlist_entries[playlist_pos];
+        const PlaylistEntry *e = playlist_get(playlist_pos);
+
+        if (e) {
             initial_title = initial_title_alloc =
                 make_default_window_title(e->display_path,
                                           e->archive_path,
@@ -2891,12 +2835,7 @@ void playlist_remove_current(VideoState **pis, int keep_paused) {
     *pis = NULL;
 
     int removed = playlist_pos;
-    av_free(playlist_entries[removed].display_path);
-    av_free(playlist_entries[removed].archive_path);
-    av_free(playlist_entries[removed].entry_name);
-    memmove(&playlist_entries[removed], &playlist_entries[removed + 1],
-            (playlist_size - removed - 1) * sizeof(*playlist_entries));
-    playlist_size--;
+    playlist_remove_at(removed);
 
     if (playlist_size == 0) {
         do_exit(NULL);
@@ -2918,138 +2857,6 @@ void playlist_remove_current(VideoState **pis, int keep_paused) {
     print_current_file(nis);
     *pis = nis;
     nis->force_refresh = 1;
-}
-
-static int playlist_add_entry(const char *display_path,
-                              const char *archive_path,
-                              const char *entry_name,
-                              int from_playlist) {
-    PlaylistEntry *tmp = av_realloc_array(playlist_entries,
-                                          playlist_size + 1,
-                                          sizeof(*playlist_entries));
-    if (!tmp) {
-        return AVERROR(ENOMEM);
-    }
-    playlist_entries = tmp;
-    PlaylistEntry *e = &playlist_entries[playlist_size];
-    e->display_path = av_strdup(display_path);
-    e->archive_path = archive_path ? av_strdup(archive_path) : NULL;
-    e->entry_name = entry_name ? av_strdup(entry_name) : NULL;
-    e->from_playlist = from_playlist;
-    playlist_size++;
-
-    return 0;
-}
-
-/* A Fisher-Yates shuffle. */
-static void shuffle_playlist(void) {
-    if (playlist_size < 2) {
-        return;
-    }
-
-    AVLFG lfg;
-    av_lfg_init(&lfg, av_get_random_seed());
-
-    for (int i = playlist_size - 1; i > 0; i--) {
-        int j = av_lfg_get(&lfg) % (unsigned)(i + 1);
-        PlaylistEntry tmp = playlist_entries[i];
-        playlist_entries[i] = playlist_entries[j];
-        playlist_entries[j] = tmp;
-    }
-}
-
-static void reverse_playlist_entries(void) {
-    if (playlist_size < 2) {
-        return;
-    }
-
-    for (int i = 0, j = playlist_size - 1; i < j; i++, j--) {
-        PlaylistEntry tmp = playlist_entries[i];
-        playlist_entries[i] = playlist_entries[j];
-        playlist_entries[j] = tmp;
-    }
-}
-
-static int expand_archive(const char *archive_path) {
-    PlaylistEntry *members = NULL;
-    int nb_members = 0;
-    int added = 0;
-
-    if (playlist_from_archive(archive_path, &members, &nb_members) != 0) {
-        return -1;
-    }
-    if (nb_members <= 0) {
-        av_free(members);
-        return -1;
-    }
-
-    for (int i = 0; allow_unsafe && i < nb_members; i++) {
-        PlaylistEntry *sel = NULL;
-        int count = 0;
-
-        if (!is_supported_playlist(members[i].entry_name) ||
-            playlist_from_archive_unsafe(archive_path, members[i].entry_name,
-                                         members, nb_members, &sel, &count) < 0) {
-            continue;
-        }
-        for (int j = 0; j < count; j++) {
-            playlist_add_entry(sel[j].display_path, sel[j].archive_path,
-                               sel[j].entry_name, 0);
-            av_free(sel[j].display_path);
-            av_free(sel[j].archive_path);
-            av_free(sel[j].entry_name);
-        }
-        av_free(sel);
-        added += count;
-    }
-
-    if (!added) {
-        for (int i = 0; i < nb_members; i++) {
-            playlist_add_entry(members[i].display_path, members[i].archive_path,
-                               members[i].entry_name, 0);
-        }
-    }
-
-    for (int i = 0; i < nb_members; i++) {
-        av_free(members[i].display_path);
-        av_free(members[i].archive_path);
-        av_free(members[i].entry_name);
-    }
-    av_free(members);
-
-    return 0;
-}
-
-static void expand_directory(const char *dir_path) {
-    PlaylistEntry *entries = NULL;
-    int count = 0;
-    if (playlist_from_directory(dir_path, &entries, &count) != 0) {
-        return;
-    }
-    for (int i = 0; i < count; i++) {
-        if (!is_supported_archive(entries[i].display_path) ||
-            expand_archive(entries[i].display_path) != 0) {
-            playlist_add_entry(entries[i].display_path, NULL, NULL, 0);
-        }
-        av_free(entries[i].display_path);
-    }
-    av_free(entries);
-}
-
-static int expand_unsafe(const char *filename) {
-    PlaylistEntry *entries = NULL;
-    int count = 0;
-
-    if (playlist_from_unsafe(filename, &entries, &count) < 0) {
-        return -1;
-    }
-    for (int i = 0; i < count; i++) {
-        playlist_add_entry(entries[i].display_path, NULL, NULL, 1);
-        av_free(entries[i].display_path);
-    }
-    av_free(entries);
-
-    return count > 0 ? 0 : -1;
 }
 
 static int opt_input_file(void *optctx av_unused, const char *filename) {
@@ -3081,14 +2888,7 @@ static int opt_input_file(void *optctx av_unused, const char *filename) {
         return 0;
     }
 
-    if (is_supported_archive(filename) && expand_archive(filename) == 0) {
-        return 0;
-    }
-    if (allow_unsafe && is_supported_playlist(filename) && expand_unsafe(filename) == 0) {
-        return 0;
-    }
-
-    return playlist_add_entry(filename, NULL, NULL, 0);
+    return playlist_add_input(filename);
 }
 
 int main(int argc, char **argv) {
@@ -3147,7 +2947,7 @@ int main(int argc, char **argv) {
     }
 
     if (playlist_size == 0 && n_pending_dirs > 0) {
-        expand_directory(pending_dirs[0]);
+        playlist_add_directory(pending_dirs[0]);
     }
     for (int i = 0; i < n_pending_dirs; i++) {
         av_free(pending_dirs[i]);
@@ -3160,10 +2960,10 @@ int main(int argc, char **argv) {
         fatal_quit("An input file must be specified.\n");
     }
     if (reverse_playlist) {
-        reverse_playlist_entries();
+        playlist_reverse();
     }
     if (shuffle) {
-        shuffle_playlist();
+        playlist_shuffle();
     }
     if (display_disable) {
         video_disable = 1;

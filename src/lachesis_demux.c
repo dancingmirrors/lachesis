@@ -750,14 +750,7 @@ int read_thread(void *arg) {
     }
     if (err < 0) {
         print_error(is->filename, err);
-        if (!allow_unsafe && is_supported_playlist(is->filename)) {
-            static int hinted;
-
-            if (!hinted) {
-                hinted = 1;
-                log_warn("Playlists are only expanded with -allow-unsafe.\n");
-            }
-        }
+        playlist_warn_unsafe_disabled(is->filename, 1);
         ret = -1;
         goto fail;
     }
