@@ -347,6 +347,14 @@ float window_pixel_density(void);
 
 int display_max_texture_size(void);
 
+static inline void frame_visible_size(const AVFrame *frame, int *w, int *h) {
+    int64_t vw = frame->width - (int64_t)frame->crop_left - (int64_t)frame->crop_right;
+    int64_t vh = frame->height - (int64_t)frame->crop_top - (int64_t)frame->crop_bottom;
+
+    *w = vw > 0 ? (int)vw : frame->width;
+    *h = vh > 0 ? (int)vh : frame->height;
+}
+
 static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int *out_h) {
     double scale = (double)max_dim / FFMAX(w, h);
 

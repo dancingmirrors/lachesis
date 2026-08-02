@@ -301,14 +301,17 @@ fail:
     return ret;
 }
 
-void report_filter_output(AVFilterContext *filt_out,
+void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
                           int *last_w, int *last_h, AVRational *last_sar,
                           AVRational *last_fr) {
-    int ow = av_buffersink_get_w(filt_out);
-    int oh = av_buffersink_get_h(filt_out);
+    int lw = av_buffersink_get_w(filt_out);
+    int lh = av_buffersink_get_h(filt_out);
     AVRational osar = av_buffersink_get_sample_aspect_ratio(filt_out);
     AVRational ofr = av_buffersink_get_frame_rate(filt_out);
+    int ow, oh;
     int max_dim;
+
+    frame_visible_size(frame, &ow, &oh);
 
     if (ow == *last_w && oh == *last_h && !av_cmp_q(osar, *last_sar) &&
         ofr.num == last_fr->num && ofr.den == last_fr->den) {
@@ -319,9 +322,10 @@ void report_filter_output(AVFilterContext *filt_out,
     *last_sar = osar;
     *last_fr = ofr;
 
+    /* The renderer still has to hold the uncropped surface. */
     max_dim = display_max_texture_size();
-    if (max_dim > 0 && (ow > max_dim || oh > max_dim)) {
-        log_warn("%d exceeds %dx%d.\n", max_dim, ow, oh);
+    if (max_dim > 0 && (lw > max_dim || lh > max_dim)) {
+        log_warn("%d exceeds %dx%d.\n", max_dim, lw, lh);
     }
 
     media_info_note_video_output(ow, oh, osar, ofr);

@@ -2007,8 +2007,7 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     vp->sar = src_frame->sample_aspect_ratio;
     vp->uploaded = 0;
 
-    vp->width = src_frame->width;
-    vp->height = src_frame->height;
+    frame_visible_size(src_frame, &vp->width, &vp->height);
     vp->format = src_frame->format;
 
     vp->pts = pts;
@@ -2079,6 +2078,9 @@ static void hwframe_download_inplace(AVFrame *frame) {
     }
 
     av_frame_copy_props(sw, frame);
+    if (sw->crop_left || sw->crop_top || sw->crop_right || sw->crop_bottom) {
+        av_frame_apply_cropping(sw, 0);
+    }
     av_frame_unref(frame);
     av_frame_move_ref(frame, sw);
     av_frame_free(&sw);
@@ -2252,6 +2254,7 @@ int video_thread(void *arg) {
     AVRational last_out_sar = {0, 1};
     AVRational last_out_fr = {0, 0};
     int download_active = 0;
+    int report_out_pending = 0;
 
     if (!frame) {
         return AVERROR(ENOMEM);
@@ -2266,10 +2269,13 @@ int video_thread(void *arg) {
             continue;
         }
 
+        /* Downloading the frame below changes all three of these. */
         enum AVPixelFormat raw_format = frame->format;
+        int raw_w = frame->width;
+        int raw_h = frame->height;
 
         /* clang-format off */
-        if (last_w != frame->width || last_h != frame->height ||
+        if (last_w != raw_w || last_h != raw_h ||
             last_format != raw_format ||
             last_serial != is->viddec.pkt_serial ||
             last_vfilter_idx != is->vfilter_idx) {
@@ -2316,14 +2322,13 @@ int video_thread(void *arg) {
             }
             filt_in = is->in_video_filter;
             filt_out = is->out_video_filter;
-            last_w = frame->width;
-            last_h = frame->height;
+            last_w = raw_w;
+            last_h = raw_h;
             last_format = raw_format;
             last_serial = is->viddec.pkt_serial;
             last_vfilter_idx = is->vfilter_idx;
             frame_rate = av_buffersink_get_frame_rate(filt_out);
-            report_filter_output(filt_out, &last_out_w, &last_out_h,
-                                 &last_out_sar, &last_out_fr);
+            report_out_pending = 1;
         } else if (download_active && frame->hw_frames_ctx) {
             hwframe_download_inplace(frame);
         }
@@ -2345,6 +2350,18 @@ int video_thread(void *arg) {
                 }
                 ret = 0;
                 break;
+            }
+
+            if (!frame->hw_frames_ctx &&
+                (frame->crop_left || frame->crop_top ||
+                 frame->crop_right || frame->crop_bottom)) {
+                av_frame_apply_cropping(frame, 0);
+            }
+
+            if (report_out_pending) {
+                report_out_pending = 0;
+                report_filter_output(filt_out, frame, &last_out_w, &last_out_h,
+                                     &last_out_sar, &last_out_fr);
             }
 
             fd = frame->opaque_ref ? (FrameData *)frame->opaque_ref->data : NULL;

@@ -27,7 +27,7 @@
 int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame);
 int check_filtergraph(const char *desc);
 
-void report_filter_output(AVFilterContext *filt_out,
+void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
                           int *last_w, int *last_h, AVRational *last_sar,
                           AVRational *last_fr);
 

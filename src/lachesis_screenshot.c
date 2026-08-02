@@ -222,17 +222,25 @@ static AVFrame *frame_to_cpu(AVFrame *frame) {
     AVFrame *sw;
 
     if (!frame->hw_frames_ctx) {
-        return av_frame_clone(frame);
+        sw = av_frame_clone(frame);
+    } else {
+        sw = av_frame_alloc();
+        if (!sw) {
+            return NULL;
+        }
+        if (av_hwframe_transfer_data(sw, frame, 0) < 0) {
+            av_frame_free(&sw);
+            return NULL;
+        }
+        av_frame_copy_props(sw, frame);
     }
-    sw = av_frame_alloc();
     if (!sw) {
         return NULL;
     }
-    if (av_hwframe_transfer_data(sw, frame, 0) < 0) {
-        av_frame_free(&sw);
-        return NULL;
+
+    if (sw->crop_left || sw->crop_top || sw->crop_right || sw->crop_bottom) {
+        av_frame_apply_cropping(sw, AV_FRAME_CROP_UNALIGNED);
     }
-    av_frame_copy_props(sw, frame);
 
     return sw;
 }
