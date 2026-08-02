@@ -103,6 +103,7 @@
 #include "lachesis_network.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
+#include "lachesis_playlist.h"
 #include "lachesis_present.h"
 #include "lachesis_rc.h"
 #include "lachesis_renderer.h"
@@ -2389,7 +2390,8 @@ the_end:
 static VideoState *stream_open(const char *filename,
                                const AVInputFormat *iformat,
                                const char *archive_path,
-                               const char *entry_name) {
+                               const char *entry_name,
+                               int from_playlist) {
     VideoState *is;
     int vol;
 
@@ -2407,6 +2409,7 @@ static VideoState *stream_open(const char *filename,
         goto fail;
     }
     is->iformat = iformat;
+    is->from_playlist = from_playlist;
     is->archive_path = NULL;
     is->entry_name = NULL;
     /* These must be set before read_thread is created. */
@@ -2534,7 +2537,8 @@ static VideoState *stream_open_playlist_entry(int pos) {
     }
     PlaylistEntry *e = &playlist_entries[pos];
     VideoState *is = stream_open(e->display_path, file_iformat,
-                                 e->archive_path, e->entry_name);
+                                 e->archive_path, e->entry_name,
+                                 e->from_playlist);
     if (!is) {
         return NULL;
     }
@@ -2918,7 +2922,8 @@ void playlist_remove_current(VideoState **pis, int keep_paused) {
 
 static int playlist_add_entry(const char *display_path,
                               const char *archive_path,
-                              const char *entry_name) {
+                              const char *entry_name,
+                              int from_playlist) {
     PlaylistEntry *tmp = av_realloc_array(playlist_entries,
                                           playlist_size + 1,
                                           sizeof(*playlist_entries));
@@ -2930,6 +2935,7 @@ static int playlist_add_entry(const char *display_path,
     e->display_path = av_strdup(display_path);
     e->archive_path = archive_path ? av_strdup(archive_path) : NULL;
     e->entry_name = entry_name ? av_strdup(entry_name) : NULL;
+    e->from_playlist = from_playlist;
     playlist_size++;
 
     return 0;
@@ -2964,6 +2970,56 @@ static void reverse_playlist_entries(void) {
     }
 }
 
+static int expand_archive(const char *archive_path) {
+    PlaylistEntry *members = NULL;
+    int nb_members = 0;
+    int added = 0;
+
+    if (playlist_from_archive(archive_path, &members, &nb_members) != 0) {
+        return -1;
+    }
+    if (nb_members <= 0) {
+        av_free(members);
+        return -1;
+    }
+
+    for (int i = 0; allow_unsafe && i < nb_members; i++) {
+        PlaylistEntry *sel = NULL;
+        int count = 0;
+
+        if (!is_supported_playlist(members[i].entry_name) ||
+            playlist_from_archive_unsafe(archive_path, members[i].entry_name,
+                                         members, nb_members, &sel, &count) < 0) {
+            continue;
+        }
+        for (int j = 0; j < count; j++) {
+            playlist_add_entry(sel[j].display_path, sel[j].archive_path,
+                               sel[j].entry_name, 0);
+            av_free(sel[j].display_path);
+            av_free(sel[j].archive_path);
+            av_free(sel[j].entry_name);
+        }
+        av_free(sel);
+        added += count;
+    }
+
+    if (!added) {
+        for (int i = 0; i < nb_members; i++) {
+            playlist_add_entry(members[i].display_path, members[i].archive_path,
+                               members[i].entry_name, 0);
+        }
+    }
+
+    for (int i = 0; i < nb_members; i++) {
+        av_free(members[i].display_path);
+        av_free(members[i].archive_path);
+        av_free(members[i].entry_name);
+    }
+    av_free(members);
+
+    return 0;
+}
+
 static void expand_directory(const char *dir_path) {
     PlaylistEntry *entries = NULL;
     int count = 0;
@@ -2971,28 +3027,29 @@ static void expand_directory(const char *dir_path) {
         return;
     }
     for (int i = 0; i < count; i++) {
-        if (is_supported_archive(entries[i].display_path)) {
-            PlaylistEntry *arc = NULL;
-            int narc = 0;
-            if (playlist_from_archive(entries[i].display_path, &arc, &narc) == 0 && narc > 0) {
-                for (int j = 0; j < narc; j++) {
-                    playlist_add_entry(arc[j].display_path,
-                                       arc[j].archive_path,
-                                       arc[j].entry_name);
-                    av_free(arc[j].display_path);
-                    av_free(arc[j].archive_path);
-                    av_free(arc[j].entry_name);
-                }
-                av_free(arc);
-                av_free(entries[i].display_path);
-                continue;
-            }
-            av_free(arc);
+        if (!is_supported_archive(entries[i].display_path) ||
+            expand_archive(entries[i].display_path) != 0) {
+            playlist_add_entry(entries[i].display_path, NULL, NULL, 0);
         }
-        playlist_add_entry(entries[i].display_path, NULL, NULL);
         av_free(entries[i].display_path);
     }
     av_free(entries);
+}
+
+static int expand_unsafe(const char *filename) {
+    PlaylistEntry *entries = NULL;
+    int count = 0;
+
+    if (playlist_from_unsafe(filename, &entries, &count) < 0) {
+        return -1;
+    }
+    for (int i = 0; i < count; i++) {
+        playlist_add_entry(entries[i].display_path, NULL, NULL, 1);
+        av_free(entries[i].display_path);
+    }
+    av_free(entries);
+
+    return count > 0 ? 0 : -1;
 }
 
 static int opt_input_file(void *optctx av_unused, const char *filename) {
@@ -3024,25 +3081,14 @@ static int opt_input_file(void *optctx av_unused, const char *filename) {
         return 0;
     }
 
-    if (is_supported_archive(filename)) {
-        PlaylistEntry *entries = NULL;
-        int count = 0;
-        if (playlist_from_archive(filename, &entries, &count) == 0 && count > 0) {
-            for (int i = 0; i < count; i++) {
-                playlist_add_entry(entries[i].display_path,
-                                   entries[i].archive_path,
-                                   entries[i].entry_name);
-                av_free(entries[i].display_path);
-                av_free(entries[i].archive_path);
-                av_free(entries[i].entry_name);
-            }
-            av_free(entries);
-            return 0;
-        }
-        /* Fall through on error and try opening it as a regular file. */
+    if (is_supported_archive(filename) && expand_archive(filename) == 0) {
+        return 0;
+    }
+    if (allow_unsafe && is_supported_playlist(filename) && expand_unsafe(filename) == 0) {
+        return 0;
     }
 
-    return playlist_add_entry(filename, NULL, NULL);
+    return playlist_add_entry(filename, NULL, NULL, 0);
 }
 
 int main(int argc, char **argv) {
@@ -3059,6 +3105,7 @@ int main(int argc, char **argv) {
     av_log_set_level(AV_LOG_ERROR);
     parse_loglevel(argc, argv, options);
     parse_quiet(argc, argv, options);
+    parse_allow_unsafe(argc, argv, options);
 
 #if LACHESIS_HAVE_AVDEVICE
     avdevice_register_all();

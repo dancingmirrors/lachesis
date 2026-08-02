@@ -235,6 +235,7 @@ typedef struct VideoState {
     int loop_remaining;
 
     char *filename;
+    int from_playlist;
     char *archive_path;
     char *entry_name;
     AVIOContext *archive_avio;

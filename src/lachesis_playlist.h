@@ -18,24 +18,24 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef LACHESIS_ARCHIVE_H
-#define LACHESIS_ARCHIVE_H
+#ifndef LACHESIS_PLAYLIST_H
+#define LACHESIS_PLAYLIST_H
 
-#include <libavformat/avio.h>
+typedef struct PlaylistEntry {
+    char *display_path;
+    char *archive_path;
+    char *entry_name;
+    int from_playlist;
+} PlaylistEntry;
 
-#include "lachesis_playlist.h"
+int is_supported_playlist(const char *path);
 
-int playlist_from_directory(const char *dir_path,
-                            PlaylistEntry **out_ptr, int *count);
+int playlist_from_unsafe(const char *unsafe_path, PlaylistEntry **out, int *count);
 
-int playlist_from_archive(const char *archive_path,
-                          PlaylistEntry **out, int *count);
+int playlist_from_archive_unsafe(const char *archive_path, const char *entry_name,
+                                 const PlaylistEntry *members, int nb_members,
+                                 PlaylistEntry **out, int *count);
 
-int is_supported_archive(const char *path);
+const char *playlist_protocol_whitelist(const char *url);
 
-AVIOContext *archive_entry_open_avio(const char *archive_path,
-                                     const char *entry_name);
-
-void archive_entry_close_avio(AVIOContext *avio);
-
-#endif // LACHESIS_ARCHIVE_H
+#endif /* LACHESIS_PLAYLIST_H */

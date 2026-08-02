@@ -45,6 +45,7 @@ enum OptionType {
 
 #define OPT_FUNC_ARG (1 << 0)
 #define OPT_EXIT (1 << 1)
+#define OPT_CMDLINE_ONLY (1 << 2)
 
 typedef struct OptionDef {
     const char *name;
@@ -73,6 +74,7 @@ int parse_config_option(void *optctx, const char *opt, const char *arg,
                         const OptionDef *defs, const char *src);
 void parse_loglevel(int argc, char **argv, const OptionDef *defs);
 void parse_quiet(int argc, char **argv, const OptionDef *defs);
+void parse_allow_unsafe(int argc, char **argv, const OptionDef *defs);
 
 int opt_loglevel(void *optctx, const char *opt, const char *arg);
 int opt_quiet(void *optctx, const char *opt, const char *arg);
@@ -116,6 +118,7 @@ extern int skip_to_keyframe;
 extern int64_t start_time;
 extern int64_t play_duration;
 extern int keep_open;
+extern int allow_unsafe;
 extern int shuffle;
 extern int reverse_playlist;
 extern int start_paused;

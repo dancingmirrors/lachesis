@@ -195,6 +195,7 @@ int playlist_from_archive(const char *archive_path,
         entries[n].display_path = av_strdup(display);
         entries[n].archive_path = av_strdup(archive_path);
         entries[n].entry_name = av_strdup(name);
+        entries[n].from_playlist = 0;
         if (!entries[n].display_path || !entries[n].archive_path ||
             !entries[n].entry_name) {
             av_free(entries[n].display_path);

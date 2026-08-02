@@ -56,6 +56,7 @@
 #include "lachesis_log.h"
 #include "lachesis_network.h"
 #include "lachesis_options.h"
+#include "lachesis_playlist.h"
 #include "lachesis_subtitles.h"
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
@@ -723,6 +724,14 @@ int read_thread(void *arg) {
         ret = -1;
         goto fail;
     }
+    if (is->from_playlist) {
+        const char *whitelist = playlist_protocol_whitelist(is->filename);
+        if (!whitelist || av_opt_set(ic, "protocol_whitelist", whitelist, 0) < 0) {
+            log_warn("Refusing '%s' from a playlist.\n", is->filename);
+            ret = -1;
+            goto fail;
+        }
+    }
     {
         const char *open_url = (is->archive_path && is->entry_name)
             ? is->entry_name
@@ -741,6 +750,14 @@ int read_thread(void *arg) {
     }
     if (err < 0) {
         print_error(is->filename, err);
+        if (!allow_unsafe && is_supported_playlist(is->filename)) {
+            static int hinted;
+
+            if (!hinted) {
+                hinted = 1;
+                log_warn("Playlists are only expanded with -allow-unsafe.\n");
+            }
+        }
         ret = -1;
         goto fail;
     }

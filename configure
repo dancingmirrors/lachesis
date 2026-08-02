@@ -156,6 +156,7 @@ add_sources(
     "src/lachesis_network.c",
     "src/lachesis_options.c",
     "src/lachesis_osd.c",
+    "src/lachesis_playlist.c",
     "src/lachesis_present.c",
     "src/lachesis_rc.c",
     "src/lachesis_renderer.c",
