@@ -2294,10 +2294,10 @@ int video_thread(void *arg) {
             if (is_hw) {
                 int saved_level = av_log_get_level();
                 av_log_set_level(AV_LOG_QUIET);
-                ret = configure_video_filters(graph, is, vfilters, frame);
+                ret = configure_video_filters(graph, is, vfilters, frame, 0);
                 av_log_set_level(saved_level);
             } else {
-                ret = configure_video_filters(graph, is, vfilters, frame);
+                ret = configure_video_filters(graph, is, vfilters, frame, 0);
             }
 
             if (ret < 0 && is_hw) {
@@ -2308,7 +2308,17 @@ int video_thread(void *arg) {
                 }
                 hwframe_download_inplace(frame);
                 download_active = 1;
-                ret = configure_video_filters(graph, is, vfilters, frame);
+                ret = configure_video_filters(graph, is, vfilters, frame, 0);
+            }
+
+            if (ret >= 0 && !frame->hw_frames_ctx &&
+                filtergraph_output_oversize(is->out_video_filter)) {
+                avfilter_graph_free(&graph);
+                graph = avfilter_graph_alloc();
+                if (!graph) {
+                    goto the_end;
+                }
+                ret = configure_video_filters(graph, is, vfilters, frame, 1);
             }
 
             if (ret < 0) {

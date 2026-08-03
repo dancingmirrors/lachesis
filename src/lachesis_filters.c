@@ -92,10 +92,11 @@ static double get_rotation(const int32_t *displaymatrix) {
     return theta;
 }
 
-int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame) {
+int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame, int force_autoscale) {
     enum AVPixelFormat pix_fmts[FF_ARRAY_ELEMS(sdl_texture_format_map)];
     int ret;
     AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
+    AVFilterContext *autoscale_ctx = NULL;
     AVCodecParameters *codecpar = is->video_st->codecpar;
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
     int nb_pix_fmts = 0;
@@ -183,10 +184,6 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     last_filter = filt_out;
 
     /* clang-format off */
-/* XXX
- * This macro adds a filter before the last added filter, so the
- * processing order of the filters is in reverse.
- */
 #define INSERT_FILT(name, arg)                                                  \
     do {                                                                        \
         AVFilterContext *filt_ctx;                                              \
@@ -205,42 +202,33 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     } while (0)
     /* clang-format on */
 
+    /* INSERT_FILT() builds the chain backwards. */
     max_dim = display_max_texture_size();
-    if (max_dim > 0 && (frame->width > max_dim || frame->height > max_dim)) {
-        AVFilterContext *scale_ctx = NULL;
-        int target_w, target_h, scale_ret;
+    if (max_dim > 0 && (force_autoscale || frame->width > max_dim || frame->height > max_dim)) {
+        int scale_ret;
         char scale_buf[256];
 
-        fit_within_max_dim(frame->width, frame->height, max_dim,
-                           &target_w, &target_h);
-
         snprintf(scale_buf, sizeof(scale_buf),
-                 "w=max(2,2*floor(min(iw,iw*%d/max(iw,ih))/2))"
-                 ":h=max(2,2*floor(min(ih,ih*%d/max(iw,ih))/2))"
+                 "w=if(gt(max(iw,ih),%d),max(2,2*floor(iw*%d/max(iw,ih)/2)),iw)"
+                 ":h=if(gt(max(iw,ih),%d),max(2,2*floor(ih*%d/max(iw,ih)/2)),ih)"
                  ":flags=area",
-                 max_dim, max_dim);
+                 max_dim, max_dim, max_dim, max_dim);
 
-        scale_ret = avfilter_graph_create_filter(&scale_ctx,
+        scale_ret = avfilter_graph_create_filter(&autoscale_ctx,
                                                  avfilter_get_by_name("scale"),
                                                  "lachesis_autoscale", scale_buf,
                                                  NULL, graph);
-        if (scale_ret >= 0 && scale_ctx) {
-            scale_ret = avfilter_link(scale_ctx, 0, last_filter, 0);
+        if (scale_ret >= 0 && autoscale_ctx) {
+            scale_ret = avfilter_link(autoscale_ctx, 0, last_filter, 0);
             if (scale_ret < 0) {
-                avfilter_free(scale_ctx);
+                avfilter_free(autoscale_ctx);
             }
         }
-        if (scale_ret < 0 || !scale_ctx) {
+        if (scale_ret < 0 || !autoscale_ctx) {
+            autoscale_ctx = NULL;
             log_verbose("Failed to create the scale filter.\n");
         } else {
-            last_filter = scale_ctx;
-            if (is->oversize_warned_w != frame->width ||
-                is->oversize_warned_h != frame->height) {
-                is->oversize_warned_w = frame->width;
-                is->oversize_warned_h = frame->height;
-                log_warn("%dx%d exceeds %d. Scaling to %dx%d.\n",
-                         frame->width, frame->height, max_dim, target_w, target_h);
-            }
+            last_filter = autoscale_ctx;
         }
     }
 
@@ -292,6 +280,21 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         goto fail;
     }
 
+    if (autoscale_ctx && autoscale_ctx->nb_inputs && autoscale_ctx->nb_outputs) {
+        int in_w = autoscale_ctx->inputs[0]->w;
+        int in_h = autoscale_ctx->inputs[0]->h;
+        int out_w = autoscale_ctx->outputs[0]->w;
+        int out_h = autoscale_ctx->outputs[0]->h;
+
+        if ((in_w != out_w || in_h != out_h) &&
+            (is->oversize_warned_w != in_w || is->oversize_warned_h != in_h)) {
+            is->oversize_warned_w = in_w;
+            is->oversize_warned_h = in_h;
+            log_warn("%dx%d exceeds %d. Scaling to %dx%d.\n", in_w, in_h,
+                     max_dim, out_w, out_h);
+        }
+    }
+
     is->in_video_filter = filt_src;
     is->out_video_filter = filt_out;
 
@@ -299,6 +302,17 @@ fail:
     av_freep(&par);
 
     return ret;
+}
+
+int filtergraph_output_oversize(AVFilterContext *filt_out) {
+    int max_dim = display_max_texture_size();
+
+    if (!filt_out || max_dim <= 0) {
+        return 0;
+    }
+
+    return av_buffersink_get_w(filt_out) > max_dim ||
+        av_buffersink_get_h(filt_out) > max_dim;
 }
 
 void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
