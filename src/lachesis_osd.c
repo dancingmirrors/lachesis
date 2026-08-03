@@ -47,13 +47,15 @@
 #define OSD_STATUS_DURATION_MS 1000
 #define OSD_SEEK_DURATION_MS 1000
 #define OSD_MESSAGE_DURATION_MS 3000
-#define OSD_INFO_MAX_LINES 48
+#define OSD_INFO_MAX_LINES 512
+#define OSD_INFO_TEXT_MAX 8192
+#define OSD_WRAP_W_MAX (1 << 20)
+#define OSD_FIT_PASSES 8
 
 #define OSD_FONT_REF_720 55.0
 #define OSD_OUTLINE_RATIO (2.0 / 55.0)
 #define OSD_INFO_SIZE_RATIO 0.70
 #define OSD_SUB_SIZE_RATIO 0.44
-#define OSD_INFO_MIN_SCALE 0.70
 #define OSD_SUPERSAMPLE 2
 #define OSD_FONT_INIT_PX 55
 #define OSD_MAX_FALLBACK_FONTS 8
@@ -96,7 +98,7 @@ static OsdInfoProvider osd_stats_provider = NULL;
 
 typedef struct {
     SDL_Surface *surf;
-    char text[2048];
+    char text[OSD_INFO_TEXT_MAX];
     int box_w, box_h;
     int base_px, ss;
     int pad;
@@ -105,7 +107,7 @@ static OsdInfoCache osd_info_cache;
 
 typedef struct {
     SDL_Surface *surf;
-    char text[2048];
+    char text[OSD_INFO_TEXT_MAX];
     int content_w, content_h;
     int pad;
     int max_w;
@@ -132,6 +134,11 @@ static const OsdTextStyle ST_SYMBOL = {OSD_FACE_SYM, 1.00, 0, OSD_SHRINK_NONE};
 typedef struct {
     int x, y, w, h;
 } OsdRect;
+
+typedef struct {
+    const char *p;
+    size_t len;
+} OsdSpan;
 
 typedef struct {
     int cw, ch;
@@ -249,6 +256,7 @@ static void osd_faces_ensure(int canvas_h) {
 
 typedef struct {
     char text[OSD_RUN_MAX + 1];
+    size_t len;
     const void *font;
     int base_px, ss;
     int w, h;
@@ -300,17 +308,21 @@ static void osd_invalidate_glyphs(void) {
     }
 }
 
-static void osd_ui_measure(TTF_Font *font, const char *text, int *w, int *h) {
+static void osd_ui_measure(TTF_Font *font, const char *text, size_t len,
+                           int *w, int *h) {
     int tw = 0, th = 0;
     int ss = osd_ss > 0 ? osd_ss : 1;
-    size_t len = text ? strlen(text) : 0;
     OsdMeasureEntry *e = NULL;
+
+    if (text && !len) {
+        len = strlen(text);
+    }
 
     if (font && len > 0 && len <= OSD_RUN_MAX) {
         e = &osd_measure_cache[osd_cache_hash(text, len, font) %
                                OSD_MEASURE_CACHE_SIZE];
         if (e->valid && e->font == font && e->base_px == osd_base_px &&
-            e->ss == ss && !memcmp(e->text, text, len + 1)) {
+            e->ss == ss && e->len == len && !memcmp(e->text, text, len)) {
             if (w) {
                 *w = e->w;
             }
@@ -321,14 +333,16 @@ static void osd_ui_measure(TTF_Font *font, const char *text, int *w, int *h) {
         }
     }
 
-    if (font && text && text[0]) {
-        TTF_GetStringSize(font, text, 0, &tw, &th);
+    if (font && text && len) {
+        TTF_GetStringSize(font, text, len, &tw, &th);
     }
     tw /= ss;
     th /= ss;
 
     if (e) {
-        memcpy(e->text, text, len + 1);
+        memcpy(e->text, text, len);
+        e->text[len] = '\0';
+        e->len = len;
         e->font = font;
         e->base_px = osd_base_px;
         e->ss = ss;
@@ -437,12 +451,8 @@ static SDL_Surface *osd_scale_down(SDL_Surface *raw, int tw, int th) {
 
 static int osd_utf8_next(const char *text, size_t len, size_t *pos);
 
-static int osd_is_tabular(const char *p, const char *start) {
-    if (*p >= '0' && *p <= '9') {
-        return 1;
-    }
-    return (*p == ':' || *p == '.') && p > start && p[-1] >= '0' &&
-        p[-1] <= '9' && p[1] >= '0' && p[1] <= '9';
+static int osd_is_tabular(const char *p) {
+    return *p >= '0' && *p <= '9';
 }
 
 static SDL_Texture *osd_texture_from_surface(SDL_Renderer *r, SDL_Surface *s,
@@ -542,9 +552,15 @@ static void osd_blit_run(SDL_Renderer *r, OsdFaceSet *fs, const char *text,
 }
 
 static int osd_line(SDL_Renderer *r, OsdFace face, int mono, const char *text,
-                    int x, int y, SDL_Color fg, double s) {
+                    size_t len, int x, int y, SDL_Color fg, double s) {
     OsdFaceSet *fs = &osd_faces[face];
-    if (!fs->fill || !text || !text[0]) {
+    if (!fs->fill || !text) {
+        return 0;
+    }
+    if (!len) {
+        len = strlen(text);
+    }
+    if (!len) {
         return 0;
     }
     int ss = osd_ss > 0 ? osd_ss : 1;
@@ -552,27 +568,27 @@ static int osd_line(SDL_Renderer *r, OsdFace face, int mono, const char *text,
 
     if (!mono) {
         int w = 0;
-        osd_ui_measure(fs->fill, text, &w, NULL);
+        osd_ui_measure(fs->fill, text, len, &w, NULL);
         if (r) {
-            osd_blit_run(r, fs, text, 0, x, y, fg, fscale);
+            osd_blit_run(r, fs, text, len, x, y, fg, fscale);
         }
         return (int)(w * s + 0.5);
     }
 
     int cell_w = 0;
-    osd_ui_measure(fs->fill, "0", &cell_w, NULL);
+    osd_ui_measure(fs->fill, "0", 1, &cell_w, NULL);
     if (cell_w <= 0) {
         int w = 0;
-        osd_ui_measure(fs->fill, text, &w, NULL);
+        osd_ui_measure(fs->fill, text, len, &w, NULL);
         if (r) {
-            osd_blit_run(r, fs, text, 0, x, y, fg, fscale);
+            osd_blit_run(r, fs, text, len, x, y, fg, fscale);
         }
         return (int)(w * s + 0.5);
     }
 
     double cell = cell_w * s;
     double cx = x;
-    size_t len = strlen(text), pos = 0;
+    size_t pos = 0;
     char g[8];
     while (pos < len) {
         size_t st = pos;
@@ -584,9 +600,9 @@ static int osd_line(SDL_Renderer *r, OsdFace face, int mono, const char *text,
         memcpy(g, text + st, clen);
         g[clen] = '\0';
         int gw = 0;
-        osd_ui_measure(fs->fill, g, &gw, NULL);
+        osd_ui_measure(fs->fill, g, clen, &gw, NULL);
         double adv = gw * s;
-        int tab = (clen == 1) && osd_is_tabular(text + st, text);
+        int tab = (clen == 1) && osd_is_tabular(text + st);
         if (tab) {
             double gx = cx + (cell - adv) / 2.0;
             if (r) {
@@ -603,14 +619,14 @@ static int osd_line(SDL_Renderer *r, OsdFace face, int mono, const char *text,
     return (int)(cx - x + 0.5);
 }
 
-static int osd_text_line(SDL_Renderer *r, const OsdTextStyle *st,
-                         const char *text, int x, int y, SDL_Color fg) {
-    return osd_line(r, st->face, st->mono, text, x, y, fg, st->ratio);
-}
-
 static int osd_line_width(const OsdTextStyle *st, const char *text) {
     SDL_Color fg = {255, 255, 255, 255};
-    return osd_line(NULL, st->face, st->mono, text, 0, 0, fg, st->ratio);
+    return osd_line(NULL, st->face, st->mono, text, 0, 0, 0, fg, st->ratio);
+}
+
+static int osd_run_width(const OsdTextStyle *st, const char *text, size_t len) {
+    SDL_Color fg = {255, 255, 255, 255};
+    return osd_line(NULL, st->face, st->mono, text, len, 0, 0, fg, 1.0);
 }
 
 static int osd_line_height(const OsdTextStyle *st, const char *text) {
@@ -619,7 +635,7 @@ static int osd_line_height(const OsdTextStyle *st, const char *text) {
         return 0;
     }
     int h = 0;
-    osd_ui_measure(fs->fill, text && text[0] ? text : "0", NULL, &h);
+    osd_ui_measure(fs->fill, text && text[0] ? text : "0", 0, NULL, &h);
     return (int)(h * st->ratio + 0.5);
 }
 
@@ -630,52 +646,65 @@ static double osd_fit_w(int natural_w, int max_w) {
     return (double)max_w / (double)natural_w;
 }
 
-static int osd_wrap_into(TTF_Font *font, const char *src, int max_w,
-                         char lines[][256], int nline, int cap) {
+static int osd_wrap_w(int box_w, double s) {
+    double w = s > 0.0 ? (double)box_w / s : (double)box_w;
+
+    if (w < 1.0) {
+        return 1;
+    }
+    if (w > OSD_WRAP_W_MAX) {
+        return OSD_WRAP_W_MAX;
+    }
+
+    return (int)(w + 0.5);
+}
+
+static double osd_block_h(int nline, double nlh, double s, double gap_unit) {
+    if (nline < 1) {
+        return 0.0;
+    }
+    return s * (nline * nlh + gap_unit * (nline - 1));
+}
+
+static int osd_wrap_into(const OsdTextStyle *st, const char *src, size_t srclen,
+                         int max_w, OsdSpan *lines, int nline, int cap) {
     if (max_w < 1) {
         max_w = 1;
     }
-    int space_w = 0;
-    osd_ui_measure(font, " ", &space_w, NULL);
 
-    char cur[256];
+    const char *cur = NULL;
     size_t cl = 0;
     int cur_w = 0;
-    cur[0] = '\0';
 
     const char *p = src;
-    while (*p && nline < cap) {
-        while (*p == ' ' || *p == '\t' || *p == '\r') {
+    const char *end = src + srclen;
+    while (p < end && nline < cap) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r')) {
             p++;
         }
-        if (!*p) {
+        if (p >= end) {
             break;
         }
         const char *ws = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\r') {
+        while (p < end && *p != ' ' && *p != '\t' && *p != '\r') {
             p++;
         }
         size_t wlen = (size_t)(p - ws);
-        char word[256];
-        if (wlen >= sizeof(word)) {
-            wlen = sizeof(word) - 1;
-        }
-        memcpy(word, ws, wlen);
-        word[wlen] = '\0';
-        int ww = 0;
-        osd_ui_measure(font, word, &ww, NULL);
+        int ww = osd_run_width(st, ws, wlen);
 
         if (cl > 0) {
-            if (cur_w + space_w + ww <= max_w && cl + 1 + wlen < sizeof(cur)) {
-                cur[cl] = ' ';
-                memcpy(cur + cl + 1, word, wlen);
-                cl += 1 + wlen;
-                cur[cl] = '\0';
-                cur_w += space_w + ww;
+            size_t gap_len = (size_t)(ws - (cur + cl));
+            int gap_w = gap_len ? osd_run_width(st, cur + cl, gap_len) : 0;
+
+            if (cur_w + gap_w + ww <= max_w) {
+                cl = (size_t)(ws + wlen - cur);
+                cur_w += gap_w + ww;
                 continue;
             }
-            memcpy(lines[nline++], cur, cl + 1);
-            cur[0] = '\0';
+            lines[nline].p = cur;
+            lines[nline].len = cl;
+            nline++;
+            cur = NULL;
             cl = 0;
             cur_w = 0;
             if (nline >= cap) {
@@ -683,63 +712,86 @@ static int osd_wrap_into(TTF_Font *font, const char *src, int max_w,
             }
         }
 
-        if (ww <= max_w && wlen < sizeof(cur)) {
-            memcpy(cur, word, wlen);
+        if (ww <= max_w) {
+            cur = ws;
             cl = wlen;
-            cur[cl] = '\0';
             cur_w = ww;
             continue;
         }
 
-        size_t wl = strlen(word);
         size_t i = 0;
-        char piece[256];
+        const char *pp = ws;
         size_t pl = 0;
         int pw = 0;
-        piece[0] = '\0';
-        while (i < wl && nline < cap) {
-            size_t st = i;
-            osd_utf8_next(word, wl, &i);
-            size_t clen = i - st;
-            char ch[8];
-            if (clen >= sizeof(ch)) {
-                clen = sizeof(ch) - 1;
+        while (i < wlen && nline < cap) {
+            size_t gs = i;
+            osd_utf8_next(ws, wlen, &i);
+            size_t cand = i - (size_t)(pp - ws);
+            int cand_w = st->mono
+                ? pw + osd_run_width(st, ws + gs, i - gs)
+                : osd_run_width(st, pp, cand);
+
+            if (pl > 0 && cand_w > max_w) {
+                lines[nline].p = pp;
+                lines[nline].len = pl;
+                nline++;
+                pp = ws + gs;
+                pl = i - gs;
+                pw = osd_run_width(st, pp, pl);
+                continue;
             }
-            memcpy(ch, word + st, clen);
-            ch[clen] = '\0';
-            int cw = 0;
-            osd_ui_measure(font, ch, &cw, NULL);
-            if (pl > 0 && (pw + cw > max_w || pl + clen >= sizeof(piece))) {
-                memcpy(lines[nline++], piece, pl + 1);
-                pl = 0;
-                pw = 0;
-                piece[0] = '\0';
-                if (nline >= cap) {
-                    break;
-                }
-            }
-            memcpy(piece + pl, word + st, clen);
-            pl += clen;
-            piece[pl] = '\0';
-            pw += cw;
+            pl = cand;
+            pw = cand_w;
         }
         if (pl > 0 && nline < cap) {
-            memcpy(cur, piece, pl + 1);
+            cur = pp;
             cl = pl;
             cur_w = pw;
         }
     }
     if (cl > 0 && nline < cap) {
-        memcpy(lines[nline++], cur, cl + 1);
+        lines[nline].p = cur;
+        lines[nline].len = cl;
+        nline++;
     }
+
+    return nline;
+}
+
+static int osd_wrap_block(const OsdTextStyle *st, const char *text, int max_w,
+                          OsdSpan *lines, int cap) {
+    const char *p = text;
+    int nline = 0;
+
+    for (;;) {
+        const char *nl = strchr(p, '\n');
+        size_t seglen = nl ? (size_t)(nl - p) : strlen(p);
+
+        if (nline >= cap) {
+            break;
+        }
+        if (!seglen) {
+            lines[nline].p = p;
+            lines[nline].len = 0;
+            nline++;
+        } else {
+            nline = osd_wrap_into(st, p, seglen, max_w, lines, nline, cap);
+        }
+        if (!nl) {
+            break;
+        }
+        p = nl + 1;
+    }
+
     return nline;
 }
 
 static int osd_text_block(SDL_Renderer *r, const OsdTextStyle *st,
                           const char *text, OsdRect box, int line_gap,
-                          SDL_Color fg, double min_frac) {
+                          SDL_Color fg) {
     OsdFaceSet *fs = &osd_faces[st->face];
-    if (!fs->fill || !text || !text[0] || box.w < 1) {
+    if (!fs->fill || !text || !text[0] || box.w < 1 || box.h < 1 ||
+        st->ratio <= 0.0) {
         return 0;
     }
     int ss = osd_ss > 0 ? osd_ss : 1;
@@ -749,51 +801,60 @@ static int osd_text_block(SDL_Renderer *r, const OsdTextStyle *st,
         nlh = 1.0;
     }
     double ratio = st->ratio;
-    int wrap_w = (int)(box.w / ratio + 0.5);
-    if (wrap_w < 1) {
-        wrap_w = 1;
-    }
+    double gap_unit = (double)line_gap / ratio;
 
-    char lines[OSD_INFO_MAX_LINES][256];
-    int nline = 0;
-    const char *p = text;
-    while (*p && nline < OSD_INFO_MAX_LINES) {
-        const char *nl = strchr(p, '\n');
-        size_t seglen = nl ? (size_t)(nl - p) : strlen(p);
-        char seg[256];
-        if (seglen >= sizeof(seg)) {
-            seglen = sizeof(seg) - 1;
-        }
-        memcpy(seg, p, seglen);
-        seg[seglen] = '\0';
-        nline = osd_wrap_into(fs->fill, seg, wrap_w, lines, nline, OSD_INFO_MAX_LINES);
-        if (!nl) {
-            break;
-        }
-        p = nl + 1;
-    }
+    OsdSpan lines[OSD_INFO_MAX_LINES];
+    double s = ratio;
+    int nline = osd_wrap_block(st, text, osd_wrap_w(box.w, s), lines,
+                               OSD_INFO_MAX_LINES);
     if (nline == 0) {
         return 0;
     }
 
-    double total_h = nline * (nlh * ratio) + (double)line_gap * (nline - 1);
-    double s = ratio;
-    double gap = line_gap;
-    if (st->shrink == OSD_SHRINK_FIT && total_h > box.h && total_h > 0) {
-        double fit = box.h / total_h;
-        s = ratio * fit;
-        gap = line_gap * fit;
-        if (min_frac > 0.0 && s < ratio * min_frac) {
-            s = ratio * min_frac;
-            gap = line_gap * min_frac;
+    if (st->shrink == OSD_SHRINK_FIT &&
+        osd_block_h(nline, nlh, s, gap_unit) > box.h) {
+        double denom = nline * nlh + gap_unit * (nline - 1);
+        double lo = denom > 0.0 ? box.h / denom : s;
+        double hi = s;
+
+        if (lo > hi) {
+            lo = hi;
+        }
+        for (int pass = 0; pass < OSD_FIT_PASSES; pass++) {
+            double mid = 0.5 * (lo + hi);
+            int n = osd_wrap_block(st, text, osd_wrap_w(box.w, mid),
+                                   lines, OSD_INFO_MAX_LINES);
+            if (n > 0 && osd_block_h(n, nlh, mid, gap_unit) <= box.h) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        s = lo;
+        nline = osd_wrap_block(st, text, osd_wrap_w(box.w, s), lines,
+                               OSD_INFO_MAX_LINES);
+        if (nline == 0) {
+            return 0;
+        }
+
+        if (osd_block_h(nline, nlh, s, gap_unit) > box.h) {
+            denom = nline * nlh + gap_unit * (nline - 1);
+            if (denom > 0.0) {
+                s = box.h / denom;
+                nline = osd_wrap_block(st, text, osd_wrap_w(box.w, s), lines,
+                                       OSD_INFO_MAX_LINES);
+                if (nline == 0) {
+                    return 0;
+                }
+            }
         }
     }
 
-    int line_h = (int)(nlh * s + 0.5);
-    int step = line_h + (int)(gap + 0.5);
+    double line_h = nlh * s;
+    double step = line_h + gap_unit * s;
     int ndraw = nline;
-    if (step > 0) {
-        int fitn = (box.h + (int)(gap + 0.5)) / step;
+    if (st->shrink == OSD_SHRINK_FIT && step > 0.0) {
+        int fitn = (int)((box.h - line_h) / step + 1.0 + 1e-3);
         if (fitn < 1) {
             fitn = 1;
         }
@@ -802,12 +863,16 @@ static int osd_text_block(SDL_Renderer *r, const OsdTextStyle *st,
         }
     }
 
-    int y = box.y;
+    double y = box.y;
     for (int i = 0; i < ndraw; i++) {
-        osd_line(r, st->face, st->mono, lines[i], box.x, y, fg, s);
+        if (lines[i].len) {
+            osd_line(r, st->face, st->mono, lines[i].p, lines[i].len, box.x,
+                     (int)(y + 0.5), fg, s);
+        }
         y += step;
     }
-    return (ndraw - 1) * step + line_h;
+
+    return (int)((ndraw - 1) * step + line_h + 0.5);
 }
 
 static void subtitle_strip_ass(const char *in, char *out, size_t outsz) {
@@ -1068,12 +1133,42 @@ static SDL_Surface *osd_sub_render_surface(const char *text, size_t used,
         }
         int w = 0;
         TTF_GetStringSize(fs->fill, text + start, pos - start, &w, NULL);
-        toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_TEXT,
-                                       .start = start,
-                                       .len = pos - start,
-                                       .w = (int)(w * fscale + 0.5),
-                                       .h = line_h,
-                                       .line = -1};
+        w = (int)(w * fscale + 0.5);
+        if (w <= max_w) {
+            toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_TEXT,
+                                           .start = start,
+                                           .len = pos - start,
+                                           .w = w,
+                                           .h = line_h,
+                                           .line = -1};
+            continue;
+        }
+        size_t gp = start;
+        while (gp < pos && nalloc < OSD_SUB_MAX_TOKENS) {
+            size_t chunk = gp;
+            int chunk_w = 0;
+
+            while (chunk < pos) {
+                size_t next = chunk;
+                int cw = 0;
+
+                osd_utf8_next(text, pos, &next);
+                TTF_GetStringSize(fs->fill, text + gp, next - gp, &cw, NULL);
+                cw = (int)(cw * fscale + 0.5);
+                if (chunk > gp && cw > max_w) {
+                    break;
+                }
+                chunk = next;
+                chunk_w = cw;
+            }
+            toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_TEXT,
+                                           .start = gp,
+                                           .len = chunk - gp,
+                                           .w = chunk_w,
+                                           .h = line_h,
+                                           .line = -1};
+            gp = chunk;
+        }
     }
 
     int line_w[OSD_SUB_MAX_LINES] = {0};
@@ -1236,6 +1331,9 @@ static void osd_draw_subtitle(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     L->subs_top = y0;
 
     int x = (cw - c->content_w) / 2 - c->pad;
+    if (x < 0) {
+        x = 0;
+    }
     osd_draw_cached_surface(r, &osd_sub_tex, c->surf, (float)x,
                             (float)(y0 - c->pad),
                             SDL_BLENDMODE_BLEND_PREMULTIPLIED);
@@ -1279,7 +1377,7 @@ static void osd_draw_abloop(SDL_Renderer *r, OsdLayout *L) {
     OsdRect b = osd_stack_remaining(L, L->ch - L->my);
     double fit = osd_fit_w(osd_line_width(&ST_PRIMARY, line), b.w);
     int th = (int)(osd_line_height(&ST_PRIMARY, line) * fit + 0.5);
-    osd_line(r, ST_PRIMARY.face, ST_PRIMARY.mono, line, b.x, b.y, fg,
+    osd_line(r, ST_PRIMARY.face, ST_PRIMARY.mono, line, 0, b.x, b.y, fg,
              ST_PRIMARY.ratio * fit);
     osd_stack_advance(L, th);
 }
@@ -1287,8 +1385,7 @@ static void osd_draw_abloop(SDL_Renderer *r, OsdLayout *L) {
 static void osd_draw_message(SDL_Renderer *r, OsdLayout *L) {
     SDL_Color fg = {255, 255, 255, 255};
     OsdRect b = osd_stack_remaining(L, L->ch - L->my);
-    int consumed =
-        osd_text_block(r, &ST_MESSAGE, osd_message, b, L->line_gap, fg, 0.0);
+    int consumed = osd_text_block(r, &ST_MESSAGE, osd_message, b, L->line_gap, fg);
     osd_stack_advance(L, consumed);
 }
 
@@ -1325,10 +1422,10 @@ static void osd_draw_status(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     gap = (int)(gap * fit + 0.5);
     int row_h = FFMAX(sh, th);
     if (have_sym) {
-        osd_line(r, ST_SYMBOL.face, ST_SYMBOL.mono, sym, b.x,
+        osd_line(r, ST_SYMBOL.face, ST_SYMBOL.mono, sym, 0, b.x,
                  b.y + (row_h - sh) / 2, fg, ST_SYMBOL.ratio * fit);
     }
-    osd_line(r, ST_PRIMARY.face, ST_PRIMARY.mono, line, b.x + sw + gap,
+    osd_line(r, ST_PRIMARY.face, ST_PRIMARY.mono, line, 0, b.x + sw + gap,
              b.y + (row_h - th) / 2, fg, ST_PRIMARY.ratio * fit);
 
     int consumed = row_h;
@@ -1421,8 +1518,7 @@ static SDL_Surface *osd_info_render_surface(const char *text, int box_w,
 
     SDL_Color fg = {255, 255, 255, 255};
     OsdRect b = {pad, pad, box_w, box_h};
-    int used = osd_text_block(sr, &ST_INFO, text, b, line_gap, fg,
-                              OSD_INFO_MIN_SCALE);
+    int used = osd_text_block(sr, &ST_INFO, text, b, line_gap, fg);
     SDL_RenderPresent(sr);
     SDL_DestroyRenderer(sr);
 
@@ -1447,7 +1543,7 @@ static SDL_Surface *osd_info_render_surface(const char *text, int box_w,
 }
 
 static void osd_draw_info(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
-    char info[2048];
+    char info[OSD_INFO_TEXT_MAX];
     info[0] = '\0';
     OsdInfoProvider provider =
         osd_info_page == 2 ? osd_stats_provider : osd_info_provider;
@@ -1465,6 +1561,11 @@ static void osd_draw_info(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     } else {
         floor_y = L->ch - L->my;
     }
+    int min_floor = L->my + FFMAX(1, (L->ch - 2 * L->my) / 2);
+    if (floor_y < min_floor) {
+        floor_y = min_floor;
+    }
+
     OsdRect box = {L->mx, L->my, L->cw - L->mx - L->line_gap,
                    FFMAX(1, floor_y - L->my)};
     if (box.w < 1) {
@@ -1495,7 +1596,7 @@ static void osd_draw_info(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
 static void osd_draw_delete(SDL_Renderer *r, OsdLayout *L) {
     SDL_Color fg = {255, 255, 255, 255};
     OsdRect box = {L->mx, L->my, L->topleft.w, L->ch - 2 * L->my};
-    osd_text_block(r, &ST_MODAL, osd_delete_prompt, box, L->line_gap, fg, 0.0);
+    osd_text_block(r, &ST_MODAL, osd_delete_prompt, box, L->line_gap, fg);
 }
 
 static void osd_draw_volume(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
@@ -1507,14 +1608,17 @@ static void osd_draw_volume(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     SDL_Color muted_fg = {210, 210, 210, 255};
 
     int bar_w = L->cw / 4;
-    int bar_h = 8;
+    int bar_h = FFMAX(3, osd_px_scale(L->ch, 8.0));
+    int bar_pad = FFMAX(1, bar_h / 2);
     int bar_x = (L->cw - bar_w) / 2;
     int seek_stack_top = L->seek_bar_y - L->seek_label_h - L->line_gap;
-    int bar_y = seek_stack_top - osd_px_scale(L->ch, 10.0) - (bar_h / 2 + 4);
+    int bar_y = seek_stack_top - osd_px_scale(L->ch, 10.0) -
+        (bar_h / 2 + bar_pad);
 
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
     SDL_SetRenderDrawColor(r, bar_bg.r, bar_bg.g, bar_bg.b, bar_bg.a);
-    SDL_FRect bg_rect = {bar_x - 4, bar_y - bar_h / 2 - 4, bar_w + 8, bar_h + 8};
+    SDL_FRect bg_rect = {bar_x - bar_pad, bar_y - bar_h / 2 - bar_pad,
+                         bar_w + 2 * bar_pad, bar_h + 2 * bar_pad};
     SDL_RenderFillRect(r, &bg_rect);
 
     int vol_max = is->audio_volume_max > 0 ? is->audio_volume_max : FFP_MIX_MAXVOLUME;
@@ -1537,7 +1641,9 @@ static void osd_draw_volume(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     }
     if (boosted) {
         SDL_SetRenderDrawColor(r, 255, 255, 255, 230);
-        SDL_FRect unity_rect = {bar_x + unity_px - 1, bar_y - bar_h / 2 - 2, 2, bar_h + 4};
+        SDL_FRect unity_rect = {bar_x + unity_px - 1,
+                                bar_y - bar_h / 2 - bar_pad / 2, 2,
+                                bar_h + bar_pad};
         SDL_RenderFillRect(r, &unity_rect);
     }
     SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
@@ -1564,16 +1670,33 @@ static void osd_draw_volume(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
     }
     int lw = osd_line_width(&ST_PRIMARY, vol_label);
     int lh = osd_line_height(&ST_PRIMARY, vol_label);
-    (void)lw;
     int gap = sym ? L->row_gap : 0;
+
+    double fit = osd_fit_w(sym_w + gap + lw, L->cw - 2 * L->mx);
+    sym_w = (int)(sym_w * fit + 0.5);
+    sym_h = (int)(sym_h * fit + 0.5);
+    lw = (int)(lw * fit + 0.5);
+    lh = (int)(lh * fit + 0.5);
+    gap = (int)(gap * fit + 0.5);
+
+    int row_w = sym_w + gap + lw;
     int row_h = sym ? FFMAX(sym_h, lh) : lh;
     int row_y = bar_y - row_h - L->row_gap;
-    if (sym) {
-        osd_text_line(r, &ST_SYMBOL, sym, bar_x, row_y + (row_h - sym_h) / 2,
-                      label_col);
+    int row_x = bar_x;
+    if (row_x + row_w > L->cw - L->mx) {
+        row_x = L->cw - L->mx - row_w;
     }
-    osd_text_line(r, &ST_PRIMARY, vol_label, bar_x + sym_w + gap,
-                  row_y + (row_h - lh) / 2, label_col);
+    if (row_x < L->mx) {
+        row_x = L->mx;
+    }
+    if (sym) {
+        osd_line(r, ST_SYMBOL.face, ST_SYMBOL.mono, sym, 0, row_x,
+                 row_y + (row_h - sym_h) / 2, label_col,
+                 ST_SYMBOL.ratio * fit);
+    }
+    osd_line(r, ST_PRIMARY.face, ST_PRIMARY.mono, vol_label, 0,
+             row_x + sym_w + gap, row_y + (row_h - lh) / 2, label_col,
+             ST_PRIMARY.ratio * fit);
 }
 
 typedef struct {

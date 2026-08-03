@@ -19,10 +19,12 @@
  */
 
 #include <math.h>
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 
+#include <libavutil/attributes.h>
 #include <libavutil/time.h>
 
 #include "lachesis_information.h"
@@ -140,6 +142,38 @@ void print_stream_info(const VideoState *is) {
     }
 }
 
+static void av_printf_format(4, 5)
+    media_info_append(char *buf, size_t bufsz, size_t *len, const char *fmt,
+                      ...) {
+    size_t at = *len;
+    va_list ap;
+    int n;
+
+    if (at + 1 >= bufsz) {
+        return;
+    }
+    if (at) {
+        buf[at++] = '\n';
+        buf[at] = '\0';
+        if (at + 1 >= bufsz) {
+            *len = at;
+            return;
+        }
+    }
+
+    va_start(ap, fmt);
+    n = vsnprintf(buf + at, bufsz - at, fmt, ap);
+    va_end(ap);
+
+    if (n > 0) {
+        at += (size_t)n;
+        if (at >= bufsz) {
+            at = bufsz - 1;
+        }
+    }
+    *len = at;
+}
+
 void format_media_info(const VideoState *is, char *buf, size_t bufsz) {
     if (bufsz == 0) {
         return;
@@ -150,23 +184,9 @@ void format_media_info(const VideoState *is, char *buf, size_t bufsz) {
     }
 
     size_t len = 0;
-    char tmp[256];
-    char sub[192];
+    char sub[256];
 
-    /* clang-format off */
-#define MI_LINE(...)                                                       \
-    do {                                                                   \
-        snprintf(tmp, sizeof(tmp), __VA_ARGS__);                           \
-        int _n = snprintf(buf + len, bufsz - len, "%s%s", len ? "\n" : "", \
-                          tmp);                                            \
-        if (_n > 0) {                                                      \
-            len += (size_t)_n;                                             \
-            if (len >= bufsz) {                                            \
-                len = bufsz - 1;                                           \
-            }                                                              \
-        }                                                                  \
-    } while (0)
-    /* clang-format on */
+#define MI_LINE(...) media_info_append(buf, bufsz, &len, __VA_ARGS__)
 
     const char *url = is->ytdl_source_url ? is->ytdl_source_url : is->filename;
     if (url && url[0]) {
