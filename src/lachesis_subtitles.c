@@ -23,6 +23,11 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 #include <ass/ass.h>
 
 #include <libavcodec/avcodec.h>
@@ -92,7 +97,7 @@ static int ass_engine_init_locked(void) {
         return -1;
     }
 
-    lass_renderer_setup(ass_renderer, "Arial");
+    lass_renderer_setup(ass_renderer, LASS_UI_FAMILY);
 
     return 0;
 }
@@ -282,10 +287,13 @@ int subtitles_track_open(AVCodecContext *avctx) {
         return -1;
     }
 
-    if (avctx->subtitle_header && avctx->subtitle_header_size > 0) {
-        ass_process_codec_private(ass_track, (char *)avctx->subtitle_header,
-                                  avctx->subtitle_header_size);
-    }
+    ass_process_codec_private(ass_track,
+                              avctx->subtitle_header
+                                  ? (char *)avctx->subtitle_header
+                                  : "",
+                              avctx->subtitle_header_size > 0
+                                  ? avctx->subtitle_header_size
+                                  : 0);
 
     ass_surface_stale = 1;
     ass_generation++;
@@ -618,6 +626,35 @@ static int sub_read_thread(void *arg) {
     return 0;
 }
 
+static int sub_is_regular_file(const char *path) {
+#ifdef _WIN32
+    wchar_t *wpath;
+    int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    DWORD attr;
+
+    if (n <= 0) {
+        return 0;
+    }
+    wpath = av_malloc_array((size_t)n, sizeof(*wpath));
+    if (!wpath) {
+        return 0;
+    }
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, n) <= 0) {
+        av_free(wpath);
+        return 0;
+    }
+    attr = GetFileAttributesW(wpath);
+    av_free(wpath);
+
+    return attr != INVALID_FILE_ATTRIBUTES &&
+        !(attr & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
 int open_external_subtitle(VideoState *is) {
     static const char *const sub_exts[] = {
         "srt", "ass", "ssa", "vtt", "sub", NULL};
@@ -632,6 +669,12 @@ int open_external_subtitle(VideoState *is) {
 
     const char *dot = strrchr(is->filename, '.');
     const char *slash = strrchr(is->filename, '/');
+#ifdef _WIN32
+    const char *bslash = strrchr(is->filename, '\\');
+    if (bslash && (!slash || bslash > slash)) {
+        slash = bslash;
+    }
+#endif
     if (dot && slash && dot < slash) {
         dot = NULL;
     }
@@ -641,8 +684,7 @@ int open_external_subtitle(VideoState *is) {
     int found = 0;
     for (int i = 0; sub_exts[i]; i++) {
         snprintf(path, sizeof(path), "%.*s.%s", (int)base_len, is->filename, sub_exts[i]);
-        struct stat st;
-        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+        if (sub_is_regular_file(path)) {
             found = 1;
             break;
         }

@@ -54,23 +54,29 @@ static void lass_message_cb(int level, const char *fmt, va_list va, void *data) 
     }
 }
 
+static unsigned char *lass_emoji_buf;
+static int lass_emoji_refs;
+
 static void lass_add_emoji_font(ASS_Library *lib) {
-    uLongf len = osd_emoji_font_size;
-    unsigned char *buf = av_malloc(len);
+    if (!lass_emoji_buf) {
+        uLongf len = osd_emoji_font_size;
+        unsigned char *buf = av_malloc(len);
 
-    if (!buf) {
-        return;
-    }
-    if (uncompress(buf, &len, osd_emoji_font_deflate,
-                   osd_emoji_font_deflate_size) != Z_OK ||
-        len != osd_emoji_font_size) {
-        log_warn("Could not decompress the bundled emoji font.\n");
-        av_free(buf);
-        return;
+        if (!buf) {
+            return;
+        }
+        if (uncompress(buf, &len, osd_emoji_font_deflate,
+                       osd_emoji_font_deflate_size) != Z_OK ||
+            len != osd_emoji_font_size) {
+            av_free(buf);
+            return;
+        }
+        lass_emoji_buf = buf;
     }
 
-    ass_add_font(lib, "NotoEmoji", (const char *)buf, (int)len);
-    av_free(buf);
+    ass_add_font(lib, "NotoEmoji", (const char *)lass_emoji_buf,
+                 (int)osd_emoji_font_size);
+    lass_emoji_refs++;
 }
 
 ASS_Library *lass_library_new(int extract_fonts) {
@@ -96,6 +102,9 @@ ASS_Library *lass_library_new(int extract_fonts) {
 void lass_library_free(ASS_Library *lib) {
     if (lib) {
         ass_library_done(lib);
+        if (lass_emoji_refs > 0 && --lass_emoji_refs == 0) {
+            av_freep(&lass_emoji_buf);
+        }
     }
 }
 
@@ -117,7 +126,7 @@ char *lass_strdup(const char *s) {
 void lass_renderer_setup(ASS_Renderer *renderer, const char *family) {
     ass_set_shaper(renderer, ASS_SHAPING_COMPLEX);
     ass_set_hinting(renderer, ASS_HINTING_NONE);
-    ass_set_fonts(renderer, NULL, family ? family : "Arial",
+    ass_set_fonts(renderer, NULL, family && *family ? family : LASS_UI_FAMILY,
                   ASS_FONTPROVIDER_AUTODETECT, NULL, 1);
 }
 

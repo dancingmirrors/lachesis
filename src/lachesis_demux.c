@@ -418,6 +418,10 @@ int stream_component_open(VideoState *is, int stream_index) {
         is->subtitle_st = ic->streams[stream_index];
 
         if ((ret = decoder_init(&is->subdec, avctx, &is->subtitleq, is->continue_read_thread)) < 0) {
+            /* Otherwise the libass track outlives the stream that feeds it. */
+            subtitles_track_close();
+            is->subtitle_stream = -1;
+            is->subtitle_st = NULL;
             goto fail;
         }
         if ((ret = decoder_start(&is->subdec, subtitle_thread, "subtitle_decoder", is)) < 0) {
@@ -645,6 +649,8 @@ int read_thread(void *arg) {
     int ff_quit_reason = FF_QUIT_REASON_ERROR;
     int vid_range_over = 0;
     int aud_range_over = 0;
+    int64_t still_deadline_us = 0;
+    int still_range_done = 0;
 
     if (!wait_mutex) {
         ret = AVERROR(ENOMEM);
@@ -1021,6 +1027,8 @@ int read_thread(void *arg) {
             is->seek_req = 0;
             is->queue_attachments_req = 1;
             is->eof = 0;
+            still_deadline_us = 0;
+            still_range_done = 0;
             if (is->paused) {
                 step_to_next_frame(is);
             }
@@ -1046,10 +1054,19 @@ int read_thread(void *arg) {
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
+        if (still_deadline_us && av_gettime_relative() >= still_deadline_us) {
+            still_deadline_us = 0;
+            still_range_done = 1;
+            is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 0;
+        }
+
         if (!is->paused &&
             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
-            if (is->is_still_image) {
+            if (is->is_still_image && !still_range_done) {
+                if (play_duration != AV_NOPTS_VALUE && !still_deadline_us) {
+                    still_deadline_us = av_gettime_relative() + play_duration;
+                }
                 is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
             } else if (is->loop_remaining != 1 &&
                        (!is->loop_remaining || --is->loop_remaining)) {

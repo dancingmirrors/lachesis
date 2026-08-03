@@ -29,6 +29,7 @@
 #include "lachesis_internal.h"
 
 void osd_init(void);
+void osd_warmup(void);
 void osd_uninit(void);
 
 void osd_prepare(VideoState *is);

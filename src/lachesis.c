@@ -122,6 +122,17 @@ static void init_dynload(void) {
 }
 
 #ifdef _WIN32
+static void win32_attach_console(void) {
+    if (GetStdHandle(STD_ERROR_HANDLE) || !AttachConsole(ATTACH_PARENT_PROCESS)) {
+        return;
+    }
+    freopen("CONOUT$", "w", stdout);
+    freopen("CONOUT$", "w", stderr);
+    freopen("CONIN$", "r", stdin);
+}
+#endif
+
+#ifdef _WIN32
 static void win32_argv_to_utf8(int *argc_p, char ***argv_p) {
     int wargc = 0;
     wchar_t **wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
@@ -1025,11 +1036,20 @@ static void sigterm_handler(int sig av_unused) {
     _Exit(123);
 }
 
+/* XXX */
+static float window_points_scale(void) {
+    float density = window ? SDL_GetWindowPixelDensity(window)
+                           : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+
+    return density > 0.0f ? density : 1.0f;
+}
+
 static void SDLCALL apply_default_window_size(void *unused av_unused) {
     SDL_Rect rect;
     int max_width, max_height;
     int width, height;
     AVRational sar;
+    float density = window_points_scale();
 
     SDL_LockMutex(window_size_req_lock);
     width = window_size_req_w;
@@ -1043,8 +1063,8 @@ static void SDLCALL apply_default_window_size(void *unused av_unused) {
     } else {
         SDL_Rect display_bounds;
         if (SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &display_bounds)) {
-            max_width = (int)(display_bounds.w * autofit_larger);
-            max_height = (int)(display_bounds.h * autofit_larger);
+            max_width = (int)(display_bounds.w * density * autofit_larger);
+            max_height = (int)(display_bounds.h * density * autofit_larger);
         } else {
             max_width = max_height = INT_MAX;
         }
@@ -1060,6 +1080,9 @@ static void SDLCALL apply_default_window_size(void *unused av_unused) {
         float aspect = (float)rect.w / (float)rect.h;
         SDL_SetWindowAspectRatio(window, aspect, aspect);
     }
+
+    rect.w = (int)lrintf(rect.w / density);
+    rect.h = (int)lrintf(rect.h / density);
 
     if (rect.w == default_width && rect.h == default_height) {
         return;
@@ -1163,7 +1186,9 @@ static int video_open(VideoState *is) {
     }
 
     SDL_SetWindowSize(window, w, h);
-    SDL_SetWindowPosition(window, screen_left, screen_top);
+    if (!SDL_SetWindowPosition(window, screen_left, screen_top)) {
+        SDL_ClearError();
+    }
     SDL_SetWindowFullscreen(window, is_fullscreen);
     SDL_ShowWindow(window);
     SDL_SyncWindow(window);
@@ -1191,7 +1216,8 @@ static void video_display(VideoState *is) {
         return;
     }
 
-    if (!is->width) {
+    if (!is->window_opened) {
+        is->window_opened = 1;
         video_open(is);
     }
 
@@ -2301,6 +2327,9 @@ static void open_renderer(enum RendererApi api) {
     params.window_flags = startup_window_flags();
     params.api = api;
     params.exclude = renderer_faulted_apis;
+    if (no_vulkan) {
+        params.exclude |= 1u << RENDERER_API_VULKAN;
+    }
     params.opt = dict;
 
     ret = renderer_open(&params, &window, &renderer);
@@ -2604,6 +2633,7 @@ int main(int argc, char **argv) {
     VideoState *is;
 
 #if defined(_WIN32)
+    win32_attach_console();
     win32_argv_to_utf8(&argc, &argv);
 #endif
 
@@ -2694,7 +2724,6 @@ int main(int argc, char **argv) {
     if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
         SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
     }
-    /* XXX: Remove this if the SDL3 requirement is bumped. */
     if (SDL_getenv("WAYLAND_DISPLAY") && !SDL_getenv("SDL_VIDEO_DRIVER") &&
         !SDL_getenv("SDL_VIDEODRIVER")) {
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
@@ -2759,6 +2788,7 @@ int main(int argc, char **argv) {
         subtitles_init();
         osd_set_info_provider(format_media_info);
         osd_set_stats_provider(format_playback_stats);
+        osd_warmup();
     }
 
     is = stream_open_playlist_entry(playlist_pos);

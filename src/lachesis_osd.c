@@ -1156,6 +1156,51 @@ void osd_init(void) {
     osd_font_family[n] = '\0';
 }
 
+void osd_warmup(void) {
+    double step = 0, ink = 0;
+    int w = 0, h = 0;
+
+    if (!osd_engine_ensure()) {
+        return;
+    }
+
+    osd_reference(OSD_FONT_SIZE, &step, &ink);
+
+    if (window) {
+        SDL_GetWindowSizeInPixels(window, &w, &h);
+    }
+    if (w <= 0 || h <= 0) {
+        w = default_width;
+        h = default_height;
+    }
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+
+    osd_canvas_h = h;
+    osd_play_w = OSD_RES_H * w / h;
+    if (osd_track_ensure((int)(osd_play_w + 0.5))) {
+        int change;
+
+        ass_set_frame_size(osd_renderer, w, h);
+        ass_flush_events(osd_track);
+        osd_set_event(osd_track,
+                      "{\\an7\\pos(0,0)\\fs66\\bord2\\q2}"
+                      "0123456789:/%()., "
+                      "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                      "abcdefghijklmnopqrstuvwxyz"
+                      "{\\fn" LASS_SYMBOL_FAMILY "}"
+                      "\xEE\x80\x81\xEE\x80\x82\xEE\x84\x8A"
+                      "\xEE\x84\x8B\xEE\x84\x8C\xEE\x84\x8D"
+                      "{\\fn" LASS_EMOJI_FAMILY "}\xF0\x9F\x98\x80",
+                      0, 0);
+        (void)ass_render_frame(osd_renderer, osd_track, 0, &change);
+        ass_flush_events(osd_track);
+    }
+
+    osd_force_rebuild = 1;
+}
+
 void osd_uninit(void) {
     SDL_DestroySurface(osd_surface);
     osd_surface = NULL;

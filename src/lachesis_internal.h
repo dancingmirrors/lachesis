@@ -268,6 +268,7 @@ typedef struct VideoState {
     double audio_only_last_draw;
     int audio_only_clean;
     int width, height, xleft, ytop;
+    int window_opened;
     int step;
     int start_pause_pending;
     int begin_paused;

@@ -589,13 +589,14 @@ static int create_vk_by_placebo(Renderer *renderer,
         return ret;
     }
 
-    vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
-        .idx = decode_index,
-        .num = decode_count,
-        .flags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
-    };
-
-    nb_qf++;
+    if (decode_index >= 0 && decode_count > 0) {
+        vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
+            .idx = decode_index,
+            .num = decode_count,
+            .flags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
+        };
+        nb_qf++;
+    }
     vk_dev_ctx->nb_qf = nb_qf;
 
     ret = av_hwdevice_ctx_init(ctx->hw_device_ref);
@@ -820,7 +821,8 @@ static const struct gl_profile {
     {"OpenGL 3.3 core (EGL)", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 1, 0},
 #endif
     {"OpenGL 3.3 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 0, 0},
-    {"OpenGL ES 3.0", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 0, 0},
+    {"OpenGL 3.2 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 2, 0, 0},
+    {"OpenGL ES 3.0", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 0},
 #ifdef _WIN32
     {"OpenGL ES 3.0 (ANGLE)", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 1},
 #endif
@@ -909,8 +911,8 @@ static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
     entry = av_dict_get(opt, "present_mode", NULL, 0);
     if (entry && entry->value && !strcmp(entry->value, "immediate")) {
         SDL_GL_SetSwapInterval(0);
-    } else if (!SDL_GL_SetSwapInterval(-1)) {
-        SDL_GL_SetSwapInterval(1);
+    } else if (!SDL_GL_SetSwapInterval(1)) {
+        SDL_GL_SetSwapInterval(-1);
     }
 
     egl_display = SDL_EGL_GetCurrentDisplay();
@@ -1313,7 +1315,8 @@ static int icc_load_display(RendererContext *ctx, SDL_Window *window) {
     if (!icc_adopt(ctx, data, size)) {
         return 0;
     }
-    log_verbose("Using the display's ICC profile (%zu bytes).\n", size);
+    log_verbose("Using the display's ICC profile (%llu bytes).\n",
+                (unsigned long long)size);
 
     return 1;
 }
@@ -1477,6 +1480,9 @@ static int create(Renderer *renderer, SDL_Window *window, AVDictionary *opt) {
 
     entry = av_dict_get(opt, "display_hdr", NULL, 0);
     ctx->hdr_auto = !entry || strtol(entry->value, NULL, 10);
+    if (renderer->backend == RENDERER_API_OPENGL) {
+        ctx->hdr_auto = 0;
+    }
     hdr_refresh(ctx, window);
 
     ctx->renderer = pl_renderer_create(ctx->log_ctx, ctx->gpu);
@@ -2107,7 +2113,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
 
     static int64_t t_acq, t_rnd, t_prs, t_n;
     int64_t _ts0 = av_gettime_relative();
-    struct pl_frame pl_prev, pl_next;
+    struct pl_frame pl_prev = {0}, pl_next = {0};
     bool mapped_prev = false, mapped_next = false;
 
     if (!pl_swapchain_start_frame(ctx->swapchain, &swap_frame)) {
@@ -2249,7 +2255,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     pl_tex cap_tex = NULL;
     struct pl_tex_params cap_params;
     struct pl_tex_transfer_params xfer;
-    struct pl_frame pl_prev, pl_next;
+    struct pl_frame pl_prev = {0}, pl_next = {0};
     bool mapped_prev = false, mapped_next = false;
     int ret = 0;
 
@@ -2277,6 +2283,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
         .format = fmt,
         .renderable = true,
         .host_readable = true,
+        .blit_dst = true,
     };
     cap_tex = pl_tex_create(ctx->gpu, &cap_params);
     if (!cap_tex) {
@@ -2596,7 +2603,13 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
         goto fail;
     }
 
-    SDL_ShowWindow(window);
+    const char *video_driver = SDL_GetCurrentVideoDriver();
+    int show_before_test = video_driver && !strcmp(video_driver, "wayland");
+
+    if (show_before_test) {
+        SDL_ShowWindow(window);
+    }
+
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (w > 0 && h > 0) {
         resize(renderer, w, h);
@@ -2606,6 +2619,10 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
     if (ret < 0) {
         log_warn("The %s renderer initialized but cannot render.\n", what);
         goto fail;
+    }
+
+    if (!show_before_test) {
+        SDL_ShowWindow(window);
     }
 
     *out_window = window;
@@ -2838,7 +2855,7 @@ int renderer_is_vsync_blocked(Renderer *renderer) {
         if (!SDL_GL_GetSwapInterval(&interval)) {
             return 1;
         }
-        return interval != 0;
+        return interval > 0;
     }
 #endif
     default:

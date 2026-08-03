@@ -216,14 +216,14 @@ int64_t present_last_done_us(void) {
 double present_snap(double ideal_sec, double now_sec) {
     double vsync = present_vsync_sec();
 
-    if (pres.snap_disabled || vsync <= 0 || pres.last_done_us <= 0) {
+    if (pres.snap_disabled || vsync <= 0 || pres.last_blocked_done_us <= 0) {
         return ideal_sec;
     }
     if (ideal_sec <= now_sec) {
         return ideal_sec;
     }
 
-    double anchor = pres.last_done_us / 1e6;
+    double anchor = pres.last_blocked_done_us / 1e6;
     if (now_sec - anchor > PRESENT_ANCHOR_STALE_US / 1e6) {
         return ideal_sec;
     }

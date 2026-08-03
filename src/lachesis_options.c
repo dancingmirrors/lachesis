@@ -310,7 +310,7 @@ const OptionDef options[] = {
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
     {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
-    {"video_unscaled", OPT_TYPE_BOOL, 0, {&video_unscaled}, "display video at native size and scale down only if the input is too large for the display"},
+    {"video_unscaled", OPT_TYPE_BOOL, 0, {&video_unscaled}, "scale video to fill the window"},
     {"360-sbs", OPT_TYPE_BOOL, 0, {&enable_360sbs}, "enable 360\xc2\xb0 equirectangular projection for side-by-side video"},
     {"360-tb", OPT_TYPE_BOOL, 0, {&enable_360tb}, "enable 360\xc2\xb0 equirectangular projection for top-bottom video"},
     {"no-ytdl", OPT_TYPE_BOOL, 0, {&ytdl_disable}, "disable yt-dlp integration"},
