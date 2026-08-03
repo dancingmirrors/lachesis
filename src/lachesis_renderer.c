@@ -2508,11 +2508,21 @@ static const AVClass renderer_class = {
 };
 
 static const enum RendererApi renderer_api_order[] = {
+#ifdef __APPLE__
+    /* XXX */
+#if LACHESIS_HAVE_OPENGL
+    RENDERER_API_OPENGL,
+#endif
+#if LACHESIS_HAVE_VULKAN
+    RENDERER_API_VULKAN,
+#endif
+#else
 #if LACHESIS_HAVE_VULKAN
     RENDERER_API_VULKAN,
 #endif
 #if LACHESIS_HAVE_OPENGL
     RENDERER_API_OPENGL,
+#endif
 #endif
 };
 
