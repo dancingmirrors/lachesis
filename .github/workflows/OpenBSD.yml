@@ -22,7 +22,7 @@ jobs:
           usesh: true
           prepare: |
             set -x
-            pkg_add ccache cmake ffmpeg git gmake libarchive libevdev-openbsd libinput-openbsd libplacebo libxkbcommon mpv ninja sdl3 wayland wayland-protocols
+            pkg_add ccache cmake ffmpeg git gmake libarchive libass libevdev-openbsd libinput-openbsd libplacebo libxkbcommon mpv ninja sdl3 wayland wayland-protocols
 
             git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
             cd SDL_ttf

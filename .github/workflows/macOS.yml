@@ -42,6 +42,7 @@ jobs:
             sdl3 \
             sdl3_ttf \
             libarchive \
+            libass \
             shaderc \
             glslang \
             molten-vk \
