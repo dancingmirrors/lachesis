@@ -22,9 +22,7 @@
 #include "lachesis_config.h"
 #include "version.h"
 
-#if LACHESIS_HAVE_LIBPLACEBO
 #include <libplacebo/config.h>
-#endif
 
 #include <errno.h>
 #include <inttypes.h>
@@ -223,22 +221,19 @@ void sbs360_reset_view(void) {
 }
 
 SDL_Window *window;
-SDL_Renderer *renderer;
 
 static SDL_Mutex *window_size_req_lock;
 static int window_size_req_w;
 static int window_size_req_h;
 static AVRational window_size_req_sar;
 
-const SDL_PixelFormat *renderer_texture_formats = NULL;
+Renderer *renderer;
 
-VkRenderer *vk_renderer;
-
-#define VK_DISPLAY_FAULT_LIMIT 8
-#define VK_DISPLAY_FAULT_LIMIT_LATE 90
-static int vk_display_fail_streak;
-static int vk_display_ever_ok;
-static int vk_fault_event_sent;
+#define RENDER_FAULT_LIMIT 8
+#define RENDER_FAULT_LIMIT_LATE 90
+static int render_fail_streak;
+static int render_ever_ok;
+static int render_fault_event_sent;
 
 double ab_loop_a = NAN;
 double ab_loop_b = NAN;
@@ -251,28 +246,6 @@ double playback_speed = 1.0;
 
 #define PLAYBACK_SPEED_MIN 0.2
 #define PLAYBACK_SPEED_MAX 2.0
-
-const struct TextureFormatEntry sdl_texture_format_map[SDL_TEXTURE_FORMAT_MAP_SIZE] = {
-    {AV_PIX_FMT_RGB8, SDL_PIXELFORMAT_RGB332},
-    {AV_PIX_FMT_RGB444, SDL_PIXELFORMAT_XRGB4444},
-    {AV_PIX_FMT_RGB555, SDL_PIXELFORMAT_XRGB1555},
-    {AV_PIX_FMT_BGR555, SDL_PIXELFORMAT_XBGR1555},
-    {AV_PIX_FMT_RGB565, SDL_PIXELFORMAT_RGB565},
-    {AV_PIX_FMT_BGR565, SDL_PIXELFORMAT_BGR565},
-    {AV_PIX_FMT_RGB24, SDL_PIXELFORMAT_RGB24},
-    {AV_PIX_FMT_BGR24, SDL_PIXELFORMAT_BGR24},
-    {AV_PIX_FMT_0RGB32, SDL_PIXELFORMAT_XRGB8888},
-    {AV_PIX_FMT_0BGR32, SDL_PIXELFORMAT_XBGR8888},
-    {AV_PIX_FMT_NE(RGB0, 0BGR), SDL_PIXELFORMAT_RGBX8888},
-    {AV_PIX_FMT_NE(BGR0, 0RGB), SDL_PIXELFORMAT_BGRX8888},
-    {AV_PIX_FMT_RGB32, SDL_PIXELFORMAT_ARGB8888},
-    {AV_PIX_FMT_RGB32_1, SDL_PIXELFORMAT_RGBA8888},
-    {AV_PIX_FMT_BGR32, SDL_PIXELFORMAT_ABGR8888},
-    {AV_PIX_FMT_BGR32_1, SDL_PIXELFORMAT_BGRA8888},
-    {AV_PIX_FMT_YUV420P, SDL_PIXELFORMAT_IYUV},
-    {AV_PIX_FMT_YUYV422, SDL_PIXELFORMAT_YUY2},
-    {AV_PIX_FMT_UYVY422, SDL_PIXELFORMAT_UYVY},
-};
 
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     MyAVPacketList pkt1;
@@ -447,7 +420,6 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
 
                 switch (d->avctx->codec_type) {
                 case AVMEDIA_TYPE_VIDEO:
-                    /* Only the subtitle path passes a NULL frame. */
                     av_assert0(frame);
                     ret = avcodec_receive_frame(d->avctx, frame);
                     if (ret >= 0) {
@@ -677,49 +649,6 @@ void decoder_abort(Decoder *d, FrameQueue *fq) {
     packet_queue_flush(d->queue);
 }
 
-/* clang-format off */
-int realloc_texture(SDL_Texture **texture, Uint32 new_format,
-                    int new_width, int new_height,
-                    SDL_BlendMode blendmode, int init_texture) {
-    /* clang-format on */
-    Uint32 format = SDL_PIXELFORMAT_UNKNOWN;
-    float w = 0, h = 0;
-    if (*texture) {
-        SDL_PropertiesID props = SDL_GetTextureProperties(*texture);
-        format = (Uint32)SDL_GetNumberProperty(props, SDL_PROP_TEXTURE_FORMAT_NUMBER, SDL_PIXELFORMAT_UNKNOWN);
-        SDL_GetTextureSize(*texture, &w, &h);
-    }
-    if (!*texture || new_width != (int)w || new_height != (int)h || new_format != format) {
-        void *pixels;
-        int pitch;
-        if (*texture) {
-            SDL_DestroyTexture(*texture);
-        }
-        if (!(*texture = SDL_CreateTexture(renderer, new_format, SDL_TEXTUREACCESS_STREAMING, new_width, new_height))) {
-            static int failed_w, failed_h;
-            if (failed_w != new_width || failed_h != new_height) {
-                failed_w = new_width;
-                failed_h = new_height;
-                log_warn("The renderer refused a %dx%d texture: %s.\n",
-                         new_width, new_height, SDL_GetError());
-            }
-            return -1;
-        }
-        if (!SDL_SetTextureBlendMode(*texture, blendmode)) {
-            return -1;
-        }
-        if (init_texture) {
-            if (!SDL_LockTexture(*texture, NULL, &pixels, &pitch)) {
-                return -1;
-            }
-            memset(pixels, 0, pitch * new_height);
-            SDL_UnlockTexture(*texture);
-        }
-    }
-
-    return 0;
-}
-
 void calculate_display_rect(SDL_Rect *rect,
                             int scr_xleft, int scr_ytop, int scr_width, int scr_height,
                             int pic_width, int pic_height, AVRational pic_sar) {
@@ -795,122 +724,7 @@ void calculate_display_rect(SDL_Rect *rect,
     rect->h = FFMAX((int)height, 1);
 }
 
-static void get_sdl_pix_fmt_and_blendmode(int format, Uint32 *sdl_pix_fmt, SDL_BlendMode *sdl_blendmode) {
-    size_t i;
-    *sdl_blendmode = SDL_BLENDMODE_NONE;
-    *sdl_pix_fmt = SDL_PIXELFORMAT_UNKNOWN;
-    if (format == AV_PIX_FMT_RGB32 ||
-        format == AV_PIX_FMT_RGB32_1 ||
-        format == AV_PIX_FMT_BGR32 ||
-        format == AV_PIX_FMT_BGR32_1) {
-        *sdl_blendmode = SDL_BLENDMODE_BLEND;
-    }
-    for (i = 0; i < FF_ARRAY_ELEMS(sdl_texture_format_map); i++) {
-        if (format == sdl_texture_format_map[i].format) {
-            *sdl_pix_fmt = sdl_texture_format_map[i].texture_fmt;
-            return;
-        }
-    }
-}
-
-static int upload_texture(SDL_Texture **tex, AVFrame *frame) {
-    int ret = 0;
-    Uint32 sdl_pix_fmt;
-    SDL_BlendMode sdl_blendmode;
-    get_sdl_pix_fmt_and_blendmode(frame->format, &sdl_pix_fmt, &sdl_blendmode);
-    /* clang-format off */
-    if (realloc_texture(tex,
-                        sdl_pix_fmt == SDL_PIXELFORMAT_UNKNOWN
-                            ? SDL_PIXELFORMAT_ARGB8888
-                            : sdl_pix_fmt,
-                        frame->width, frame->height, sdl_blendmode, 0) < 0) {
-        /* clang-format on */
-        return -1;
-    }
-    switch (sdl_pix_fmt) {
-    case SDL_PIXELFORMAT_IYUV:
-        if (frame->linesize[0] > 0 && frame->linesize[1] > 0 && frame->linesize[2] > 0) {
-            ret = SDL_UpdateYUVTexture(*tex, NULL, frame->data[0], frame->linesize[0],
-                                       frame->data[1], frame->linesize[1],
-                                       frame->data[2], frame->linesize[2]);
-        } else if (frame->linesize[0] < 0 && frame->linesize[1] < 0 && frame->linesize[2] < 0) {
-            /* clang-format off */
-            ret = SDL_UpdateYUVTexture(
-                *tex, NULL,
-                frame->data[0] + frame->linesize[0] * (frame->height - 1),
-                -frame->linesize[0],
-                frame->data[1] +
-                    frame->linesize[1] * (AV_CEIL_RSHIFT(frame->height, 1) - 1),
-                -frame->linesize[1],
-                frame->data[2] +
-                    frame->linesize[2] * (AV_CEIL_RSHIFT(frame->height, 1) - 1),
-                -frame->linesize[2]);
-            /* clang-format on */
-        } else {
-            return -1;
-        }
-        break;
-    default:
-        if (frame->linesize[0] < 0) {
-            /* clang-format off */
-            ret = SDL_UpdateTexture(
-                *tex, NULL,
-                frame->data[0] + frame->linesize[0] * (frame->height - 1),
-                -frame->linesize[0]);
-            /* clang-format on */
-        } else {
-            ret = SDL_UpdateTexture(*tex, NULL, frame->data[0], frame->linesize[0]);
-        }
-        break;
-    }
-
-    return ret ? 0 : -1;
-}
-
-static void set_sdl_yuv_conversion_mode(AVFrame *frame) {
-    /* XXX */
-    (void)frame;
-}
-
-static void draw_video_background(VideoState *is) {
-    const int tile_size = VIDEO_BACKGROUND_TILE_SIZE;
-    SDL_Rect *rect = &is->render_params.target_rect;
-    SDL_BlendMode blendMode;
-
-    if (!SDL_GetTextureBlendMode(is->vid_texture, &blendMode) && blendMode == SDL_BLENDMODE_BLEND) {
-        switch (is->render_params.video_background_type) {
-        case VIDEO_BACKGROUND_TILES:
-            SDL_SetRenderDrawColor(renderer, 237, 237, 237, 255);
-            fill_rectangle(rect->x, rect->y, rect->w, rect->h);
-            SDL_SetRenderDrawColor(renderer, 222, 222, 222, 255);
-            for (int x = 0; x < rect->w; x += tile_size * 2) {
-                fill_rectangle(rect->x + x, rect->y, FFMIN(tile_size, rect->w - x), rect->h);
-            }
-            for (int y = 0; y < rect->h; y += tile_size * 2) {
-                fill_rectangle(rect->x, rect->y + y, rect->w, FFMIN(tile_size, rect->h - y));
-            }
-            SDL_SetRenderDrawColor(renderer, 237, 237, 237, 255);
-            for (int y = 0; y < rect->h; y += tile_size * 2) {
-                int h = FFMIN(tile_size, rect->h - y);
-                for (int x = 0; x < rect->w; x += tile_size * 2) {
-                    fill_rectangle(x + rect->x, y + rect->y, FFMIN(tile_size, rect->w - x), h);
-                }
-            }
-            break;
-        case VIDEO_BACKGROUND_COLOR: {
-            const uint8_t *c = is->render_params.video_background_color;
-            SDL_SetRenderDrawColor(renderer, c[0], c[1], c[2], c[3]);
-            fill_rectangle(rect->x, rect->y, rect->w, rect->h);
-            break;
-        }
-        case VIDEO_BACKGROUND_NONE:
-            SDL_SetTextureBlendMode(is->vid_texture, SDL_BLENDMODE_NONE);
-            break;
-        }
-    }
-}
-
-static void prepare_vulkan_subtitles(VideoState *is, Frame *vp) {
+static void prepare_subtitles(VideoState *is, Frame *vp) {
     Frame *sp;
     int plane_w, plane_h, max_dim;
     size_t need;
@@ -1006,221 +820,56 @@ static void prepare_vulkan_subtitles(VideoState *is, Frame *vp) {
     is->render_params.sub_stride = is->sub_rgba_w * 4;
 }
 
-static int video_src_rect(const Frame *vp, SDL_FRect *out) {
-    const AVFrame *f = vp->frame;
-    size_t x, y;
-
-    if (!f || f->width <= 0 || f->height <= 0) {
-        return 0;
-    }
-    if (vp->width <= 0 || vp->height <= 0 ||
-        vp->width > f->width || vp->height > f->height) {
-        return 0;
-    }
-    if (vp->width == f->width && vp->height == f->height) {
-        return 0;
-    }
-
-    x = f->crop_left;
-    y = vp->flip_v ? f->crop_bottom : f->crop_top;
-
-    if (x > (size_t)f->width || y > (size_t)f->height ||
-        x + (size_t)vp->width > (size_t)f->width ||
-        y + (size_t)vp->height > (size_t)f->height) {
-        return 0;
-    }
-
-    out->x = (float)x;
-    out->y = (float)y;
-    out->w = (float)vp->width;
-    out->h = (float)vp->height;
-
-    return 1;
-}
-
 static void video_image_display(VideoState *is) {
-    Frame *vp;
-    Frame *sp = NULL;
+    Frame *vp = frame_queue_peek_last(&is->pictq);
     SDL_Rect *rect = &is->render_params.target_rect;
+    int ret;
 
-    vp = frame_queue_peek_last(&is->pictq);
-    calculate_display_rect(rect, is->xleft, is->ytop, is->width, is->height, vp->width, vp->height, vp->sar);
-    if (vk_renderer) {
-        if (enable_360sbs) {
-            vk_renderer_update_360(vk_renderer, sbs360_yaw, sbs360_pitch, sbs360_roll, sbs360_hfov);
-        }
-        is->render_params.still_image = is->is_still_image;
-        is->render_params.disable_linear_scaling = is->render_low_quality;
-        is->render_params.skip_anti_aliasing = is->render_low_quality;
-        is->render_params.deinterlace = deinterlace;
-        is->render_params.rotate = video_rotate;
-        is->render_params.next_frame = NULL;
-        EqualizerValues eq = equalizer_get();
-        is->render_params.eq_brightness = eq.brightness;
-        is->render_params.eq_gamma = eq.gamma;
-        is->render_params.eq_contrast = eq.contrast;
-        if (deinterlace == DEINTERLACE_YADIF &&
-            frame_queue_nb_remaining(&is->pictq) > 0) {
-            Frame *nextvp = frame_queue_peek(&is->pictq);
-            if (nextvp != vp) {
-                is->render_params.next_frame = nextvp->frame;
-            }
-        }
-        if (!subtitle_disable) {
-            prepare_vulkan_subtitles(is, vp);
-        }
-        int ret = vk_renderer_display(vk_renderer, vp->frame, &is->render_params);
-        if (ret == AVERROR(ERANGE)) {
-            /* Doesn't imply the renderer doesn't work. */
-        } else if (ret < 0) {
-            int limit = vk_display_ever_ok ? VK_DISPLAY_FAULT_LIMIT_LATE
-                                           : VK_DISPLAY_FAULT_LIMIT;
-            /* Can't be used to determine the renderer's health. */
-            if (!(SDL_GetWindowFlags(window) &
-                  (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) &&
-                !vk_fault_event_sent && ++vk_display_fail_streak >= limit) {
-                SDL_Event event;
-                SDL_zero(event);
-                event.type = FF_VULKAN_FAULT_EVENT;
-                event.user.data1 = is;
-                vk_fault_event_sent = SDL_PushEvent(&event);
-            }
-        } else {
-            vk_display_ever_ok = 1;
-            vk_display_fail_streak = 0;
-        }
-        return;
-    }
+    calculate_display_rect(rect, is->xleft, is->ytop, is->width, is->height,
+                           vp->width, vp->height, vp->sar);
 
-    if (is->subtitle_st) {
-        if (frame_queue_nb_remaining(&is->subpq) > 0) {
-            sp = frame_queue_peek(&is->subpq);
-
-            if (sp->sub.format != 0) {
-                sp = NULL;
-            } else if (vp->pts >= sp->pts + ((float)sp->sub.start_display_time / 1000)) {
-                if (!sp->uploaded) {
-                    uint8_t *pixels[4];
-                    int pitch[4];
-                    unsigned int i;
-                    int max_dim = display_max_texture_size();
-                    int plane_w, plane_h;
-
-                    if (!sp->width || !sp->height) {
-                        sp->width = vp->width;
-                        sp->height = vp->height;
-                    }
-
-                    plane_w = sp->width;
-                    plane_h = sp->height;
-                    if (max_dim > 0 && (plane_w > max_dim || plane_h > max_dim)) {
-                        fit_within_max_dim(sp->width, sp->height, max_dim, &plane_w, &plane_h);
-                    }
-
-                    if (realloc_texture(&is->sub_texture, SDL_PIXELFORMAT_ARGB8888, plane_w, plane_h, SDL_BLENDMODE_BLEND, 1) < 0) {
-                        return;
-                    }
-
-                    for (i = 0; i < sp->sub.num_rects; i++) {
-                        AVSubtitleRect *sub_rect = sp->sub.rects[i];
-                        int src_w, src_h;
-
-                        sub_rect->x = av_clip(sub_rect->x, 0, sp->width);
-                        sub_rect->y = av_clip(sub_rect->y, 0, sp->height);
-                        sub_rect->w = av_clip(sub_rect->w, 0, sp->width - sub_rect->x);
-                        sub_rect->h = av_clip(sub_rect->h, 0, sp->height - sub_rect->y);
-                        src_w = sub_rect->w;
-                        src_h = sub_rect->h;
-                        if (src_w <= 0 || src_h <= 0) {
-                            continue;
-                        }
-
-                        if (plane_w != sp->width || plane_h != sp->height) {
-                            sub_rect->x = av_clip((int)((int64_t)sub_rect->x * plane_w / sp->width), 0, plane_w - 1);
-                            sub_rect->y = av_clip((int)((int64_t)sub_rect->y * plane_h / sp->height), 0, plane_h - 1);
-                            sub_rect->w = av_clip((int)((int64_t)src_w * plane_w / sp->width), 1, plane_w - sub_rect->x);
-                            sub_rect->h = av_clip((int)((int64_t)src_h * plane_h / sp->height), 1, plane_h - sub_rect->y);
-                        }
-
-                        is->sub_convert_ctx = sws_getCachedContext(is->sub_convert_ctx,
-                                                                   src_w, src_h, AV_PIX_FMT_PAL8,
-                                                                   sub_rect->w, sub_rect->h, AV_PIX_FMT_BGRA,
-                                                                   0, NULL, NULL, NULL);
-                        if (!is->sub_convert_ctx) {
-                            return;
-                        }
-                        if (SDL_LockTexture(is->sub_texture, (SDL_Rect *)sub_rect, (void **)pixels, pitch)) {
-                            sws_scale(is->sub_convert_ctx, (const uint8_t *const *)sub_rect->data, sub_rect->linesize,
-                                      0, src_h, pixels, pitch);
-                            SDL_UnlockTexture(is->sub_texture);
-                        }
-                    }
-
-                    sp->width = plane_w;
-                    sp->height = plane_h;
-                    sp->uploaded = 1;
-                }
-            } else {
-                sp = NULL;
-            }
-        }
-    }
-
-    set_sdl_yuv_conversion_mode(vp->frame);
-
-    if (!vp->uploaded || is->vid_texture_eq_gen != equalizer_generation()) {
-        AVFrame *adjusted = equalizer_apply(vp->frame);
-
-        if (upload_texture(&is->vid_texture, adjusted) < 0) {
-            set_sdl_yuv_conversion_mode(NULL);
-            return;
-        }
-        vp->uploaded = 1;
-        vp->flip_v = adjusted->linesize[0] < 0;
-        is->vid_texture_eq_gen = equalizer_generation();
-    }
-
-    draw_video_background(is);
-    SDL_FRect dst_rectf = {rect->x, rect->y, rect->w, rect->h};
-    if (video_rotate == 90 || video_rotate == 270) {
-        float cx = rect->x + rect->w / 2.0f;
-        float cy = rect->y + rect->h / 2.0f;
-        dst_rectf.w = rect->h;
-        dst_rectf.h = rect->w;
-        dst_rectf.x = cx - dst_rectf.w / 2.0f;
-        dst_rectf.y = cy - dst_rectf.h / 2.0f;
-    }
-    int drew_360 = 0;
     if (enable_360sbs) {
-        drew_360 = view360_draw(renderer, is->vid_texture, rect, view360_layout,
-                                sbs360_yaw, sbs360_pitch, sbs360_roll,
-                                sbs360_hfov, video_rotate, vp->flip_v) >= 0;
+        renderer_update_360(renderer, sbs360_yaw, sbs360_pitch, sbs360_roll, sbs360_hfov);
     }
-    if (!drew_360) {
-        SDL_FRect srcf;
-        SDL_RenderTextureRotated(renderer, is->vid_texture,
-                                 video_src_rect(vp, &srcf) ? &srcf : NULL,
-                                 &dst_rectf, (double)video_rotate, NULL,
-                                 vp->flip_v ? SDL_FLIP_VERTICAL : SDL_FLIP_NONE);
-    }
-    set_sdl_yuv_conversion_mode(NULL);
-    if (sp) {
-#if USE_ONEPASS_SUBTITLE_RENDER
-        SDL_RenderTexture(renderer, is->sub_texture, NULL, &dst_rectf);
-#else
-        int i;
-        double xratio = (double)rect->w / (double)sp->width;
-        double yratio = (double)rect->h / (double)sp->height;
-        for (i = 0; i < sp->sub.num_rects; i++) {
-            SDL_Rect *sub_rect = (SDL_Rect *)sp->sub.rects[i];
-            SDL_FRect srcf = {sub_rect->x, sub_rect->y, sub_rect->w, sub_rect->h};
-            SDL_FRect target = {.x = rect->x + sub_rect->x * xratio,
-                                .y = rect->y + sub_rect->y * yratio,
-                                .w = sub_rect->w * xratio,
-                                .h = sub_rect->h * yratio};
-            SDL_RenderTexture(renderer, is->sub_texture, &srcf, &target);
+    is->render_params.still_image = is->is_still_image;
+    is->render_params.disable_linear_scaling = is->render_low_quality;
+    is->render_params.skip_anti_aliasing = is->render_low_quality;
+    is->render_params.deinterlace = deinterlace;
+    is->render_params.rotate = video_rotate;
+    is->render_params.next_frame = NULL;
+    EqualizerValues eq = equalizer_get();
+    is->render_params.eq_brightness = eq.brightness;
+    is->render_params.eq_gamma = eq.gamma;
+    is->render_params.eq_contrast = eq.contrast;
+    if (deinterlace == DEINTERLACE_YADIF &&
+        frame_queue_nb_remaining(&is->pictq) > 0) {
+        Frame *nextvp = frame_queue_peek(&is->pictq);
+        if (nextvp != vp) {
+            is->render_params.next_frame = nextvp->frame;
         }
-#endif
+    }
+    if (!subtitle_disable) {
+        prepare_subtitles(is, vp);
+    }
+
+    ret = renderer_display(renderer, vp->frame, &is->render_params);
+    if (ret == AVERROR(ERANGE)) {
+        /* Doesn't imply the renderer doesn't work. */
+    } else if (ret < 0) {
+        int limit = render_ever_ok ? RENDER_FAULT_LIMIT_LATE : RENDER_FAULT_LIMIT;
+        /* Can't be used to determine the renderer's health. */
+        if (!(SDL_GetWindowFlags(window) &
+              (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) &&
+            !render_fault_event_sent && ++render_fail_streak >= limit) {
+            SDL_Event event;
+            SDL_zero(event);
+            event.type = FF_RENDER_FAULT_EVENT;
+            event.user.data1 = is;
+            render_fault_event_sent = SDL_PushEvent(&event);
+        }
+    } else {
+        render_ever_ok = 1;
+        render_fail_streak = 0;
     }
 }
 
@@ -1331,12 +980,6 @@ static void stream_close(VideoState *is) {
     av_free(is->filename);
     av_free(is->archive_path);
     av_free(is->entry_name);
-    if (is->vid_texture) {
-        SDL_DestroyTexture(is->vid_texture);
-    }
-    if (is->sub_texture) {
-        SDL_DestroyTexture(is->sub_texture);
-    }
     av_freep(&is->sub_rgba);
     av_free(is);
 }
@@ -1345,13 +988,9 @@ av_noreturn void do_exit(VideoState *is) {
     if (is) {
         stream_close(is);
     }
-    equalizer_uninit();
-    view360_free();
     if (renderer) {
-        SDL_DestroyRenderer(renderer);
-    }
-    if (vk_renderer) {
-        vk_renderer_destroy(vk_renderer);
+        renderer_destroy(renderer);
+        av_freep(&renderer);
     }
     if (window) {
         SDL_DestroyWindow(window);
@@ -1548,6 +1187,10 @@ static int video_open(VideoState *is) {
 }
 
 static void video_display(VideoState *is) {
+    if (!renderer) {
+        return;
+    }
+
     if (!is->width) {
         video_open(is);
     }
@@ -1557,17 +1200,17 @@ static void video_display(VideoState *is) {
     }
 
     is->render_params.osd_pixels = NULL;
+    is->render_params.sub_pixels = NULL;
+    is->render_params.next_frame = NULL;
     is->render_params.present_done_us = 0;
     is->render_params.present_block_us = 0;
     /* This thread owns the composited subtitle surface, so it frees it. */
     subtitles_reap();
-    osd_prepare_vulkan(is);
+    osd_prepare(is);
 
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
     if (is->video_st) {
         video_image_display(is);
-    } else if (vk_renderer) {
+    } else {
         int bw = 0, bh = 0;
         SDL_GetWindowSizeInPixels(window, &bw, &bh);
         if (bw <= 0 || bh <= 0) {
@@ -1579,18 +1222,15 @@ static void video_display(VideoState *is) {
         is->render_params.eq_brightness = 0;
         is->render_params.eq_gamma = 0;
         is->render_params.eq_contrast = 0;
-        vk_renderer_display_blank(vk_renderer, &is->render_params);
+        is->render_params.deinterlace = DEINTERLACE_OFF;
+        renderer_display_blank(renderer, &is->render_params);
     }
-    osd_draw(is);
-    if (vk_renderer) {
+
+    {
         int64_t done = is->render_params.present_done_us;
         if (done > 0) {
             present_feedback(done - is->render_params.present_block_us, done);
         }
-    } else {
-        int64_t submit = av_gettime_relative();
-        SDL_RenderPresent(renderer);
-        present_feedback(submit, av_gettime_relative());
     }
 
     if (is->audio_start_pending) {
@@ -2005,21 +1645,6 @@ static void video_refresh(void *opaque, double *remaining_time) {
                              (sp2->pts +
                               ((float)sp2->sub.start_display_time / 1000)))) {
                         /* clang-format on */
-                        if (sp->uploaded) {
-                            unsigned int i;
-                            for (i = 0; i < sp->sub.num_rects; i++) {
-                                AVSubtitleRect *sub_rect = sp->sub.rects[i];
-                                uint8_t *pixels;
-                                int pitch, j;
-
-                                if (SDL_LockTexture(is->sub_texture, (SDL_Rect *)sub_rect, (void **)&pixels, &pitch)) {
-                                    for (j = 0; j < sub_rect->h; j++, pixels += pitch) {
-                                        memset(pixels, 0, sub_rect->w << 2);
-                                    }
-                                    SDL_UnlockTexture(is->sub_texture);
-                                }
-                            }
-                        }
                         frame_queue_next(&is->subpq);
                     } else {
                         break;
@@ -2055,7 +1680,6 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     }
 
     vp->sar = src_frame->sample_aspect_ratio;
-    vp->uploaded = 0;
 
     frame_visible_size(src_frame, &vp->width, &vp->height);
     vp->format = src_frame->format;
@@ -2346,7 +1970,6 @@ int video_thread(void *arg) {
                 goto the_end;
             }
 
-            /* XXX: Needs more testing when scale_vulkan becomes more useful. */
             download_active = 0;
             if (is_hw) {
                 int saved_level = av_log_get_level();
@@ -2597,143 +2220,125 @@ static int startup_window_flags(void) {
     return win_flags;
 }
 
-static void create_sdl_renderer_for_window(void) {
-    renderer = SDL_CreateRenderer(window, NULL);
-    if (renderer) {
-        SDL_SetRenderVSync(renderer, benchmark ? 0 : 1);
-        renderer_texture_formats = (const SDL_PixelFormat *)
-            SDL_GetPointerProperty(SDL_GetRendererProperties(renderer),
-                                   SDL_PROP_RENDERER_TEXTURE_FORMATS_POINTER, NULL);
-    }
-    if (!renderer || !renderer_texture_formats ||
-        renderer_texture_formats[0] == SDL_PIXELFORMAT_UNKNOWN) {
-        fatal_quit("Failed to create window or renderer: %s!\n", SDL_GetError());
-    }
-}
-
 int display_max_texture_size(void) {
-    Sint64 sdl_max;
-
     if (max_texture_size) {
         return max_texture_size > 0 ? max_texture_size : 0;
     }
 
-    if (vk_renderer) {
-        return vk_renderer_max_texture_size(vk_renderer);
-    }
-    if (!renderer) {
-        return 0;
-    }
-
-#ifdef SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER
-    sdl_max = SDL_GetNumberProperty(SDL_GetRendererProperties(renderer),
-                                    SDL_PROP_RENDERER_MAX_TEXTURE_SIZE_NUMBER, 0);
-#else
-    sdl_max = 0;
-#endif
-    if (sdl_max <= 0) {
-        return 0;
-    }
-
-    return sdl_max > INT_MAX ? INT_MAX : (int)sdl_max;
+    return renderer_max_texture_size(renderer);
 }
 
-void renderer_device_reset(VideoState *is, int device_lost) {
-    if (is) {
-        FrameQueue *queues[] = {&is->pictq, &is->subpq};
+static char *startup_window_title(void) {
+    const PlaylistEntry *e;
 
-        if (is->vid_texture) {
-            SDL_DestroyTexture(is->vid_texture);
-            is->vid_texture = NULL;
-        }
-        if (is->sub_texture) {
-            SDL_DestroyTexture(is->sub_texture);
-            is->sub_texture = NULL;
-        }
-        for (size_t q = 0; q < FF_ARRAY_ELEMS(queues); q++) {
-            FrameQueue *f = queues[q];
-
-            SDL_LockMutex(f->mutex);
-            for (int i = 0; i < FRAME_QUEUE_SIZE; i++) {
-                f->queue[i].uploaded = 0;
-            }
-            SDL_UnlockMutex(f->mutex);
-        }
-        is->force_refresh = 1;
+    if (window_title) {
+        return av_strdup(window_title);
+    }
+    if (window_title_auto) {
+        return av_strdup(window_title_auto);
     }
 
-    osd_invalidate_textures();
-
-    if (device_lost && renderer) {
-        SDL_DestroyRenderer(renderer);
-        renderer = NULL;
-        renderer_texture_formats = NULL;
-        create_sdl_renderer_for_window();
+    e = playlist_get(playlist_pos);
+    if (e) {
+        return make_default_window_title(e->display_path, e->archive_path,
+                                         e->entry_name);
     }
+
+    return make_default_window_title(input_filename, NULL, NULL);
 }
 
-static void apply_startup_window_title(void) {
-    const char *initial_title = window_title ? window_title : window_title_auto;
-    char *initial_title_alloc = NULL;
+static AVDictionary *build_renderer_options(void) {
+    AVDictionary *dict = NULL;
 
-    if (!initial_title) {
-        const PlaylistEntry *e = playlist_get(playlist_pos);
-
-        if (e) {
-            initial_title = initial_title_alloc =
-                make_default_window_title(e->display_path,
-                                          e->archive_path,
-                                          e->entry_name);
-        } else {
-            initial_title = initial_title_alloc =
-                make_default_window_title(input_filename, NULL, NULL);
+    if (gpu_params) {
+        if (av_dict_parse_string(&dict, gpu_params, "=", ":", 0) < 0) {
+            fatal_quit("Failed to parse '%s'.\n", gpu_params);
         }
     }
-    if (initial_title) {
-        SDL_SetWindowTitle(window, initial_title);
+    if (vulkan_swap_mode) {
+        av_dict_set(&dict, "present_mode", vulkan_swap_mode, 0);
     }
-    av_free(initial_title_alloc);
+    if (benchmark) {
+        av_dict_set(&dict, "present_mode", "immediate", 0);
+        av_dict_set(&dict, "benchmark", "1", 0);
+    }
+    if (no_shader_cache) {
+        av_dict_set(&dict, "cache", "0", 0);
+    }
+    if (shader_cache_dir && !no_shader_cache) {
+        av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
+    }
+    if (icc_profile) {
+        av_dict_set(&dict, "icc_profile", icc_profile, 0);
+    }
+    if (icc_auto) {
+        av_dict_set(&dict, "icc_auto", "1", 0);
+    }
+    if (no_display_hdr) {
+        av_dict_set(&dict, "display_hdr", "0", 0);
+    }
+    if (max_glsl_version > 0) {
+        char buf[16];
+
+        snprintf(buf, sizeof(buf), "%d", max_glsl_version);
+        av_dict_set(&dict, "max_glsl_version", buf, 0);
+    }
+
+    return dict;
 }
 
-static void drop_vulkan_renderer(void) {
-    vk_renderer_destroy(vk_renderer);
-    av_free(vk_renderer);
-    vk_renderer = NULL;
-    enable_vulkan = 0;
+static unsigned renderer_faulted_apis;
 
-    if (window) {
-        SDL_DestroyWindow(window);
-        window = NULL;
-    }
-    renderer_texture_formats = NULL;
+static void open_renderer(enum RendererApi api) {
+    RendererOpenParams params = {0};
+    AVDictionary *dict = build_renderer_options();
+    char *title = startup_window_title();
+    int ret;
 
-    window = SDL_CreateWindow(program_name, default_width, default_height,
-                              startup_window_flags());
-    if (!window) {
-        fatal_quit("Failed to create window: %s!\n", SDL_GetError());
+    params.title = title ? title : program_name;
+    params.width = default_width;
+    params.height = default_height;
+    params.window_flags = startup_window_flags();
+    params.api = api;
+    params.exclude = renderer_faulted_apis;
+    params.opt = dict;
+
+    ret = renderer_open(&params, &window, &renderer);
+    av_dict_free(&dict);
+    av_free(title);
+
+    if (ret < 0) {
+        fatal_quit("Failed to create a window and a GPU renderer: %s!\n",
+                   av_err2str(ret));
     }
-    create_sdl_renderer_for_window();
-    apply_startup_window_title();
-    SDL_ShowWindow(window);
+
+    if (enable_360sbs && renderer_enable_360(renderer, view360_layout) < 0) {
+        fatal_quit("Failed to enable the 360° shader!\n");
+    }
+
     present_update_display_mode();
     update_screen_size();
-    present_reset();
-    if (!no_vsync_snap && !benchmark) {
+    if (no_vsync_snap || benchmark || !renderer_is_vsync_blocked(renderer)) {
+        present_disable_snap();
+    } else {
         present_restore_snap();
     }
 }
 
-void vulkan_fault_fallback(VideoState **pis) {
+void render_fault_fallback(VideoState **pis) {
     double resume_at = NAN;
     int keep_paused;
 
-    if (!vk_renderer) {
+    if (!renderer) {
         return;
     }
 
+    /* Avoid an infinite loop. */
+    renderer_faulted_apis |= 1u << renderer_api(renderer);
+
     keep_paused = *pis && (*pis)->paused;
     if (*pis) {
-        if (vk_display_ever_ok && seek_by_bytes <= 0) {
+        if (render_ever_ok && seek_by_bytes <= 0) {
             resume_at = effective_playhead(*pis);
         }
         stream_close(*pis);
@@ -2741,7 +2346,20 @@ void vulkan_fault_fallback(VideoState **pis) {
     }
     SDL_FlushEvents(FF_QUIT_EVENT, FF_QUIT_EVENT);
 
-    drop_vulkan_renderer();
+    renderer_destroy(renderer);
+    av_freep(&renderer);
+    if (window) {
+        SDL_DestroyWindow(window);
+        window = NULL;
+    }
+    osd_invalidate_textures();
+
+    open_renderer(RENDERER_API_AUTO);
+    present_reset();
+
+    render_fail_streak = 0;
+    render_ever_ok = 0;
+    render_fault_event_sent = 0;
 
     pause_next_stream = keep_paused;
     *pis = stream_open_playlist_entry(playlist_pos);
@@ -3076,6 +2694,11 @@ int main(int argc, char **argv) {
     if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
         SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
     }
+    /* XXX: Remove this if the SDL3 requirement is bumped. */
+    if (SDL_getenv("WAYLAND_DISPLAY") && !SDL_getenv("SDL_VIDEO_DRIVER") &&
+        !SDL_getenv("SDL_VIDEODRIVER")) {
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+    }
     if (!SDL_Init(flags)) {
         fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
     }
@@ -3093,8 +2716,19 @@ int main(int argc, char **argv) {
         is_fullscreen = 0;
     }
 
-    if (disable_vulkan) {
-        enable_vulkan = 0;
+    if (gpu_api_name) {
+        if (!strcmp(gpu_api_name, "auto")) {
+            gpu_api = RENDERER_API_AUTO;
+        } else if (!strcmp(gpu_api_name, "vulkan")) {
+            gpu_api = RENDERER_API_VULKAN;
+        } else if (!strcmp(gpu_api_name, "opengl") || !strcmp(gpu_api_name, "gl")) {
+            gpu_api = RENDERER_API_OPENGL;
+        } else {
+            fatal_quit("Unknown GPU API '%s'.\n",
+                       gpu_api_name);
+        }
+    } else if (no_vulkan) {
+        gpu_api = RENDERER_API_OPENGL;
     }
 
     if (disable_autorotate) {
@@ -3102,15 +2736,10 @@ int main(int argc, char **argv) {
     }
 
     if (!display_disable) {
-        int win_flags = startup_window_flags();
-
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
         if (hwaccel && (!strcmp(hwaccel, "none") || !strcmp(hwaccel, "no") || !strcmp(hwaccel, "off") || !strcmp(hwaccel, "0"))) {
             no_hwaccel = 1;
             av_freep(&hwaccel);
-        }
-        if (hwaccel && !no_hwaccel && !enable_vulkan && !disable_vulkan) {
-            enable_vulkan = 1;
         }
         if (enable_360sbs && enable_360tb) {
             fatal_quit("-360-sbs and -360-tb are mutually exclusive.\n");
@@ -3123,113 +2752,13 @@ int main(int argc, char **argv) {
         if (enable_360sbs) {
             sbs360_reset_view();
         }
-        if (enable_vulkan) {
-            vk_renderer = vk_get_renderer();
-            if (!vk_renderer) {
-                enable_vulkan = 0;
-            }
-        }
 
-        if (vk_renderer) {
-            window = SDL_CreateWindow(program_name, default_width,
-                                      default_height, win_flags | SDL_WINDOW_VULKAN);
-            if (window) {
-                AVDictionary *dict = NULL;
-
-                if (vulkan_params) {
-                    ret = av_dict_parse_string(&dict, vulkan_params, "=", ":", 0);
-                    if (ret < 0) {
-                        fatal_quit("Failed to parse %s.\n", vulkan_params);
-                    }
-                }
-                if (vulkan_swap_mode) {
-                    av_dict_set(&dict, "present_mode", vulkan_swap_mode, 0);
-                } else if (benchmark) {
-                    av_dict_set(&dict, "present_mode", "immediate", 0);
-                }
-                if (benchmark) {
-                    av_dict_set(&dict, "present_mode", "immediate", 0);
-                    av_dict_set(&dict, "benchmark", "1", 0);
-                }
-                if (no_shader_cache) {
-                    av_dict_set(&dict, "cache", "0", 0);
-                }
-                if (shader_cache_dir && !no_shader_cache) {
-                    av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
-                }
-                if (icc_profile) {
-                    av_dict_set(&dict, "icc_profile", icc_profile, 0);
-                }
-                if (icc_auto) {
-                    av_dict_set(&dict, "icc_auto", "1", 0);
-                }
-                if (no_display_hdr) {
-                    av_dict_set(&dict, "display_hdr", "0", 0);
-                }
-                ret = vk_renderer_create(vk_renderer, window, dict);
-                av_dict_free(&dict);
-                if (ret < 0) {
-                    log_warn("Failed to create the Vulkan renderer.\n");
-                    vk_renderer_destroy(vk_renderer);
-                    av_free(vk_renderer);
-                    vk_renderer = NULL;
-                    SDL_DestroyWindow(window);
-                    window = NULL;
-                } else if (enable_360sbs) {
-                    ret = vk_renderer_enable_360(vk_renderer, view360_layout);
-                    if (ret < 0) {
-                        fatal_quit("Failed to enable the 360° shader!\n");
-                    }
-                }
-            } else {
-                log_warn("Failed to create a Vulkan window: %s!\n",
-                         SDL_GetError());
-                av_free(vk_renderer);
-                vk_renderer = NULL;
-            }
-
-            if (!vk_renderer) {
-                enable_vulkan = 0;
-            }
-        }
-
-        if (!vk_renderer) {
-            if (!window) {
-                window = SDL_CreateWindow(program_name, default_width,
-                                          default_height, win_flags);
-            }
-            if (!window) {
-                fatal_quit("Failed to create window: %s!\n", SDL_GetError());
-            }
-            create_sdl_renderer_for_window();
-        }
+        open_renderer(gpu_api);
 
         osd_init();
         subtitles_init();
         osd_set_info_provider(format_media_info);
         osd_set_stats_provider(format_playback_stats);
-
-        apply_startup_window_title();
-
-        if (no_vsync_snap || benchmark || !vk_renderer_is_vsync_blocked(vk_renderer)) {
-            present_disable_snap();
-        }
-
-        /* Show the window early so the swapchain is fully initialized. */
-        SDL_ShowWindow(window);
-        present_update_display_mode();
-        update_screen_size();
-        if (vk_renderer) {
-            int vk_w = screen_width, vk_h = screen_height;
-            if (vk_w > 0 && vk_h > 0) {
-                vk_renderer_resize(vk_renderer, vk_w, vk_h);
-            }
-            if (vk_renderer_self_test(vk_renderer, vk_w, vk_h) < 0) {
-                log_warn("The Vulkan renderer initialized but cannot render. "
-                         "Falling back to the SDL renderer.\n");
-                drop_vulkan_renderer();
-            }
-        }
     }
 
     is = stream_open_playlist_entry(playlist_pos);

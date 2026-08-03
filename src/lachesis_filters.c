@@ -48,14 +48,8 @@
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 
-static enum AVColorSpace sdl_supported_color_spaces[] = {
-    AVCOL_SPC_BT709,
-    AVCOL_SPC_BT470BG,
-    AVCOL_SPC_SMPTE170M,
-};
-
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 11, 100)
-static enum AVAlphaMode sdl_supported_alpha_modes[] = {
+static enum AVAlphaMode supported_alpha_modes[] = {
     AVALPHA_MODE_UNSPECIFIED,
     AVALPHA_MODE_STRAIGHT,
 };
@@ -93,29 +87,16 @@ static double get_rotation(const int32_t *displaymatrix) {
 }
 
 int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame, int force_autoscale) {
-    enum AVPixelFormat pix_fmts[FF_ARRAY_ELEMS(sdl_texture_format_map)];
     int ret;
     AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
     AVFilterContext *autoscale_ctx = NULL;
     AVCodecParameters *codecpar = is->video_st->codecpar;
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
-    int nb_pix_fmts = 0;
     int max_dim;
-    int i;
-    size_t j;
     AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
 
     if (!par) {
         return AVERROR(ENOMEM);
-    }
-
-    for (i = 0; renderer_texture_formats && renderer_texture_formats[i] != SDL_PIXELFORMAT_UNKNOWN; i++) {
-        for (j = 0; j < FF_ARRAY_ELEMS(sdl_texture_format_map); j++) {
-            if ((int)renderer_texture_formats[i] == sdl_texture_format_map[j].texture_fmt) {
-                pix_fmts[nb_pix_fmts++] = sdl_texture_format_map[j].format;
-                break;
-            }
-        }
     }
 
     graph->scale_sws_opts = av_strdup("flags=fast_bilinear");
@@ -156,22 +137,23 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         goto fail;
     }
 
-    if (!vk_renderer &&
-        (ret = av_opt_set_array(filt_out, "pixel_formats", AV_OPT_SEARCH_CHILDREN,
-                                0, nb_pix_fmts, AV_OPT_TYPE_PIXEL_FMT, pix_fmts)) < 0) {
-        goto fail;
-    }
-    if (!vk_renderer &&
-        (ret = av_opt_set_array(filt_out, "colorspaces", AV_OPT_SEARCH_CHILDREN,
-                                0, FF_ARRAY_ELEMS(sdl_supported_color_spaces),
-                                AV_OPT_TYPE_INT, sdl_supported_color_spaces)) < 0) {
-        goto fail;
+    {
+        int nb_pix_fmts = 0;
+        const enum AVPixelFormat *pix_fmts =
+            renderer_supported_pixfmts(renderer, &nb_pix_fmts);
+
+        if (pix_fmts && nb_pix_fmts > 0 &&
+            (ret = av_opt_set_array(filt_out, "pixel_formats",
+                                    AV_OPT_SEARCH_CHILDREN, 0, nb_pix_fmts,
+                                    AV_OPT_TYPE_PIXEL_FMT, pix_fmts)) < 0) {
+            goto fail;
+        }
     }
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 11, 100)
     if ((ret = av_opt_set_array(filt_out, "alphamodes", AV_OPT_SEARCH_CHILDREN,
-                                0, FF_ARRAY_ELEMS(sdl_supported_alpha_modes),
-                                AV_OPT_TYPE_INT, sdl_supported_alpha_modes)) < 0) {
+                                0, FF_ARRAY_ELEMS(supported_alpha_modes),
+                                AV_OPT_TYPE_INT, supported_alpha_modes)) < 0) {
         goto fail;
     }
 #endif

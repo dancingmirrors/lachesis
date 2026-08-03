@@ -21,8 +21,6 @@
 #ifndef LACHESIS_EQUALIZER_H
 #define LACHESIS_EQUALIZER_H
 
-#include <libavutil/frame.h>
-
 enum EqualizerControl {
     EQ_BRIGHTNESS,
     EQ_GAMMA,
@@ -47,14 +45,8 @@ static inline int equalizer_values_neutral(EqualizerValues v) {
     return !v.brightness && !v.gamma && !v.contrast;
 }
 
-unsigned equalizer_generation(void);
-
 float equalizer_pl_brightness(int brightness);
 float equalizer_pl_contrast(int contrast);
 float equalizer_pl_gamma(int gamma);
-
-AVFrame *equalizer_apply(AVFrame *frame);
-
-void equalizer_uninit(void);
 
 #endif /* LACHESIS_EQUALIZER_H */

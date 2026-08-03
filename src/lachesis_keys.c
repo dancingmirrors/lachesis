@@ -324,20 +324,18 @@ void event_loop(VideoState **pis) {
             case SDLK_T:
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                 break;
-            case SDLK_D:
-                if (!vk_renderer) {
-                    osd_show_message("Deinterlacing requires the Vulkan renderer");
-                } else {
-                    static const char *const deint_names[DEINTERLACE_MODE_COUNT] = {
-                        "off",
-                        "yadif",
-                        "bob",
-                    };
-                    deinterlace = (deinterlace + 1) % DEINTERLACE_MODE_COUNT;
-                    osd_show_message("Deinterlace: %s", deint_names[deinterlace]);
-                }
+            case SDLK_D: {
+                static const char *const deint_names[DEINTERLACE_MODE_COUNT] = {
+                    "off",
+                    "yadif",
+                    "bob",
+                };
+
+                deinterlace = (deinterlace + 1) % DEINTERLACE_MODE_COUNT;
+                osd_show_message("Deinterlace: %s", deint_names[deinterlace]);
                 cur_stream->force_refresh = 1;
                 break;
+            }
             case SDLK_R:
             case SDLK_KP_9:
                 video_rotate = (video_rotate + 90) % 360;
@@ -525,8 +523,8 @@ void event_loop(VideoState **pis) {
                 if (enable_360sbs) {
                     sbs360_reset_view();
                 }
-                if (vk_renderer) {
-                    vk_renderer_enable_360(vk_renderer, enable_360sbs ? view360_layout : VIEW360_LAYOUT_OFF);
+                if (renderer) {
+                    renderer_enable_360(renderer, enable_360sbs ? view360_layout : VIEW360_LAYOUT_OFF);
                 }
                 cur_stream->force_refresh = 1;
                 break;
@@ -628,8 +626,8 @@ void event_loop(VideoState **pis) {
             screen_height = event.window.data2;
             cur_stream->width = screen_width;
             cur_stream->height = screen_height;
-            if (vk_renderer) {
-                vk_renderer_resize(vk_renderer, screen_width, screen_height);
+            if (renderer) {
+                renderer_resize(renderer, screen_width, screen_height);
             }
             present_reset();
             [[fallthrough]];
@@ -639,22 +637,14 @@ void event_loop(VideoState **pis) {
             break;
         case SDL_EVENT_WINDOW_ICCPROF_CHANGED:
         case SDL_EVENT_WINDOW_HDR_STATE_CHANGED:
-            if (vk_renderer_refresh_display_info(vk_renderer, window)) {
+            if (renderer_refresh_display_info(renderer, window)) {
                 cur_stream->force_refresh = 1;
             }
-            break;
-        case SDL_EVENT_RENDER_TARGETS_RESET:
-        case SDL_EVENT_RENDER_DEVICE_RESET:
-            renderer_device_reset(cur_stream, 0);
-            break;
-        case SDL_EVENT_RENDER_DEVICE_LOST:
-            log_warn("The render device was lost. Recreating the renderer.\n");
-            renderer_device_reset(cur_stream, 1);
             break;
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
             present_update_display_mode();
             present_reset();
-            vk_renderer_refresh_display_info(vk_renderer, window);
+            renderer_refresh_display_info(renderer, window);
             cur_stream->force_refresh = 1;
             break;
         case SDL_EVENT_QUIT:
@@ -682,8 +672,8 @@ void event_loop(VideoState **pis) {
             playlist_advance_or_exit(pis);
             break;
         }
-        case FF_VULKAN_FAULT_EVENT:
-            vulkan_fault_fallback(pis);
+        case FF_RENDER_FAULT_EVENT:
+            render_fault_fallback(pis);
             break;
         default:
             break;

@@ -137,16 +137,11 @@ jobs:
           ./build/lachesis --version
 
           rm -fr build
-          CFLAGS="-Werror" ./configure --disable-libplacebo
-          ninja -C build
-          ./build/lachesis --version
-
-          rm -fr build
           CFLAGS="-Werror" ./configure --disable-vulkan
           ninja -C build
           ./build/lachesis --version
 
           rm -fr build
-          CFLAGS="-Werror" ./configure --disable-libplacebo --disable-vulkan
+          CFLAGS="-Werror" ./configure --disable-opengl
           ninja -C build
           ./build/lachesis --version

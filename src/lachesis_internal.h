@@ -105,7 +105,6 @@ typedef struct Frame {
     int format;
     AVRational sar;
     int uploaded;
-    int flip_v;
 } Frame;
 
 typedef struct FrameQueue {
@@ -211,9 +210,6 @@ typedef struct VideoState {
     int render_low_quality;
 
     RenderParams render_params;
-    SDL_Texture *sub_texture;
-    SDL_Texture *vid_texture;
-    unsigned vid_texture_eq_gen;
     uint8_t *sub_rgba;
     int sub_rgba_w;
     int sub_rgba_h;
@@ -292,32 +288,7 @@ typedef struct VideoState {
 } VideoState;
 
 extern SDL_Window *window;
-extern SDL_Renderer *renderer;
-extern VkRenderer *vk_renderer;
-
-/* Adding an entry without bumping this is a compile error. */
-#define SDL_TEXTURE_FORMAT_MAP_SIZE 19
-struct TextureFormatEntry {
-    enum AVPixelFormat format;
-    int texture_fmt;
-};
-extern const struct TextureFormatEntry sdl_texture_format_map[SDL_TEXTURE_FORMAT_MAP_SIZE];
-extern const SDL_PixelFormat *renderer_texture_formats;
-
-int realloc_texture(SDL_Texture **texture, Uint32 new_format,
-                    int new_width, int new_height,
-                    SDL_BlendMode blendmode, int init_texture);
-
-static inline void fill_rectangle(int x, int y, int w, int h) {
-    SDL_FRect rect;
-    rect.x = x;
-    rect.y = y;
-    rect.w = w;
-    rect.h = h;
-    if (w && h) {
-        SDL_RenderFillRect(renderer, &rect);
-    }
-}
+extern Renderer *renderer;
 
 extern double ab_loop_a;
 extern double ab_loop_b;
@@ -373,7 +344,6 @@ static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int
     *out_h = (int)FFMAX(2, sh & ~(int64_t)1);
 }
 
-void renderer_device_reset(VideoState *is, int device_lost);
 Frame *frame_queue_peek_writable(FrameQueue *f);
 Frame *frame_queue_peek_readable(FrameQueue *f);
 void frame_queue_push(FrameQueue *f);
@@ -391,7 +361,7 @@ void calculate_display_rect(SDL_Rect *rect,
                             int pic_width, int pic_height, AVRational pic_sar);
 
 #define FF_QUIT_EVENT (SDL_EVENT_USER + 2)
-#define FF_VULKAN_FAULT_EVENT (SDL_EVENT_USER + 3)
+#define FF_RENDER_FAULT_EVENT (SDL_EVENT_USER + 3)
 
 #define FF_QUIT_REASON_EOF 0
 #define FF_QUIT_REASON_ERROR 1
@@ -429,7 +399,7 @@ void ab_loop_toggle(VideoState *is);
 void toggle_fullscreen(VideoState *is);
 void playlist_switch(VideoState **pis, int new_pos);
 void playlist_remove_current(VideoState **pis, int keep_paused);
-void vulkan_fault_fallback(VideoState **pis);
+void render_fault_fallback(VideoState **pis);
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event);
 
 #endif /* LACHESIS_INTERNAL_H */

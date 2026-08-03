@@ -263,59 +263,31 @@ static int screenshot_window(VideoState *is, const char *path) {
         return AVERROR(EINVAL);
     }
 
-    if (vk_renderer) {
-        AVFrame *rgba = av_frame_alloc();
-        if (!rgba) {
-            return AVERROR(ENOMEM);
-        }
-        rgba->format = AV_PIX_FMT_RGBA;
-        rgba->width = w;
-        rgba->height = h;
-        ret = av_frame_get_buffer(rgba, 0);
-        if (ret < 0) {
-            av_frame_free(&rgba);
-            return ret;
-        }
-        calculate_display_rect(&is->render_params.target_rect, is->xleft,
-                               is->ytop, is->width, is->height, vp->width,
-                               vp->height, vp->sar);
-        is->render_params.rotate = video_rotate;
-        is->render_params.still_image = is->is_still_image;
-        is->render_params.next_frame = NULL;
-        ret = vk_renderer_capture(vk_renderer, vp->frame, &is->render_params,
-                                  w, h, rgba->data[0], rgba->linesize[0]);
-        if (ret >= 0) {
-            ret = encode_png(path, rgba, bg);
-        }
+    AVFrame *rgba = av_frame_alloc();
+
+    if (!rgba) {
+        return AVERROR(ENOMEM);
+    }
+    rgba->format = AV_PIX_FMT_RGBA;
+    rgba->width = w;
+    rgba->height = h;
+    ret = av_frame_get_buffer(rgba, 0);
+    if (ret < 0) {
         av_frame_free(&rgba);
         return ret;
     }
-
-    SDL_Surface *surf = SDL_RenderReadPixels(renderer, NULL);
-    SDL_Surface *conv;
-    AVFrame *frame;
-
-    if (!surf) {
-        return AVERROR_EXTERNAL;
+    calculate_display_rect(&is->render_params.target_rect, is->xleft,
+                           is->ytop, is->width, is->height, vp->width,
+                           vp->height, vp->sar);
+    is->render_params.rotate = video_rotate;
+    is->render_params.still_image = is->is_still_image;
+    is->render_params.next_frame = NULL;
+    ret = renderer_capture(renderer, vp->frame, &is->render_params,
+                           w, h, rgba->data[0], rgba->linesize[0]);
+    if (ret >= 0) {
+        ret = encode_png(path, rgba, bg);
     }
-    conv = SDL_ConvertSurface(surf, SDL_PIXELFORMAT_RGBA32);
-    SDL_DestroySurface(surf);
-    if (!conv) {
-        return AVERROR_EXTERNAL;
-    }
-    frame = av_frame_alloc();
-    if (!frame) {
-        SDL_DestroySurface(conv);
-        return AVERROR(ENOMEM);
-    }
-    frame->format = AV_PIX_FMT_RGBA;
-    frame->width = conv->w;
-    frame->height = conv->h;
-    frame->data[0] = conv->pixels;
-    frame->linesize[0] = conv->pitch;
-    ret = encode_png(path, frame, bg);
-    av_frame_free(&frame);
-    SDL_DestroySurface(conv);
+    av_frame_free(&rgba);
 
     return ret;
 }

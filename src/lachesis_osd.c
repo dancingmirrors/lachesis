@@ -987,63 +987,7 @@ static int osd_composite(VideoState *is, int cw, int ch, int full_canvas,
     return 1;
 }
 
-typedef struct {
-    SDL_Texture *tex;
-    SDL_Renderer *renderer;
-    unsigned generation;
-    int w, h;
-} OsdCachedTexture;
-
-static OsdCachedTexture osd_tex;
-static OsdCachedTexture osd_sub_tex;
-
-static void osd_cached_texture_clear(OsdCachedTexture *ct) {
-    SDL_DestroyTexture(ct->tex);
-    ct->tex = NULL;
-    ct->renderer = NULL;
-    ct->generation = 0;
-    ct->w = ct->h = 0;
-}
-
-static void osd_draw_cached(SDL_Renderer *r, OsdCachedTexture *ct,
-                            SDL_Surface *s, unsigned generation, float x,
-                            float y) {
-    SDL_FRect d;
-
-    if (!r || !s) {
-        return;
-    }
-    if (ct->tex && (ct->renderer != r || ct->w != s->w || ct->h != s->h)) {
-        osd_cached_texture_clear(ct);
-    }
-    if (!ct->tex) {
-        ct->tex = SDL_CreateTexture(r, s->format, SDL_TEXTUREACCESS_STATIC,
-                                    s->w, s->h);
-        if (!ct->tex) {
-            return;
-        }
-        ct->renderer = r;
-        ct->w = s->w;
-        ct->h = s->h;
-        ct->generation = generation - 1;
-    }
-    if (ct->generation != generation) {
-        if (!SDL_UpdateTexture(ct->tex, NULL, s->pixels, s->pitch)) {
-            osd_cached_texture_clear(ct);
-            return;
-        }
-        ct->generation = generation;
-    }
-
-    SDL_SetTextureBlendMode(ct->tex, SDL_BLENDMODE_BLEND_PREMULTIPLIED);
-    SDL_SetTextureScaleMode(ct->tex, SDL_SCALEMODE_NEAREST);
-    d = (SDL_FRect){x, y, (float)s->w, (float)s->h};
-    SDL_RenderTexture(r, ct->tex, NULL, &d);
-}
-
 void osd_invalidate_textures(void) {
-    osd_cached_texture_clear(&osd_tex);
-    osd_cached_texture_clear(&osd_sub_tex);
     osd_force_rebuild = 1;
 }
 
@@ -1082,13 +1026,13 @@ static int osd_subtitle_overlay(VideoState *is, int cw, int ch,
         ov->surf;
 }
 
-/* Vulkan path: composite the OSD into a surface and hand the pixels over. */
-void osd_prepare_vulkan(VideoState *is) {
+/* Composite the OSD into a surface for the renderer to blend as an overlay. */
+void osd_prepare(VideoState *is) {
     SubtitleOverlay ov = {0};
     int have_ov;
     int cw, ch;
 
-    if (!vk_renderer || !osd_should_show(is) || !osd_engine_ensure()) {
+    if (!renderer || !osd_should_show(is) || !osd_engine_ensure()) {
         return;
     }
 
@@ -1106,35 +1050,6 @@ void osd_prepare_vulkan(VideoState *is) {
     is->render_params.osd_width = osd_surface->w;
     is->render_params.osd_height = osd_surface->h;
     is->render_params.osd_stride = osd_surface->pitch;
-}
-
-/* SDL renderer path: draw the OSD straight into the hardware renderer. */
-void osd_draw(VideoState *is) {
-    SubtitleOverlay ov = {0};
-    int have_ov;
-    int cw = 0, ch = 0;
-
-    if (!renderer || !osd_should_show(is) || !osd_engine_ensure()) {
-        return;
-    }
-
-    if (!SDL_GetRenderOutputSize(renderer, &cw, &ch) || cw <= 0 || ch <= 0) {
-        osd_canvas_size(is, &cw, &ch);
-    }
-    if (cw <= 0 || ch <= 0) {
-        return;
-    }
-
-    have_ov = osd_subtitle_overlay(is, cw, ch, &ov);
-    if (have_ov) {
-        osd_draw_cached(renderer, &osd_sub_tex, ov.surf, ov.generation,
-                        (float)ov.x, (float)ov.y);
-    }
-
-    if (osd_composite(is, cw, ch, 0, have_ov ? &ov : NULL)) {
-        osd_draw_cached(renderer, &osd_tex, osd_surface, osd_generation,
-                        (float)osd_surface_x, (float)osd_surface_y);
-    }
 }
 
 static void osd_dismiss_info(void) {
@@ -1242,9 +1157,6 @@ void osd_init(void) {
 }
 
 void osd_uninit(void) {
-    osd_cached_texture_clear(&osd_tex);
-    osd_cached_texture_clear(&osd_sub_tex);
-
     SDL_DestroySurface(osd_surface);
     osd_surface = NULL;
     osd_surface_valid = 0;

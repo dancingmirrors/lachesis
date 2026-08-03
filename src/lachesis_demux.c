@@ -85,24 +85,21 @@ static int check_avoptions(AVDictionary *m) {
 
 static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
     enum AVHWDeviceType type;
+    AVBufferRef *render_dev;
     int ret;
-    AVBufferRef *vk_dev;
 
     type = av_hwdevice_find_type_by_name(name);
     if (type == AV_HWDEVICE_TYPE_NONE) {
         return AVERROR(ENOTSUP);
     }
 
-    if (vk_renderer) {
-        ret = vk_renderer_get_hw_dev(vk_renderer, &vk_dev);
-        if (ret >= 0) {
-            ret = av_hwdevice_ctx_create_derived(device_ctx, type, vk_dev, 0);
-            if (!ret) {
-                return 0;
-            }
-            if (ret != AVERROR(ENOSYS)) {
-                return ret;
-            }
+    if (renderer_get_hw_dev(renderer, &render_dev) >= 0) {
+        ret = av_hwdevice_ctx_create_derived(device_ctx, type, render_dev, 0);
+        if (!ret) {
+            return 0;
+        }
+        if (ret != AVERROR(ENOSYS)) {
+            return ret;
         }
     }
 
@@ -112,10 +109,11 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
 static int create_hwaccel(AVBufferRef **device_ctx) {
     static const char *auto_hwaccels_vk[] = {
         "vulkan", "vaapi", "videotoolbox", "d3d11va", "dxva2", NULL};
-    static const char *auto_hwaccels_sw[] = {
+    static const char *auto_hwaccels_other[] = {
         "vaapi", "videotoolbox", "d3d11va", "dxva2", NULL};
-    const char *const *auto_hwaccels = vk_renderer ? auto_hwaccels_vk
-                                                   : auto_hwaccels_sw;
+    const char *const *auto_hwaccels =
+        renderer_api(renderer) == RENDERER_API_VULKAN ? auto_hwaccels_vk
+                                                      : auto_hwaccels_other;
     int ret;
 
     *device_ctx = NULL;

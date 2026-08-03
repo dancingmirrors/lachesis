@@ -29,11 +29,17 @@
 
 #include <limits.h>
 
-#if LACHESIS_HAVE_VULKAN && LACHESIS_HAVE_LIBPLACEBO
-#define HAVE_VULKAN_RENDERER 1
-#endif
+#include <libplacebo/config.h>
+#include <libplacebo/filters.h>
+#include <libplacebo/shaders/custom.h>
+#include <libplacebo/shaders/deinterlacing.h>
+#include <libplacebo/utils/frame_queue.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wswitch"
+#include <libplacebo/utils/libav.h>
+#pragma GCC diagnostic pop
 
-#if HAVE_VULKAN_RENDERER
+#if LACHESIS_HAVE_VULKAN
 
 #define VK_NO_PROTOTYPES
 #define VK_ENABLE_BETA_EXTENSIONS
@@ -44,16 +50,28 @@
 
 #include <SDL3/SDL_vulkan.h>
 
-#include <libplacebo/config.h>
-#include <libplacebo/filters.h>
-#include <libplacebo/shaders/custom.h>
-#include <libplacebo/shaders/deinterlacing.h>
-#include <libplacebo/utils/frame_queue.h>
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wswitch"
-#include <libplacebo/utils/libav.h>
-#pragma GCC diagnostic pop
 #include <libplacebo/vulkan.h>
+
+#ifndef FF_API_VULKAN_SYNC_QUEUES
+#define FF_API_VULKAN_SYNC_QUEUES (LIBAVUTIL_VERSION_MAJOR < 61)
+#endif
+
+#ifndef FF_DISABLE_DEPRECATION_WARNINGS
+#if defined(_MSC_VER)
+#define FF_DISABLE_DEPRECATION_WARNINGS __pragma(warning(push)) __pragma(warning(disable : 4996))
+#define FF_ENABLE_DEPRECATION_WARNINGS __pragma(warning(pop))
+#else
+#define FF_DISABLE_DEPRECATION_WARNINGS \
+    _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
+#define FF_ENABLE_DEPRECATION_WARNINGS _Pragma("GCC diagnostic pop")
+#endif
+#endif
+
+#endif /* LACHESIS_HAVE_VULKAN */
+
+#if LACHESIS_HAVE_OPENGL
+#include <libplacebo/opengl.h>
+#endif
 
 #include <libavutil/bprint.h>
 #include <libavutil/macros.h>
@@ -85,58 +103,30 @@
 #define LACHESIS_CAN_ITERATE_LIBS 1
 #endif
 
-#ifndef FF_API_VULKAN_SYNC_QUEUES
-#define FF_API_VULKAN_SYNC_QUEUES (LIBAVUTIL_VERSION_MAJOR < 61)
-#endif
-
-#ifndef FF_DISABLE_DEPRECATION_WARNINGS
-#if defined(_MSC_VER)
-#define FF_DISABLE_DEPRECATION_WARNINGS __pragma(warning(push)) __pragma(warning(disable : 4996))
-#define FF_ENABLE_DEPRECATION_WARNINGS __pragma(warning(pop))
-#else
-#define FF_DISABLE_DEPRECATION_WARNINGS \
-    _Pragma("GCC diagnostic push") _Pragma("GCC diagnostic ignored \"-Wdeprecated-declarations\"")
-#define FF_ENABLE_DEPRECATION_WARNINGS _Pragma("GCC diagnostic pop")
-#endif
-#endif
-
-#endif
-
-struct VkRenderer {
+struct Renderer {
     const AVClass *class;
 
-    int (*create)(VkRenderer *renderer, SDL_Window *window, AVDictionary *dict);
-
-    int (*get_hw_dev)(VkRenderer *renderer, AVBufferRef **dev);
-
-    int (*display)(VkRenderer *renderer, AVFrame *frame, RenderParams *params);
-
-    int (*display_blank)(VkRenderer *renderer, RenderParams *params);
-
-    int (*capture)(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
-                   int width, int height, uint8_t *out, int out_stride);
-
-    int (*resize)(VkRenderer *renderer, int width, int height);
-
-    void (*destroy)(VkRenderer *renderer);
+    enum RendererApi backend;
 };
 
-#if HAVE_VULKAN_RENDERER
-
 typedef struct RendererContext {
-    VkRenderer api;
+    Renderer api;
 
-    pl_vk_inst placebo_instance;
-    pl_vulkan placebo_vulkan;
+    pl_gpu gpu;
     pl_swapchain swapchain;
-    VkSurfaceKHR vk_surface;
     pl_renderer renderer;
+    pl_log log_ctx;
+
     pl_tex tex[4];
     pl_tex prev_tex[4];
     pl_tex next_tex[4];
     AVFrame *deint_prev;
+    AVFrame *sw_frame;
 
-    pl_log vk_log;
+#if LACHESIS_HAVE_VULKAN
+    pl_vk_inst placebo_instance;
+    pl_vulkan placebo_vulkan;
+    VkSurfaceKHR vk_surface;
 
     AVBufferRef *hw_device_ref;
     AVBufferRef *hw_frame_ref;
@@ -150,6 +140,19 @@ typedef struct RendererContext {
     VkInstance inst;
 
     AVFrame *vk_frame;
+#endif
+
+#if LACHESIS_HAVE_OPENGL
+    pl_opengl placebo_gl;
+    SDL_GLContext gl_context;
+#endif
+
+    /* See build_pixfmt_list(). */
+    enum AVPixelFormat *pixfmts;
+    int num_pixfmts;
+
+    char api_name[64];
+    char device_name[256];
 
     const struct pl_hook *sbs360_hook;
     int sbs360_enabled;
@@ -196,6 +199,8 @@ static inline int enable_debug(const AVDictionary *opt) {
     int debug = entry && strtol(entry->value, NULL, 10);
     return debug;
 }
+
+#if LACHESIS_HAVE_VULKAN
 
 static void hwctx_lock_queue(void *priv, uint32_t qf, uint32_t qidx) {
     AVHWDeviceContext *avhwctx = priv;
@@ -286,11 +291,11 @@ static const char *select_device(const AVDictionary *opt) {
     return NULL;
 }
 
-static int create_vk_by_placebo(VkRenderer *renderer,
+static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
                                 const AVDictionary *opt);
 
-static int create_vk_by_hwcontext(VkRenderer *renderer,
+static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
                                   const AVDictionary *opt) {
     RendererContext *ctx = (RendererContext *)renderer;
@@ -394,7 +399,7 @@ static int create_vk_by_hwcontext(VkRenderer *renderer,
         }
     }
 #endif
-    ctx->placebo_vulkan = pl_vulkan_import(ctx->vk_log, &import_params);
+    ctx->placebo_vulkan = pl_vulkan_import(ctx->log_ctx, &import_params);
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
     }
@@ -425,7 +430,7 @@ static void placebo_unlock_queue(struct AVHWDeviceContext *dev_ctx,
 #endif
 }
 
-static int get_decode_queue(VkRenderer *renderer, int *index, int *count) {
+static int get_decode_queue(Renderer *renderer, int *index, int *count) {
     RendererContext *ctx = (RendererContext *)renderer;
     VkQueueFamilyProperties *queue_family_prop = NULL;
     uint32_t num_queue_family_prop = 0;
@@ -465,7 +470,7 @@ static int get_decode_queue(VkRenderer *renderer, int *index, int *count) {
     return 0;
 }
 
-static int create_vk_by_placebo(VkRenderer *renderer,
+static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
                                 const AVDictionary *opt) {
     RendererContext *ctx = (RendererContext *)renderer;
@@ -481,7 +486,7 @@ static int create_vk_by_placebo(VkRenderer *renderer,
 
     ctx->get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
 
-    ctx->placebo_instance = pl_vk_inst_create(ctx->vk_log, pl_vk_inst_params(.get_proc_addr = ctx->get_proc_addr, .debug = enable_debug(opt), .extensions = ext, .num_extensions = num_ext));
+    ctx->placebo_instance = pl_vk_inst_create(ctx->log_ctx, pl_vk_inst_params(.get_proc_addr = ctx->get_proc_addr, .debug = enable_debug(opt), .extensions = ext, .num_extensions = num_ext));
     if (!ctx->placebo_instance) {
         return AVERROR_EXTERNAL;
     }
@@ -494,7 +499,7 @@ static int create_vk_by_placebo(VkRenderer *renderer,
         return AVERROR(ENOMEM);
     }
 #endif
-    ctx->placebo_vulkan = pl_vulkan_create(ctx->vk_log,
+    ctx->placebo_vulkan = pl_vulkan_create(ctx->log_ctx,
                                            pl_vulkan_params(
                                                .instance = ctx->placebo_instance->instance,
                                                .get_proc_addr = ctx->placebo_instance->get_proc_addr,
@@ -602,13 +607,13 @@ static int create_vk_by_placebo(VkRenderer *renderer,
     for (int i = 0; i < ctx->placebo_vulkan->num_extensions; i++) {
         const char *ext_name = ctx->placebo_vulkan->extensions[i];
         if (!strcmp(ext_name, "VK_KHR_video_decode_h264")) {
-            ctx->decode_caps |= VK_DECODE_CAP_H264;
+            ctx->decode_caps |= RENDERER_DECODE_CAP_H264;
         } else if (!strcmp(ext_name, "VK_KHR_video_decode_h265")) {
-            ctx->decode_caps |= VK_DECODE_CAP_HEVC;
+            ctx->decode_caps |= RENDERER_DECODE_CAP_HEVC;
         } else if (!strcmp(ext_name, "VK_KHR_video_decode_av1")) {
-            ctx->decode_caps |= VK_DECODE_CAP_AV1;
+            ctx->decode_caps |= RENDERER_DECODE_CAP_AV1;
         } else if (!strcmp(ext_name, "VK_KHR_video_decode_vp9")) {
-            ctx->decode_caps |= VK_DECODE_CAP_VP9;
+            ctx->decode_caps |= RENDERER_DECODE_CAP_VP9;
         }
     }
 
@@ -682,6 +687,326 @@ static VkPresentModeKHR select_present_mode(RendererContext *ctx, const char *na
 
     return chosen;
 }
+
+static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
+                             AVDictionary *opt) {
+    Renderer *renderer = &ctx->api;
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    AVDictionaryEntry *entry;
+    unsigned num_ext = 0;
+    const char **ext = NULL;
+    int ret;
+    int w, h;
+
+    {
+        Uint32 sdl_num_ext = 0;
+        char const *const *sdl_ext =
+            SDL_Vulkan_GetInstanceExtensions(&sdl_num_ext);
+        if (!sdl_ext) {
+            return AVERROR_EXTERNAL;
+        }
+
+        num_ext = sdl_num_ext;
+        ext = av_calloc(num_ext, sizeof(*ext));
+        if (!ext) {
+            return AVERROR(ENOMEM);
+        }
+
+        memcpy(ext, sdl_ext, num_ext * sizeof(*ext));
+    }
+
+    entry = av_dict_get(opt, "create_by_placebo", NULL, 0);
+    if (entry && strtol(entry->value, NULL, 10)) {
+        ret = create_vk_by_placebo(renderer, ext, num_ext, opt);
+    } else {
+        ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt);
+    }
+    av_free(ext);
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (!SDL_Vulkan_CreateSurface(window, ctx->inst, NULL, &ctx->vk_surface)) {
+        return AVERROR_EXTERNAL;
+    }
+
+    entry = av_dict_get(opt, "present_mode", NULL, 0);
+    if (entry && entry->value && *entry->value) {
+        present_mode = select_present_mode(ctx, entry->value);
+    }
+    ctx->present_mode = present_mode;
+
+    ctx->swapchain = pl_vulkan_create_swapchain(
+        ctx->placebo_vulkan,
+        pl_vulkan_swapchain_params(
+                .surface = ctx->vk_surface,
+                .present_mode = present_mode));
+    if (!ctx->swapchain) {
+        return AVERROR_EXTERNAL;
+    }
+
+    ctx->gpu = ctx->placebo_vulkan->gpu;
+
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    pl_swapchain_resize(ctx->swapchain, &w, &h);
+
+    ctx->vk_frame = av_frame_alloc();
+    if (!ctx->vk_frame) {
+        return AVERROR(ENOMEM);
+    }
+
+    snprintf(ctx->api_name, sizeof(ctx->api_name), "Vulkan");
+
+    {
+        PFN_vkGetPhysicalDeviceProperties get_props =
+            (PFN_vkGetPhysicalDeviceProperties)
+                ctx->get_proc_addr(ctx->inst, "vkGetPhysicalDeviceProperties");
+        VkPhysicalDeviceProperties props;
+
+        if (get_props) {
+            get_props(ctx->placebo_vulkan->phys_device, &props);
+            snprintf(ctx->device_name, sizeof(ctx->device_name), "%s",
+                     props.deviceName);
+        }
+    }
+
+    return 0;
+}
+
+static void vk_backend_destroy(RendererContext *ctx) {
+    PFN_vkDestroySurfaceKHR destroy_surface;
+
+    av_frame_free(&ctx->vk_frame);
+    av_freep(&ctx->transfer_formats);
+    av_hwframe_constraints_free(&ctx->constraints);
+    av_buffer_unref(&ctx->hw_frame_ref);
+
+    pl_swapchain_destroy(&ctx->swapchain);
+    pl_vulkan_destroy(&ctx->placebo_vulkan);
+
+    if (ctx->vk_surface) {
+        destroy_surface = (PFN_vkDestroySurfaceKHR)
+                              ctx->get_proc_addr(ctx->inst, "vkDestroySurfaceKHR");
+        destroy_surface(ctx->inst, ctx->vk_surface, NULL);
+        ctx->vk_surface = VK_NULL_HANDLE;
+    }
+
+    av_buffer_unref(&ctx->hw_device_ref);
+    pl_vk_inst_destroy(&ctx->placebo_instance);
+}
+
+#endif /* LACHESIS_HAVE_VULKAN */
+
+#if LACHESIS_HAVE_OPENGL
+
+/* XXX */
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+    defined(__NetBSD__) || defined(__DragonFly__)
+#define LACHESIS_GL_PREFER_EGL 1
+#else
+#define LACHESIS_GL_PREFER_EGL 0
+#endif
+
+static const struct gl_profile {
+    const char *name;
+    int profile;
+    int major;
+    int minor;
+    int prefer_egl;
+    int angle;
+} gl_profiles[] = {
+
+#if LACHESIS_GL_PREFER_EGL
+    {"OpenGL 3.3 core (EGL)", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 1, 0},
+#endif
+    {"OpenGL 3.3 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 0, 0},
+    {"OpenGL ES 3.0", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 0, 0},
+#ifdef _WIN32
+    {"OpenGL ES 3.0 (ANGLE)", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 1},
+#endif
+};
+
+#define GL_NUM_PROFILES ((int)FF_ARRAY_ELEMS(gl_profiles))
+
+static int gl_profile_index(int attempt, const AVDictionary *opt) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "gles", NULL, 0);
+    int order[GL_NUM_PROFILES];
+    int n = 0;
+
+    if (!(entry && strtol(entry->value, NULL, 10))) {
+        return attempt;
+    }
+
+    for (int i = 0; i < GL_NUM_PROFILES; i++) {
+        if (gl_profiles[i].profile == SDL_GL_CONTEXT_PROFILE_ES) {
+            order[n++] = i;
+        }
+    }
+    for (int i = 0; i < GL_NUM_PROFILES; i++) {
+        if (gl_profiles[i].profile != SDL_GL_CONTEXT_PROFILE_ES) {
+            order[n++] = i;
+        }
+    }
+
+    return order[attempt];
+}
+
+static const char *gl_apply_profile_hints(int index) {
+    const struct gl_profile *p = &gl_profiles[index];
+
+    if (!SDL_getenv(SDL_HINT_VIDEO_FORCE_EGL)) {
+        SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, p->prefer_egl ? "1" : "0");
+    }
+    if (!SDL_getenv(SDL_HINT_OPENGL_ES_DRIVER)) {
+        SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, p->angle ? "1" : "0");
+    }
+
+    SDL_GL_ResetAttributes();
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, p->profile);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, p->major);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, p->minor);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    /* No destination alpha. */
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 0);
+
+    return p->name;
+}
+
+static pl_voidfunc_t gl_get_proc_addr(const char *name) {
+    return (pl_voidfunc_t)SDL_GL_GetProcAddress(name);
+}
+
+static void gl_swap_buffers(void *priv) {
+    SDL_GL_SwapWindow(priv);
+}
+
+static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
+                             AVDictionary *opt) {
+    AVDictionaryEntry *entry;
+    SDL_EGLDisplay egl_display;
+    int max_glsl = 0;
+    int w, h;
+
+    ctx->gl_context = SDL_GL_CreateContext(window);
+    if (!ctx->gl_context) {
+        log_verbose("Failed to create a GL context: %s.\n", SDL_GetError());
+        return AVERROR_EXTERNAL;
+    }
+    if (!SDL_GL_MakeCurrent(window, ctx->gl_context)) {
+        return AVERROR_EXTERNAL;
+    }
+
+    entry = av_dict_get(opt, "max_glsl_version", NULL, 0);
+    if (entry && entry->value) {
+        max_glsl = (int)strtol(entry->value, NULL, 10);
+    }
+
+    entry = av_dict_get(opt, "present_mode", NULL, 0);
+    if (entry && entry->value && !strcmp(entry->value, "immediate")) {
+        SDL_GL_SetSwapInterval(0);
+    } else if (!SDL_GL_SetSwapInterval(-1)) {
+        SDL_GL_SetSwapInterval(1);
+    }
+
+    egl_display = SDL_EGL_GetCurrentDisplay();
+    if (!egl_display) {
+        SDL_ClearError();
+    }
+
+    /* clang-format off */
+    ctx->placebo_gl = pl_opengl_create(ctx->log_ctx,
+                                       pl_opengl_params(
+                                           .get_proc_addr = gl_get_proc_addr,
+                                           .debug = enable_debug(opt),
+                                           .allow_software = true,
+                                           .max_glsl_version = max_glsl,
+                                           .egl_display = egl_display, ));
+    if (!ctx->placebo_gl && egl_display) {
+        egl_display = NULL;
+        ctx->placebo_gl = pl_opengl_create(ctx->log_ctx,
+                                           pl_opengl_params(
+                                               .get_proc_addr = gl_get_proc_addr,
+                                               .debug = enable_debug(opt),
+                                               .allow_software = true,
+                                               .max_glsl_version = max_glsl, ));
+    }
+    /* clang-format on */
+    if (!ctx->placebo_gl) {
+        return AVERROR_EXTERNAL;
+    }
+
+    ctx->gpu = ctx->placebo_gl->gpu;
+
+    /* clang-format off */
+    ctx->swapchain = pl_opengl_create_swapchain(ctx->placebo_gl,
+                                                pl_opengl_swapchain_params(
+                                                    .swap_buffers = gl_swap_buffers,
+                                                    .framebuffer.flipped = false,
+                                                    .priv = window, ));
+    /* clang-format on */
+    if (!ctx->swapchain) {
+        return AVERROR_EXTERNAL;
+    }
+
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) {
+        w = h = 1;
+    }
+    if (!pl_swapchain_resize(ctx->swapchain, &w, &h)) {
+        return AVERROR_EXTERNAL;
+    }
+
+    snprintf(ctx->api_name, sizeof(ctx->api_name), "OpenGL%s %d.%d",
+             ctx->placebo_gl->gpu->glsl.gles ? " ES" : "",
+             ctx->placebo_gl->major, ctx->placebo_gl->minor);
+
+    {
+        enum { LACHESIS_GL_RENDERER = 0x1F01 };
+#ifdef _WIN32
+        typedef const unsigned char *(__stdcall * gl_get_string_fn)(unsigned);
+#else
+        typedef const unsigned char *(*gl_get_string_fn)(unsigned);
+#endif
+        gl_get_string_fn get_string =
+            (gl_get_string_fn)SDL_GL_GetProcAddress("glGetString");
+        const unsigned char *name = get_string ? get_string(LACHESIS_GL_RENDERER) : NULL;
+
+        if (name) {
+            snprintf(ctx->device_name, sizeof(ctx->device_name), "%s", name);
+        }
+    }
+
+    if (!(ctx->gpu->import_caps.tex & PL_HANDLE_DMA_BUF)) {
+        log_verbose("OpenGL: no DMA-BUF import (EGL display: %s, "
+                    "GL_EXT_EGL_image_storage: %s, "
+                    "GL_OES_EGL_image_external: %s, "
+                    "EGL_EXT_image_dma_buf_import: %s). Hardware frames will "
+                    "be copied through system memory.\n",
+                    egl_display ? "yes" : "no",
+                    pl_opengl_has_ext(ctx->placebo_gl, "GL_EXT_EGL_image_storage") ? "yes" : "no",
+                    pl_opengl_has_ext(ctx->placebo_gl, "GL_OES_EGL_image_external") ? "yes" : "no",
+                    pl_opengl_has_ext(ctx->placebo_gl, "EGL_EXT_image_dma_buf_import") ? "yes" : "no");
+    }
+
+    return 0;
+}
+
+static void gl_backend_destroy(RendererContext *ctx) {
+    pl_swapchain_destroy(&ctx->swapchain);
+    pl_opengl_destroy(&ctx->placebo_gl);
+
+    if (ctx->gl_context) {
+        SDL_GL_DestroyContext(ctx->gl_context);
+        ctx->gl_context = NULL;
+    }
+}
+
+#endif /* LACHESIS_HAVE_OPENGL */
 
 #ifdef LACHESIS_CAN_ITERATE_LIBS
 #define LACHESIS_MAX_PLACEBO_LIBS 8
@@ -850,10 +1175,13 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
     char dir[4096];
     const AVDictionaryEntry *entry = av_dict_get(opt, "cache", NULL, 0);
     int enabled = entry && entry->value ? strtol(entry->value, NULL, 10) : 1;
+    const char *leaf = ctx->api.backend == RENDERER_API_OPENGL
+        ? LACHESIS_PATH_SEP "shaders-OpenGL.bin"
+        : LACHESIS_PATH_SEP "shaders-Vulkan.bin";
     size_t need;
     FILE *f;
 
-    if (!enabled || !ctx->placebo_vulkan) {
+    if (!enabled || !ctx->gpu) {
         return;
     }
     if (resolve_cache_dir(opt, dir, sizeof(dir)) < 0) {
@@ -861,15 +1189,15 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
     }
     lachesis_mkdir_p(dir);
 
-    need = strlen(dir) + strlen(LACHESIS_PATH_SEP "shaders.bin") + 1;
+    need = strlen(dir) + strlen(leaf) + 1;
     ctx->cache_path = av_malloc(need);
     if (!ctx->cache_path) {
         return;
     }
-    snprintf(ctx->cache_path, need, "%s%s", dir, LACHESIS_PATH_SEP "shaders.bin");
+    snprintf(ctx->cache_path, need, "%s%s", dir, leaf);
 
     ctx->shader_cache = pl_cache_create(pl_cache_params(
-            .log = ctx->vk_log,
+            .log = ctx->log_ctx,
             .max_total_size = LACHESIS_SHADER_CACHE_LIMIT));
     if (!ctx->shader_cache) {
         av_freep(&ctx->cache_path);
@@ -882,7 +1210,7 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
         fclose(f);
     }
 
-    pl_gpu_set_cache(ctx->placebo_vulkan->gpu, ctx->shader_cache);
+    pl_gpu_set_cache(ctx->gpu, ctx->shader_cache);
 }
 
 static void cache_save(RendererContext *ctx) {
@@ -1057,6 +1385,39 @@ done:
     return 1;
 }
 
+static int build_pixfmt_list(RendererContext *ctx) {
+    const AVPixFmtDescriptor *desc = NULL;
+    int n = 0, cap = 0;
+
+    while ((desc = av_pix_fmt_desc_next(desc))) {
+        enum AVPixelFormat fmt = av_pix_fmt_desc_get_id(desc);
+
+        if (!(desc->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
+            !pl_test_pixfmt(ctx->gpu, fmt)) {
+            continue;
+        }
+
+        if (n + 1 >= cap) {
+            enum AVPixelFormat *grown;
+
+            cap = cap ? cap * 2 : 64;
+            grown = av_realloc_array(ctx->pixfmts, cap, sizeof(*grown));
+            if (!grown) {
+                return AVERROR(ENOMEM);
+            }
+            ctx->pixfmts = grown;
+        }
+        ctx->pixfmts[n++] = fmt;
+    }
+
+    if (!n) {
+        return AVERROR_EXTERNAL;
+    }
+    ctx->num_pixfmts = n;
+
+    return 0;
+}
+
 static void vk_log_cb(void *log_priv, enum pl_log_level level,
                       const char *msg) {
     (void)log_priv;
@@ -1068,13 +1429,8 @@ static void vk_log_cb(void *log_priv, enum pl_log_level level,
     }
 }
 
-static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
-    int ret = 0;
-    unsigned num_ext = 0;
-    const char **ext = NULL;
-    int w, h;
-    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    struct pl_log_params vk_log_params = {
+static int create(Renderer *renderer, SDL_Window *window, AVDictionary *opt) {
+    struct pl_log_params log_params = {
         .log_cb = vk_log_cb,
         /* Not PL_LOG_WARN due to useless spam. */
         .log_level = enable_debug(opt) ? PL_LOG_DEBUG : PL_LOG_ERR,
@@ -1082,65 +1438,36 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     };
     RendererContext *ctx = (RendererContext *)renderer;
     AVDictionaryEntry *entry;
+    int ret;
 
     check_libplacebo_consistency();
 
-    ctx->vk_log = pl_log_create(PL_API_VER, &vk_log_params);
+    ctx->log_ctx = pl_log_create(PL_API_VER, &log_params);
+    if (!ctx->log_ctx) {
+        return AVERROR(ENOMEM);
+    }
 
     entry = av_dict_get(opt, "benchmark", NULL, 0);
     ctx->benchmark = entry && strtol(entry->value, NULL, 10);
 
-    {
-        Uint32 sdl_num_ext = 0;
-        char const *const *sdl_ext =
-            SDL_Vulkan_GetInstanceExtensions(&sdl_num_ext);
-        if (!sdl_ext) {
-            return AVERROR_EXTERNAL;
-        }
-
-        num_ext = sdl_num_ext;
-        ext = av_calloc(num_ext, sizeof(*ext));
-        if (!ext) {
-            ret = AVERROR(ENOMEM);
-            goto out;
-        }
-
-        memcpy(ext, sdl_ext, num_ext * sizeof(*ext));
-    }
-
-    entry = av_dict_get(opt, "create_by_placebo", NULL, 0);
-    if (entry && strtol(entry->value, NULL, 10)) {
-        ret = create_vk_by_placebo(renderer, ext, num_ext, opt);
-    } else {
-        ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt);
+    switch (renderer->backend) {
+#if LACHESIS_HAVE_VULKAN
+    case RENDERER_API_VULKAN:
+        ret = vk_backend_create(ctx, window, opt);
+        break;
+#endif
+#if LACHESIS_HAVE_OPENGL
+    case RENDERER_API_OPENGL:
+        ret = gl_backend_create(ctx, window, opt);
+        break;
+#endif
+    default:
+        ret = AVERROR(ENOSYS);
+        break;
     }
     if (ret < 0) {
-        goto out;
+        return ret;
     }
-
-    if (!SDL_Vulkan_CreateSurface(window, ctx->inst, NULL, &ctx->vk_surface)) {
-        ret = AVERROR_EXTERNAL;
-        goto out;
-    }
-
-    entry = av_dict_get(opt, "present_mode", NULL, 0);
-    if (entry && entry->value && *entry->value) {
-        present_mode = select_present_mode(ctx, entry->value);
-    }
-    ctx->present_mode = present_mode;
-
-    ctx->swapchain = pl_vulkan_create_swapchain(
-        ctx->placebo_vulkan,
-        pl_vulkan_swapchain_params(
-                .surface = ctx->vk_surface,
-                .present_mode = present_mode));
-    if (!ctx->swapchain) {
-        ret = AVERROR_EXTERNAL;
-        goto out;
-    }
-
-    SDL_GetWindowSizeInPixels(window, &w, &h);
-    pl_swapchain_resize(ctx->swapchain, &w, &h);
 
 #if LACHESIS_HAVE_PL_CACHE
     cache_setup(ctx, opt);
@@ -1152,33 +1479,22 @@ static int create(VkRenderer *renderer, SDL_Window *window, AVDictionary *opt) {
     ctx->hdr_auto = !entry || strtol(entry->value, NULL, 10);
     hdr_refresh(ctx, window);
 
-    ctx->renderer = pl_renderer_create(ctx->vk_log, ctx->placebo_vulkan->gpu);
+    ctx->renderer = pl_renderer_create(ctx->log_ctx, ctx->gpu);
     if (!ctx->renderer) {
-        ret = AVERROR_EXTERNAL;
-        goto out;
+        return AVERROR_EXTERNAL;
     }
 
-    ctx->vk_frame = av_frame_alloc();
-    if (!ctx->vk_frame) {
-        ret = AVERROR(ENOMEM);
-        goto out;
+    ret = build_pixfmt_list(ctx);
+    if (ret < 0) {
+        return ret;
     }
 
-    ret = 0;
-
-out:
-    av_free(ext);
-    return ret;
-}
-
-static int get_hw_dev(VkRenderer *renderer, AVBufferRef **dev) {
-    RendererContext *ctx = (RendererContext *)renderer;
-
-    *dev = ctx->hw_device_ref;
     return 0;
 }
 
-static int create_hw_frame(VkRenderer *renderer, AVFrame *frame) {
+#if LACHESIS_HAVE_VULKAN
+
+static int create_hw_frame(Renderer *renderer, AVFrame *frame) {
     RendererContext *ctx = (RendererContext *)renderer;
     AVHWFramesContext *src_hw_frame = (AVHWFramesContext *)
                                           frame->hw_frames_ctx->data;
@@ -1301,7 +1617,7 @@ static inline int move_to_output_frame(RendererContext *ctx, AVFrame *frame) {
     return 0;
 }
 
-static int map_frame(VkRenderer *renderer, AVFrame *frame, int use_hw_frame) {
+static int map_frame(Renderer *renderer, AVFrame *frame, int use_hw_frame) {
     RendererContext *ctx = (RendererContext *)renderer;
     int ret;
 
@@ -1322,7 +1638,7 @@ static int map_frame(VkRenderer *renderer, AVFrame *frame, int use_hw_frame) {
     return ret;
 }
 
-static int transfer_frame(VkRenderer *renderer, AVFrame *frame, int use_hw_frame) {
+static int transfer_frame(Renderer *renderer, AVFrame *frame, int use_hw_frame) {
     RendererContext *ctx = (RendererContext *)renderer;
     int ret;
 
@@ -1342,13 +1658,9 @@ static int transfer_frame(VkRenderer *renderer, AVFrame *frame, int use_hw_frame
     return ret;
 }
 
-static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
+static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
     static int warned_download;
     int ret;
-
-    if (!frame->hw_frames_ctx) {
-        return 0;
-    }
 
     if (frame->format == AV_PIX_FMT_VULKAN) {
         return 0;
@@ -1375,6 +1687,62 @@ static int convert_frame(VkRenderer *renderer, AVFrame *frame) {
     return ret;
 }
 
+#endif /* LACHESIS_HAVE_VULKAN */
+
+static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
+    static int warned_download;
+    int ret;
+
+    if (!ctx->sw_frame) {
+        ctx->sw_frame = av_frame_alloc();
+        if (!ctx->sw_frame) {
+            return AVERROR(ENOMEM);
+        }
+    }
+
+    av_frame_unref(ctx->sw_frame);
+    ret = av_hwframe_transfer_data(ctx->sw_frame, frame, 0);
+    if (ret < 0) {
+        return ret;
+    }
+    ret = av_frame_copy_props(ctx->sw_frame, frame);
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (!warned_download) {
+        warned_download = 1;
+        log_info("Displaying hardware frames via a system memory copy "
+                 "(the GPU cannot import %s).\n",
+                 av_get_pix_fmt_name(frame->format));
+    }
+
+    av_frame_unref(frame);
+    av_frame_move_ref(frame, ctx->sw_frame);
+
+    return 0;
+}
+
+static int convert_frame(Renderer *renderer, AVFrame *frame) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!frame->hw_frames_ctx) {
+        return 0;
+    }
+
+#if LACHESIS_HAVE_VULKAN
+    if (renderer->backend == RENDERER_API_VULKAN) {
+        return convert_frame_vulkan(renderer, frame);
+    }
+#endif
+
+    if (pl_test_pixfmt(ctx->gpu, frame->format)) {
+        return 0;
+    }
+
+    return convert_frame_readback(ctx, frame);
+}
+
 static bool frames_alias(const AVFrame *a, const AVFrame *b) {
     if (!a || !b) {
         return false;
@@ -1397,7 +1765,7 @@ static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
     if (!frame || frames_alias(frame, self)) {
         return NULL;
     }
-    if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, out,
+    if (!pl_map_avframe_ex(ctx->gpu, out,
                            pl_avframe_params(.frame = frame, .tex = tex))) {
         return NULL;
     }
@@ -1420,7 +1788,7 @@ static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
     return out;
 
 reject:
-    pl_unmap_avframe(ctx->placebo_vulkan->gpu, out);
+    pl_unmap_avframe(ctx->gpu, out);
     return NULL;
 }
 
@@ -1530,28 +1898,30 @@ static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target
 static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
                              int w, int h, int stride) {
     if (!*slot || (int)(*slot)->params.w != w || (int)(*slot)->params.h != h) {
-        pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
-        pl_tex_destroy(ctx->placebo_vulkan->gpu, slot);
+        pl_fmt fmt = pl_find_named_fmt(ctx->gpu, "rgba8");
+        pl_tex_destroy(ctx->gpu, slot);
         if (!fmt) {
             return NULL;
         }
-        *slot = pl_tex_create(ctx->placebo_vulkan->gpu, &(struct pl_tex_params){
-                                                            .w = w,
-                                                            .h = h,
-                                                            .format = fmt,
-                                                            .sampleable = true,
-                                                            .host_writable = true,
-                                                        });
+        *slot = pl_tex_create(ctx->gpu, &(struct pl_tex_params){
+                                            .w = w,
+                                            .h = h,
+                                            .format = fmt,
+                                            .sampleable = true,
+                                            .host_writable = true,
+                                        });
         if (!*slot) {
             return NULL;
         }
     }
 
-    pl_tex_upload(ctx->placebo_vulkan->gpu, &(struct pl_tex_transfer_params){
-                                                .tex = *slot,
-                                                .ptr = pixels,
-                                                .row_pitch = stride,
-                                            });
+    if (!pl_tex_upload(ctx->gpu, &(struct pl_tex_transfer_params){
+                                     .tex = *slot,
+                                     .ptr = pixels,
+                                     .row_pitch = stride,
+                                 })) {
+        return NULL;
+    }
 
     return *slot;
 }
@@ -1571,21 +1941,23 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         clip_crops_to_target(pl_frame, target,
                              pl_rotation_normalize(rotation - target->rotation));
     }
-    switch (params->video_background_type) {
-    case VIDEO_BACKGROUND_TILES:
-        pl_params->background = PL_CLEAR_TILES;
-        pl_params->tile_size = VIDEO_BACKGROUND_TILE_SIZE * 2;
-        break;
-    case VIDEO_BACKGROUND_COLOR:
-        pl_params->background = PL_CLEAR_COLOR;
-        for (int i = 0; i < 3; i++) {
-            pl_params->background_color[i] = params->video_background_color[i] / 255.0;
+    if (pl_frame->repr.alpha != PL_ALPHA_NONE) {
+        switch (params->video_background_type) {
+        case VIDEO_BACKGROUND_TILES:
+            pl_params->background = PL_CLEAR_TILES;
+            pl_params->tile_size = VIDEO_BACKGROUND_TILE_SIZE * 2;
+            break;
+        case VIDEO_BACKGROUND_COLOR:
+            pl_params->background = PL_CLEAR_COLOR;
+            for (int i = 0; i < 3; i++) {
+                pl_params->background_color[i] = params->video_background_color[i] / 255.0;
+            }
+            pl_params->background_transparency = (255 - params->video_background_color[3]) / 255.0;
+            break;
+        case VIDEO_BACKGROUND_NONE:
+            pl_frame->repr.alpha = PL_ALPHA_NONE;
+            break;
         }
-        pl_params->background_transparency = (255 - params->video_background_color[3]) / 255.0;
-        break;
-    case VIDEO_BACKGROUND_NONE:
-        pl_frame->repr.alpha = PL_ALPHA_NONE;
-        break;
     }
 
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
@@ -1615,7 +1987,6 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                 .repr = {
                     .sys = PL_COLOR_SYSTEM_RGB,
                     .levels = PL_COLOR_LEVELS_FULL,
-                    /* swscale writes straight alpha here, unlike the OSD. */
                     .alpha = PL_ALPHA_INDEPENDENT,
                 },
                 .color = pl_color_space_srgb,
@@ -1679,7 +2050,7 @@ static struct pl_color_adjustment equalizer_adjustment(const RenderParams *param
     return adj;
 }
 
-static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
+static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     struct pl_swapchain_frame swap_frame = {0};
     struct pl_frame pl_frame = {0};
     struct pl_frame target = {0};
@@ -1707,17 +2078,24 @@ static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
         return ret;
     }
 
+    if (params->next_frame && params->deinterlace == DEINTERLACE_YADIF) {
+        convert_frame(renderer, params->next_frame);
+    }
+
     if (frame->width <= 0 || frame->height <= 0) {
-        return AVERROR_INVALIDDATA;
+        ret = AVERROR_INVALIDDATA;
+        goto done;
     }
 
-    max_dim = ctx->placebo_vulkan->gpu->limits.max_tex_2d_dim;
+    max_dim = ctx->gpu->limits.max_tex_2d_dim;
     if (max_dim && ((unsigned)frame->width > max_dim || (unsigned)frame->height > max_dim)) {
-        return AVERROR(ERANGE);
+        ret = AVERROR(ERANGE);
+        goto done;
     }
 
-    if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
-        return AVERROR_EXTERNAL;
+    if (!pl_map_avframe_ex(ctx->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+        ret = AVERROR_EXTERNAL;
+        goto done;
     }
 
     pl_color_space_from_avframe(&hint, frame);
@@ -1828,18 +2206,19 @@ out:
     }
 
     if (mapped_prev) {
-        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_prev);
+        pl_unmap_avframe(ctx->gpu, &pl_prev);
     }
     if (mapped_next) {
-        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_next);
+        pl_unmap_avframe(ctx->gpu, &pl_next);
     }
-    pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_frame);
+    pl_unmap_avframe(ctx->gpu, &pl_frame);
 
+done:
     if (params->deinterlace == DEINTERLACE_YADIF) {
         if (!ctx->deint_prev) {
             ctx->deint_prev = av_frame_alloc();
         }
-        if (ctx->deint_prev) {
+        if (ctx->deint_prev && ret == 0) {
             av_frame_unref(ctx->deint_prev);
             av_frame_ref(ctx->deint_prev, frame);
         }
@@ -1850,7 +2229,7 @@ out:
     return ret;
 }
 
-static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
+static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
                    int width, int height, uint8_t *out, int out_stride) {
     RendererContext *ctx = (RendererContext *)renderer;
     struct pl_frame pl_frame = {0};
@@ -1879,11 +2258,15 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
         return ret;
     }
 
-    if (!pl_map_avframe_ex(ctx->placebo_vulkan->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+    if (params->next_frame && params->deinterlace == DEINTERLACE_YADIF) {
+        convert_frame(renderer, params->next_frame);
+    }
+
+    if (!pl_map_avframe_ex(ctx->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
         return AVERROR_EXTERNAL;
     }
 
-    pl_fmt fmt = pl_find_named_fmt(ctx->placebo_vulkan->gpu, "rgba8");
+    pl_fmt fmt = pl_find_named_fmt(ctx->gpu, "rgba8");
     if (!fmt) {
         ret = AVERROR_EXTERNAL;
         goto out;
@@ -1895,7 +2278,7 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
         .renderable = true,
         .host_readable = true,
     };
-    cap_tex = pl_tex_create(ctx->placebo_vulkan->gpu, &cap_params);
+    cap_tex = pl_tex_create(ctx->gpu, &cap_params);
     if (!cap_tex) {
         ret = AVERROR_EXTERNAL;
         goto out;
@@ -1939,26 +2322,26 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
         .ptr = out,
         .row_pitch = out_stride,
     };
-    if (!pl_tex_download(ctx->placebo_vulkan->gpu, &xfer)) {
+    if (!pl_tex_download(ctx->gpu, &xfer)) {
         ret = AVERROR_EXTERNAL;
         goto out;
     }
 
 out:
     if (cap_tex) {
-        pl_tex_destroy(ctx->placebo_vulkan->gpu, &cap_tex);
+        pl_tex_destroy(ctx->gpu, &cap_tex);
     }
     if (mapped_prev) {
-        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_prev);
+        pl_unmap_avframe(ctx->gpu, &pl_prev);
     }
     if (mapped_next) {
-        pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_next);
+        pl_unmap_avframe(ctx->gpu, &pl_next);
     }
-    pl_unmap_avframe(ctx->placebo_vulkan->gpu, &pl_frame);
+    pl_unmap_avframe(ctx->gpu, &pl_frame);
     return ret;
 }
 
-static int resize(VkRenderer *renderer, int width, int height) {
+static int resize(Renderer *renderer, int width, int height) {
     RendererContext *ctx = (RendererContext *)renderer;
 
     if (!pl_swapchain_resize(ctx->swapchain, &width, &height)) {
@@ -1996,7 +2379,7 @@ static AVFrame *alloc_self_test_frame(int value) {
     return frame;
 }
 
-static int display_blank(VkRenderer *renderer, RenderParams *params) {
+static int display_blank(Renderer *renderer, RenderParams *params) {
     RendererContext *ctx = (RendererContext *)renderer;
 
     if (!ctx->blank_frame) {
@@ -2009,7 +2392,7 @@ static int display_blank(VkRenderer *renderer, RenderParams *params) {
     return display(renderer, ctx->blank_frame, params);
 }
 
-static int self_test(VkRenderer *renderer, int width, int height) {
+static int self_test(Renderer *renderer, int width, int height) {
     enum { size = LACHESIS_SELF_TEST_SIZE };
     RenderParams params = {.target_rect = {0, 0, size, size}};
     AVFrame *frame;
@@ -2059,15 +2442,12 @@ static int self_test(VkRenderer *renderer, int width, int height) {
     return ret;
 }
 
-static void destroy(VkRenderer *renderer) {
+static void destroy(Renderer *renderer) {
     RendererContext *ctx = (RendererContext *)renderer;
-    PFN_vkDestroySurfaceKHR vkDestroySurfaceKHR;
 
-    av_frame_free(&ctx->vk_frame);
     av_frame_free(&ctx->blank_frame);
-    av_freep(&ctx->transfer_formats);
-    av_hwframe_constraints_free(&ctx->constraints);
-    av_buffer_unref(&ctx->hw_frame_ref);
+    av_frame_free(&ctx->sw_frame);
+    av_freep(&ctx->pixfmts);
 
     if (ctx->sbs360_hook) {
         view360_pl_hook_destroy(&ctx->sbs360_hook);
@@ -2075,100 +2455,267 @@ static void destroy(VkRenderer *renderer) {
 
     av_freep(&ctx->icc_data);
 
-    if (ctx->placebo_vulkan) {
+    if (ctx->gpu) {
 #if LACHESIS_HAVE_PL_CACHE
         cache_save(ctx);
-        pl_gpu_set_cache(ctx->placebo_vulkan->gpu, NULL);
+        pl_gpu_set_cache(ctx->gpu, NULL);
         pl_cache_destroy(&ctx->shader_cache);
         av_freep(&ctx->cache_path);
 #endif
-        pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->osd_tex);
-        pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->sub_tex);
+        pl_tex_destroy(ctx->gpu, &ctx->osd_tex);
+        pl_tex_destroy(ctx->gpu, &ctx->sub_tex);
         av_frame_free(&ctx->deint_prev);
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->prev_tex); i++) {
-            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->prev_tex[i]);
-            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->next_tex[i]);
+            pl_tex_destroy(ctx->gpu, &ctx->prev_tex[i]);
+            pl_tex_destroy(ctx->gpu, &ctx->next_tex[i]);
         }
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
-            pl_tex_destroy(ctx->placebo_vulkan->gpu, &ctx->tex[i]);
+            pl_tex_destroy(ctx->gpu, &ctx->tex[i]);
         }
         pl_renderer_destroy(&ctx->renderer);
-        pl_swapchain_destroy(&ctx->swapchain);
-        pl_vulkan_destroy(&ctx->placebo_vulkan);
     }
 
-    if (ctx->vk_surface) {
-        vkDestroySurfaceKHR = (PFN_vkDestroySurfaceKHR)
-                                  ctx->get_proc_addr(ctx->inst, "vkDestroySurfaceKHR");
-        vkDestroySurfaceKHR(ctx->inst, ctx->vk_surface, NULL);
-        ctx->vk_surface = VK_NULL_HANDLE;
+    switch (renderer->backend) {
+#if LACHESIS_HAVE_VULKAN
+    case RENDERER_API_VULKAN:
+        vk_backend_destroy(ctx);
+        break;
+#endif
+#if LACHESIS_HAVE_OPENGL
+    case RENDERER_API_OPENGL:
+        gl_backend_destroy(ctx);
+        break;
+#endif
+    default:
+        break;
     }
+    ctx->gpu = NULL;
 
-    av_buffer_unref(&ctx->hw_device_ref);
-    pl_vk_inst_destroy(&ctx->placebo_instance);
-
-    pl_log_destroy(&ctx->vk_log);
+    pl_log_destroy(&ctx->log_ctx);
 }
 
-static const AVClass vulkan_renderer_class = {
-    .class_name = "Vulkan Renderer",
+static const AVClass renderer_class = {
+    .class_name = "Renderer",
     .item_name = av_default_item_name,
     .version = LIBAVUTIL_VERSION_INT,
 };
 
-VkRenderer *vk_get_renderer(void) {
+static const enum RendererApi renderer_api_order[] = {
+#if LACHESIS_HAVE_VULKAN
+    RENDERER_API_VULKAN,
+#endif
+#if LACHESIS_HAVE_OPENGL
+    RENDERER_API_OPENGL,
+#endif
+};
+
+static Renderer *renderer_alloc(enum RendererApi api) {
     RendererContext *ctx = av_mallocz(sizeof(*ctx));
-    VkRenderer *renderer;
 
     if (!ctx) {
         return NULL;
     }
+    ctx->api.class = &renderer_class;
+    ctx->api.backend = api;
 
-    renderer = &ctx->api;
-    renderer->class = &vulkan_renderer_class;
-    renderer->get_hw_dev = get_hw_dev;
-    renderer->create = create;
-    renderer->display = display;
-    renderer->display_blank = display_blank;
-    renderer->capture = capture;
-    renderer->resize = resize;
-    renderer->destroy = destroy;
-
-    return renderer;
+    return &ctx->api;
 }
 
-#else
-
-VkRenderer *vk_get_renderer(void) {
-    return NULL;
+static Uint32 api_window_flag(enum RendererApi api) {
+    switch (api) {
+    case RENDERER_API_VULKAN:
+        return SDL_WINDOW_VULKAN;
+    case RENDERER_API_OPENGL:
+        return SDL_WINDOW_OPENGL;
+    default:
+        return 0;
+    }
 }
 
+static const char *api_label(enum RendererApi api) {
+    switch (api) {
+    case RENDERER_API_VULKAN:
+        return "Vulkan";
+    case RENDERER_API_OPENGL:
+        return "OpenGL";
+    default:
+        return "unknown";
+    }
+}
+
+static int api_num_attempts(enum RendererApi api) {
+#if LACHESIS_HAVE_OPENGL
+    if (api == RENDERER_API_OPENGL) {
+        return GL_NUM_PROFILES;
+    }
 #endif
+    (void)api;
+    return 1;
+}
 
-int vk_renderer_refresh_display_info(VkRenderer *renderer, SDL_Window *window) {
-#if HAVE_VULKAN_RENDERER
+static const char *api_prepare_attempt(enum RendererApi api, int attempt,
+                                       const AVDictionary *opt) {
+#if LACHESIS_HAVE_OPENGL
+    if (api == RENDERER_API_OPENGL) {
+        return gl_apply_profile_hints(gl_profile_index(attempt, opt));
+    }
+#endif
+    (void)attempt;
+    (void)opt;
+
+    return api_label(api);
+}
+
+static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
+                        int attempt, SDL_Window **out_window,
+                        Renderer **out_renderer) {
+    SDL_Window *window;
+    Renderer *renderer;
+    const char *what;
+    int w = 0, h = 0;
+    int ret;
+
+    what = api_prepare_attempt(api, attempt, params->opt);
+
+    window = SDL_CreateWindow(params->title, params->width, params->height,
+                              params->window_flags | api_window_flag(api));
+    if (!window) {
+        log_verbose("Failed to create a %s window: %s.\n", what,
+                    SDL_GetError());
+        return AVERROR_EXTERNAL;
+    }
+
+    renderer = renderer_alloc(api);
+    if (!renderer) {
+        SDL_DestroyWindow(window);
+        return AVERROR(ENOMEM);
+    }
+
+    ret = create(renderer, window, params->opt);
+    if (ret < 0) {
+        goto fail;
+    }
+
+    SDL_ShowWindow(window);
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w > 0 && h > 0) {
+        resize(renderer, w, h);
+    }
+
+    ret = self_test(renderer, w, h);
+    if (ret < 0) {
+        log_warn("The %s renderer initialized but cannot render.\n", what);
+        goto fail;
+    }
+
+    *out_window = window;
+    *out_renderer = renderer;
+
+    return 0;
+
+fail:
+    destroy(renderer);
+    av_free(renderer);
+    SDL_DestroyWindow(window);
+
+    return ret;
+}
+
+int renderer_open(const RendererOpenParams *params, SDL_Window **window,
+                  Renderer **out) {
+    enum RendererApi order[FF_ARRAY_ELEMS(renderer_api_order) + 1];
+    size_t num = 0;
+    int last = AVERROR(ENOSYS);
+
+    for (size_t i = 0; params->api != RENDERER_API_AUTO &&
+         i < FF_ARRAY_ELEMS(renderer_api_order);
+         i++) {
+        if (renderer_api_order[i] == params->api &&
+            !(params->exclude & (1u << params->api))) {
+            order[num++] = params->api;
+            break;
+        }
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(renderer_api_order); i++) {
+        if (params->exclude & (1u << renderer_api_order[i])) {
+            continue;
+        }
+        if (!num || order[0] != renderer_api_order[i]) {
+            order[num++] = renderer_api_order[i];
+        }
+    }
+
+    if (!num) {
+        return AVERROR(ENOSYS);
+    }
+
+    log_verbose("SDL video driver: %s.\n",
+                SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "none");
+
+    for (size_t i = 0; i < num; i++) {
+        enum RendererApi api = order[i];
+        int attempts = api_num_attempts(api);
+
+        for (int attempt = 0; attempt < attempts; attempt++) {
+            int ret = renderer_try(params, api, attempt, window, out);
+
+            if (ret >= 0) {
+                return 0;
+            }
+            last = ret;
+        }
+        if (i + 1 < num) {
+            log_warn("Falling back from the %s renderer to %s.\n",
+                     api_label(api), api_label(order[i + 1]));
+        }
+    }
+
+    return last;
+}
+
+enum RendererApi renderer_api(const Renderer *renderer) {
+    return renderer ? renderer->backend : RENDERER_API_AUTO;
+}
+
+const char *renderer_api_name(const Renderer *renderer) {
+    const RendererContext *ctx = (const RendererContext *)renderer;
+
+    if (!ctx || !ctx->api_name[0]) {
+        return "none";
+    }
+
+    return ctx->api_name;
+}
+
+const char *renderer_device_name(const Renderer *renderer) {
+    const RendererContext *ctx = (const RendererContext *)renderer;
+
+    if (!ctx || !ctx->device_name[0]) {
+        return NULL;
+    }
+
+    return ctx->device_name;
+}
+
+int renderer_refresh_display_info(Renderer *renderer, SDL_Window *window) {
     RendererContext *ctx = (RendererContext *)renderer;
-    int changed;
 
     if (!ctx) {
         return 0;
     }
-    changed = icc_load_display(ctx, window) | hdr_refresh(ctx, window);
 
-    return changed;
-#else
-    (void)renderer;
-    (void)window;
-    return 0;
-#endif
+    return icc_load_display(ctx, window) | hdr_refresh(ctx, window);
 }
 
-int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
-#if HAVE_VULKAN_RENDERER
+int renderer_enable_360(Renderer *renderer, enum View360Layout layout) {
     RendererContext *ctx = (RendererContext *)renderer;
     int enable = layout != VIEW360_LAYOUT_OFF;
+
+    if (!ctx) {
+        return AVERROR(EINVAL);
+    }
     if (enable && !ctx->sbs360_hook) {
-        ctx->sbs360_hook = view360_pl_hook_create(ctx->placebo_vulkan->gpu);
+        ctx->sbs360_hook = view360_pl_hook_create(ctx->gpu);
         if (!ctx->sbs360_hook) {
             return AVERROR_EXTERNAL;
         }
@@ -2181,128 +2728,128 @@ int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout) {
     }
     ctx->sbs360_enabled = enable;
     ctx->sbs360_layout = layout;
+
     return 0;
-#else
-    (void)renderer;
-    (void)layout;
-    return AVERROR(ENOSYS);
-#endif
 }
 
-void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float roll, float hfov) {
-#if HAVE_VULKAN_RENDERER
+void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll, float hfov) {
     RendererContext *ctx = (RendererContext *)renderer;
+
     ctx->sbs360_yaw = yaw;
     ctx->sbs360_pitch = pitch;
     ctx->sbs360_roll = roll;
     ctx->sbs360_hfov = hfov;
-#else
-    (void)renderer;
-    (void)yaw;
-    (void)pitch;
-    (void)roll;
-    (void)hfov;
-#endif
 }
 
-int vk_renderer_create(VkRenderer *renderer, SDL_Window *window,
-                       AVDictionary *opt) {
-    return renderer->create(renderer, window, opt);
-}
+int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {
+#if LACHESIS_HAVE_VULKAN
+    RendererContext *ctx = (RendererContext *)renderer;
 
-int vk_renderer_get_hw_dev(VkRenderer *renderer, AVBufferRef **dev) {
-    return renderer->get_hw_dev(renderer, dev);
-}
-
-int vk_renderer_display(VkRenderer *renderer, AVFrame *frame, RenderParams *render_params) {
-    return renderer->display(renderer, frame, render_params);
-}
-
-int vk_renderer_display_blank(VkRenderer *renderer, RenderParams *render_params) {
-    if (!renderer->display_blank) {
-        return AVERROR(ENOSYS);
-    }
-    return renderer->display_blank(renderer, render_params);
-}
-
-int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *render_params,
-                        int width, int height, uint8_t *out, int out_stride) {
-    if (!renderer->capture) {
-        return AVERROR(ENOSYS);
-    }
-    return renderer->capture(renderer, frame, render_params, width, height, out, out_stride);
-}
-
-int vk_renderer_resize(VkRenderer *renderer, int width, int height) {
-    return renderer->resize(renderer, width, height);
-}
-
-int vk_renderer_self_test(VkRenderer *renderer, int width, int height) {
-#if HAVE_VULKAN_RENDERER
-    return self_test(renderer, width, height);
-#else
-    (void)renderer;
-    (void)width;
-    (void)height;
-    return 0;
-#endif
-}
-
-void vk_renderer_destroy(VkRenderer *renderer) {
-    renderer->destroy(renderer);
-}
-
-unsigned vk_renderer_video_decode_caps(VkRenderer *renderer) {
-#if HAVE_VULKAN_RENDERER
-    if (!renderer) {
+    if (renderer && renderer->backend == RENDERER_API_VULKAN) {
+        *dev = ctx->hw_device_ref;
         return 0;
     }
-    return ((RendererContext *)renderer)->decode_caps;
-#else
-    (void)renderer;
-    return 0;
 #endif
+    (void)renderer;
+    *dev = NULL;
+
+    return AVERROR(ENOSYS);
 }
 
-int vk_renderer_max_texture_size(VkRenderer *renderer) {
-#if HAVE_VULKAN_RENDERER
+int renderer_display(Renderer *renderer, AVFrame *frame, RenderParams *render_params) {
+    return display(renderer, frame, render_params);
+}
+
+int renderer_display_blank(Renderer *renderer, RenderParams *render_params) {
+    return display_blank(renderer, render_params);
+}
+
+int renderer_capture(Renderer *renderer, AVFrame *frame, RenderParams *render_params,
+                     int width, int height, uint8_t *out, int out_stride) {
+    return capture(renderer, frame, render_params, width, height, out, out_stride);
+}
+
+int renderer_resize(Renderer *renderer, int width, int height) {
+    return resize(renderer, width, height);
+}
+
+void renderer_destroy(Renderer *renderer) {
+    if (!renderer) {
+        return;
+    }
+    destroy(renderer);
+}
+
+unsigned renderer_video_decode_caps(Renderer *renderer) {
+#if LACHESIS_HAVE_VULKAN
+    if (renderer && renderer->backend == RENDERER_API_VULKAN) {
+        return ((RendererContext *)renderer)->decode_caps;
+    }
+#endif
+    (void)renderer;
+
+    return 0;
+}
+
+const enum AVPixelFormat *renderer_supported_pixfmts(Renderer *renderer,
+                                                     int *count) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx || !ctx->num_pixfmts) {
+        *count = 0;
+        return NULL;
+    }
+    *count = ctx->num_pixfmts;
+
+    return ctx->pixfmts;
+}
+
+int renderer_max_texture_size(Renderer *renderer) {
     RendererContext *ctx = (RendererContext *)renderer;
     uint32_t max_dim;
 
-    if (!ctx || !ctx->placebo_vulkan || !ctx->placebo_vulkan->gpu) {
+    if (!ctx || !ctx->gpu) {
         return 0;
     }
-    max_dim = ctx->placebo_vulkan->gpu->limits.max_tex_2d_dim;
+    max_dim = ctx->gpu->limits.max_tex_2d_dim;
 
     return max_dim > INT_MAX ? INT_MAX : (int)max_dim;
-#else
-    (void)renderer;
-    return 0;
-#endif
 }
 
-int vk_renderer_is_vsync_blocked(VkRenderer *renderer) {
-#if HAVE_VULKAN_RENDERER
+int renderer_is_vsync_blocked(Renderer *renderer) {
     if (!renderer) {
         return 1;
     }
-    switch (((RendererContext *)renderer)->present_mode) {
-    case VK_PRESENT_MODE_FIFO_KHR:
-    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
-        return 1;
-    default:
-        return 0;
-    }
-#else
-    (void)renderer;
-    return 1;
+
+    switch (renderer->backend) {
+#if LACHESIS_HAVE_VULKAN
+    case RENDERER_API_VULKAN:
+        switch (((RendererContext *)renderer)->present_mode) {
+        case VK_PRESENT_MODE_FIFO_KHR:
+        case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
+            return 1;
+        default:
+            return 0;
+        }
 #endif
+#if LACHESIS_HAVE_OPENGL
+    case RENDERER_API_OPENGL: {
+        int interval = 0;
+        if (!SDL_GL_GetSwapInterval(&interval)) {
+            return 1;
+        }
+        return interval != 0;
+    }
+#endif
+    default:
+        return 1;
+    }
 }
 
-int vk_renderer_frame_stats(VkRenderer *renderer, double *acquire_ms,
-                            double *render_ms, double *present_ms) {
-#if HAVE_VULKAN_RENDERER
+int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
+                         double *render_ms, double *present_ms) {
     RendererContext *ctx = (RendererContext *)renderer;
+
     if (!ctx || !ctx->stat_valid) {
         return 0;
     }
@@ -2315,12 +2862,6 @@ int vk_renderer_frame_stats(VkRenderer *renderer, double *acquire_ms,
     if (present_ms) {
         *present_ms = ctx->stat_present_ms;
     }
+
     return 1;
-#else
-    (void)renderer;
-    (void)acquire_ms;
-    (void)render_ms;
-    (void)present_ms;
-    return 0;
-#endif
 }

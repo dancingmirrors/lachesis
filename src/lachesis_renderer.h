@@ -24,11 +24,18 @@
 
 #include <SDL3/SDL.h>
 
+#include <libavutil/dict.h>
 #include <libavutil/frame.h>
 
 #include "lachesis_view360.h"
 
-typedef struct VkRenderer VkRenderer;
+typedef struct Renderer Renderer;
+
+enum RendererApi {
+    RENDERER_API_AUTO,
+    RENDERER_API_VULKAN,
+    RENDERER_API_OPENGL,
+};
 
 #define VIDEO_BACKGROUND_TILE_SIZE 64
 
@@ -70,45 +77,59 @@ typedef struct RenderParams {
     int64_t present_block_us;
 } RenderParams;
 
-#define VK_DECODE_CAP_H264 (1u << 0)
-#define VK_DECODE_CAP_HEVC (1u << 1)
-#define VK_DECODE_CAP_AV1 (1u << 2)
-#define VK_DECODE_CAP_VP9 (1u << 3)
+#define RENDERER_DECODE_CAP_H264 (1u << 0)
+#define RENDERER_DECODE_CAP_HEVC (1u << 1)
+#define RENDERER_DECODE_CAP_AV1 (1u << 2)
+#define RENDERER_DECODE_CAP_VP9 (1u << 3)
 
-VkRenderer *vk_get_renderer(void);
+typedef struct RendererOpenParams {
+    const char *title;
+    int width;
+    int height;
+    Uint32 window_flags;
+    enum RendererApi api;
+    unsigned exclude;
+    AVDictionary *opt;
+} RendererOpenParams;
 
-unsigned vk_renderer_video_decode_caps(VkRenderer *renderer);
+int renderer_open(const RendererOpenParams *params, SDL_Window **window,
+                  Renderer **out);
 
-/* Safe to call with a NULL renderer. */
-int vk_renderer_max_texture_size(VkRenderer *renderer);
+enum RendererApi renderer_api(const Renderer *renderer);
+const char *renderer_api_name(const Renderer *renderer);
+const char *renderer_device_name(const Renderer *renderer);
 
-int vk_renderer_is_vsync_blocked(VkRenderer *renderer);
+unsigned renderer_video_decode_caps(Renderer *renderer);
 
-/* Safe to call with a NULL renderer. */
-int vk_renderer_frame_stats(VkRenderer *renderer, double *acquire_ms,
-                            double *render_ms, double *present_ms);
-
-int vk_renderer_create(VkRenderer *renderer, SDL_Window *window,
-                       AVDictionary *opt);
-
-int vk_renderer_get_hw_dev(VkRenderer *renderer, AVBufferRef **dev);
-
-int vk_renderer_display(VkRenderer *renderer, AVFrame *frame, RenderParams *params);
-int vk_renderer_display_blank(VkRenderer *renderer, RenderParams *params);
-
-int vk_renderer_capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
-                        int width, int height, uint8_t *out, int out_stride);
-
-int vk_renderer_resize(VkRenderer *renderer, int width, int height);
+const enum AVPixelFormat *renderer_supported_pixfmts(Renderer *renderer,
+                                                     int *count);
 
 /* Safe to call with a NULL renderer. */
-int vk_renderer_refresh_display_info(VkRenderer *renderer, SDL_Window *window);
+int renderer_max_texture_size(Renderer *renderer);
 
-int vk_renderer_self_test(VkRenderer *renderer, int width, int height);
+int renderer_is_vsync_blocked(Renderer *renderer);
 
-void vk_renderer_destroy(VkRenderer *renderer);
+/* Safe to call with a NULL renderer. */
+int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
+                         double *render_ms, double *present_ms);
 
-int vk_renderer_enable_360(VkRenderer *renderer, enum View360Layout layout);
-void vk_renderer_update_360(VkRenderer *renderer, float yaw, float pitch, float roll, float hfov);
+/* NULL unless the backend can decode into its own memory. */
+int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);
+
+int renderer_display(Renderer *renderer, AVFrame *frame, RenderParams *params);
+int renderer_display_blank(Renderer *renderer, RenderParams *params);
+
+int renderer_capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
+                     int width, int height, uint8_t *out, int out_stride);
+
+int renderer_resize(Renderer *renderer, int width, int height);
+
+/* Safe to call with a NULL renderer. */
+int renderer_refresh_display_info(Renderer *renderer, SDL_Window *window);
+
+void renderer_destroy(Renderer *renderer);
+
+int renderer_enable_360(Renderer *renderer, enum View360Layout layout);
+void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll, float hfov);
 
 #endif /* LACHESIS_RENDERER_H */

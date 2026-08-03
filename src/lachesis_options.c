@@ -22,9 +22,7 @@
 #include "lachesis_config.h"
 #include "version.h"
 
-#if LACHESIS_HAVE_LIBPLACEBO
 #include <libplacebo/config.h>
-#endif
 
 #include <errno.h>
 #include <limits.h>
@@ -98,10 +96,12 @@ int audio_spdif_force = 0;
 int autorotate = 1;
 int disable_autorotate = 0;
 int video_rotate = 0;
-int enable_vulkan = 1;
-int disable_vulkan = 0;
-char *vulkan_params = NULL;
+enum RendererApi gpu_api = RENDERER_API_AUTO;
+char *gpu_api_name = NULL;
+int no_vulkan = 0;
+char *gpu_params = NULL;
 char *vulkan_swap_mode = NULL;
+int max_glsl_version = 0;
 int no_shader_cache = 0;
 char *shader_cache_dir = NULL;
 const char *icc_profile = NULL;
@@ -297,9 +297,11 @@ const OptionDef options[] = {
     {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},
     {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation", ""},
     {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees", "degrees"},
-    {"no-vulkan", OPT_TYPE_BOOL, 0, {&disable_vulkan}, "disable the Vulkan renderer"},
-    {"vulkan_params", OPT_TYPE_STRING, 0, {&vulkan_params}, "Vulkan configuration using a list of key=value pairs separated by ':'"},
-    {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "Vulkan present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
+    {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl)", "api"},
+    {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
+    {"gpu-params", OPT_TYPE_STRING, 0, {&gpu_params}, "backend configuration using a list of key=value pairs separated by ':'"},
+    {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
+    {"max-glsl-version", OPT_TYPE_INT, 0, {&max_glsl_version}, "cap the GLSL version libplacebo targets (0 for no cap)", "version"},
     {"icc-profile", OPT_TYPE_STRING, 0, {&icc_profile}, "ICC profile passed to libplacebo", "path"},
     {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises", ""},
     {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports", ""},
@@ -366,9 +368,7 @@ int opt_version(void *optctx av_unused, const char *opt av_unused,
     PRINT_LIB_VERSION(avfilter, AVFILTER);
     PRINT_LIB_VERSION(swscale, SWSCALE);
     PRINT_LIB_VERSION(swresample, SWRESAMPLE);
-#if LACHESIS_HAVE_LIBPLACEBO
     av_log(NULL, AV_LOG_INFO, "  lib%-11s %s\n", "placebo", PL_VERSION);
-#endif
 
     return 0;
 }

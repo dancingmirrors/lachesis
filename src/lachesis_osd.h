@@ -31,8 +31,7 @@
 void osd_init(void);
 void osd_uninit(void);
 
-void osd_draw(VideoState *is);
-void osd_prepare_vulkan(VideoState *is);
+void osd_prepare(VideoState *is);
 
 void osd_show_status(void);
 void osd_show_seek(void);

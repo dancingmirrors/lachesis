@@ -21,8 +21,6 @@
 #ifndef LACHESIS_VIEW360_H
 #define LACHESIS_VIEW360_H
 
-#include <SDL3/SDL.h>
-
 enum View360Layout {
     VIEW360_LAYOUT_OFF,
     VIEW360_LAYOUT_FULL,
@@ -35,13 +33,6 @@ static inline float view360_default_yaw(enum View360Layout layout) {
 
 #define VIEW360_DEFAULT_HFOV 140.0f
 #define VIEW360_DEFAULT_PITCH -15.0f
-
-int view360_draw(SDL_Renderer *renderer, SDL_Texture *texture,
-                 const SDL_Rect *rect, enum View360Layout layout,
-                 float yaw, float pitch, float roll, float hfov, int rotate,
-                 int flip_v);
-
-void view360_free(void);
 
 struct pl_gpu_t;
 struct pl_hook;

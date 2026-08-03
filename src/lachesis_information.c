@@ -44,17 +44,22 @@ static char playback_stats_cached[384] = "";
 static int64_t playback_stats_next_refresh_us = 0;
 
 static const char *media_info_renderer(void) {
-    static char buf[64];
-    const char *name;
+    static char buf[320];
+    const char *device;
 
-    if (vk_renderer) {
-        return "vulkan (libplacebo)";
-    }
     if (!renderer) {
         return "none";
     }
-    name = SDL_GetRendererName(renderer);
-    snprintf(buf, sizeof(buf), "SDL (%s)", name ? name : "unknown");
+
+    device = renderer_device_name(renderer);
+    if (device) {
+        snprintf(buf, sizeof(buf), "%s via libplacebo (%s)",
+                 renderer_api_name(renderer), device);
+    } else {
+        snprintf(buf, sizeof(buf), "%s via libplacebo",
+                 renderer_api_name(renderer));
+    }
+
     return buf;
 }
 
@@ -249,12 +254,12 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
 
         char timing[128];
         double acquire = 0.0, render = 0.0, present = 0.0;
-        if (vk_renderer &&
-            vk_renderer_frame_stats(vk_renderer, &acquire, &render, &present)) {
+        if (renderer &&
+            renderer_frame_stats(renderer, &acquire, &render, &present)) {
             snprintf(timing, sizeof(timing),
                      "acquire=%.2fms render=%.2fms present=%.2fms", acquire,
                      render, present);
-        } else if (vk_renderer) {
+        } else if (renderer) {
             snprintf(timing, sizeof(timing), "Frame timing: measuring...");
         } else {
             snprintf(timing, sizeof(timing),

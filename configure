@@ -115,7 +115,7 @@ check(
 
 check(
     desc="SDL3",
-    fn=lambda: check_pkg_config("sdl3 >= 3.0.0"),
+    fn=lambda: check_pkg_config("sdl3 >= 3.2.0"),
     required=True,
 )
 check(
@@ -136,16 +136,29 @@ check(
 )
 
 check(
-    "-vulkan*",
-    desc="vulkan",
-    fn=lambda: check_pkg_config("vulkan") and check_cc(include="vulkan/vulkan.h"),
+    desc="libplacebo",
+    fn=lambda: check_pkg_config("libplacebo >= 7.349.0"),
+    required=True,
 )
 
 check(
-    "-libplacebo*",
-    desc="libplacebo",
-    deps="vulkan",
-    fn=lambda: check_pkg_config("libplacebo >= 7.349.0"),
+    "-vulkan*",
+    desc="Vulkan",
+    fn=lambda: check_pkg_config("vulkan")
+    and check_cc(include="vulkan/vulkan.h")
+    and check_cc(include="libplacebo/config.h", defined="PL_HAVE_VULKAN"),
+)
+
+check(
+    "-opengl*",
+    desc="OpenGL",
+    fn=lambda: check_cc(include="libplacebo/config.h", defined="PL_HAVE_OPENGL"),
+)
+
+check(
+    desc="a libplacebo GPU backend",
+    deps_any=["vulkan", "opengl"],
+    required="libplacebo: built without both Vulkan and OpenGL support",
 )
 
 add_sources(

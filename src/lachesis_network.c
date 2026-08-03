@@ -37,7 +37,7 @@
 #include "lachesis_renderer.h"
 
 static char *build_default_ytdl_format(void) {
-    unsigned caps = vk_renderer_video_decode_caps(vk_renderer);
+    unsigned caps = renderer_video_decode_caps(renderer);
     char sel[512];
     size_t off = 0;
 
@@ -53,14 +53,14 @@ static char *build_default_ytdl_format(void) {
     /* clang-format on */
 
     sel[0] = '\0';
-    if (caps & VK_DECODE_CAP_AV1) {
+    if (caps & RENDERER_DECODE_CAP_AV1) {
         ADD_SEL("av01");
     }
-    if (caps & VK_DECODE_CAP_VP9) {
+    if (caps & RENDERER_DECODE_CAP_VP9) {
         ADD_SEL("vp09");
         ADD_SEL("vp9");
     }
-    if (caps & VK_DECODE_CAP_HEVC) {
+    if (caps & RENDERER_DECODE_CAP_HEVC) {
         ADD_SEL("hev1");
         ADD_SEL("hvc1");
     }
