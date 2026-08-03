@@ -306,10 +306,15 @@ void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
                           AVRational *last_fr) {
     int lw = av_buffersink_get_w(filt_out);
     int lh = av_buffersink_get_h(filt_out);
-    AVRational osar = av_buffersink_get_sample_aspect_ratio(filt_out);
     AVRational ofr = av_buffersink_get_frame_rate(filt_out);
+    AVRational osar;
     int ow, oh;
     int max_dim;
+
+    osar = frame->sample_aspect_ratio;
+    if (osar.num <= 0 || osar.den <= 0) {
+        osar = av_buffersink_get_sample_aspect_ratio(filt_out);
+    }
 
     frame_visible_size(frame, &ow, &oh);
 
@@ -325,7 +330,7 @@ void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
     /* The renderer still has to hold the uncropped surface. */
     max_dim = display_max_texture_size();
     if (max_dim > 0 && (lw > max_dim || lh > max_dim)) {
-        log_warn("%d exceeds %dx%d.\n", max_dim, lw, lh);
+        log_warn("%dx%d exceeds %d.\n", lw, lh, max_dim);
     }
 
     media_info_note_video_output(ow, oh, osar, ofr);
