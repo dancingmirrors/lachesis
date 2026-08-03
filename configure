@@ -130,6 +130,16 @@ check(
     fn=lambda: check_pkg_config("libarchive >= 3.0.0"),
     required=True,
 )
+check(
+    desc="libass",
+    fn=lambda: check_pkg_config("libass >= 0.17.2"),
+    required=True,
+)
+check(
+    desc="zlib",
+    fn=lambda: check_pkg_config("zlib"),
+    required=True,
+)
 
 check(
     "-vulkan*",

@@ -1243,6 +1243,7 @@ static void stream_component_close(VideoState *is, int stream_index) {
     case AVMEDIA_TYPE_SUBTITLE:
         decoder_abort(&is->subdec, &is->subpq);
         decoder_destroy(&is->subdec);
+        subtitles_track_close();
         break;
     default:
         break;
@@ -1297,6 +1298,7 @@ static void stream_close(VideoState *is) {
     } else if (is->sub_ic) {
         decoder_abort(&is->subdec, &is->subpq);
         decoder_destroy(&is->subdec);
+        subtitles_track_close();
         is->subtitle_st = NULL;
     }
 
@@ -1365,6 +1367,7 @@ av_noreturn void do_exit(VideoState *is) {
     av_freep(&pending_dirs);
     n_pending_dirs = 0;
     avformat_network_deinit();
+    subtitles_uninit();
     osd_uninit();
     TTF_Quit();
     SDL_Quit();
@@ -1549,6 +1552,8 @@ static void video_display(VideoState *is) {
     is->render_params.osd_pixels = NULL;
     is->render_params.present_done_us = 0;
     is->render_params.present_block_us = 0;
+    /* This thread owns the composited subtitle surface, so it frees it. */
+    subtitles_reap();
     osd_prepare_vulkan(is);
 
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -3191,6 +3196,7 @@ int main(int argc, char **argv) {
         if (TTF_Init()) {
             osd_init_fonts();
         }
+        subtitles_init();
         osd_set_info_provider(format_media_info);
         osd_set_stats_provider(format_playback_stats);
 

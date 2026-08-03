@@ -43,6 +43,7 @@
 #include "lachesis_osd.h"
 #include "lachesis_osd_font.h"
 #include "lachesis_osd_ui_font.h"
+#include "lachesis_subtitles.h"
 
 #define OSD_STATUS_DURATION_MS 1000
 #define OSD_SEEK_DURATION_MS 1000
@@ -55,13 +56,10 @@
 #define OSD_FONT_REF_720 55.0
 #define OSD_OUTLINE_RATIO (2.0 / 55.0)
 #define OSD_INFO_SIZE_RATIO 0.70
-#define OSD_SUB_SIZE_RATIO 0.44
 #define OSD_SUPERSAMPLE 2
 #define OSD_FONT_INIT_PX 55
 #define OSD_MAX_FALLBACK_FONTS 8
-#define OSD_SUB_MAX_TOKENS 512
-#define OSD_SUB_MAX_LINES 32
-#define OSD_SUB_RESERVE_LINES 2
+#define OSD_SUB_RESERVE_RATIO 0.09
 
 typedef enum { OSD_FACE_UI = 0,
                OSD_FACE_SYM,
@@ -80,7 +78,6 @@ static int osd_ss = 1;
 static char osd_ui_font_path[512];
 static TTF_Font *osd_fallback_fonts[OSD_MAX_FALLBACK_FONTS];
 static int osd_num_fallback_fonts = 0;
-static TTF_Font *osd_emoji_font = NULL;
 
 static SDL_Surface *osd_surface = NULL;
 static SDL_Renderer *osd_sw_renderer = NULL;
@@ -104,16 +101,6 @@ typedef struct {
     int pad;
 } OsdInfoCache;
 static OsdInfoCache osd_info_cache;
-
-typedef struct {
-    SDL_Surface *surf;
-    char text[OSD_INFO_TEXT_MAX];
-    int content_w, content_h;
-    int pad;
-    int max_w;
-    int base_px, ss;
-} OsdSubCache;
-static OsdSubCache osd_sub_cache;
 
 typedef enum { OSD_SHRINK_NONE = 0,
                OSD_SHRINK_FIT } OsdShrink;
@@ -149,7 +136,6 @@ typedef struct {
     OsdRect topleft;
     int topleft_cur;
     int sub_bottom;
-    int sub_wrap_w;
     int subs_top;
     int seek_bar_y;
     int seek_label_h;
@@ -191,6 +177,13 @@ static TTF_Font *osd_open_sym(float px) {
         return NULL;
     }
     return TTF_OpenFontIO(rw, true, px);
+}
+
+const void *osd_embedded_ui_font(size_t *size) {
+    if (size) {
+        *size = (size_t)osd_ui_font_data_size;
+    }
+    return osd_ui_font_data;
 }
 
 static TTF_Font *osd_open_ui(float px) {
@@ -411,42 +404,12 @@ static void osd_draw_cached_surface(SDL_Renderer *r, OsdCachedTexture *ct,
 static OsdCachedTexture osd_info_tex;
 static OsdCachedTexture osd_sub_tex;
 
+static unsigned osd_sub_generation;
+
 void osd_invalidate_textures(void) {
     osd_cached_texture_clear(&osd_info_tex);
     osd_cached_texture_clear(&osd_sub_tex);
     osd_invalidate_glyphs();
-}
-
-static SDL_Surface *osd_scale_down(SDL_Surface *raw, int tw, int th) {
-    if (!raw || tw < 1 || th < 1) {
-        return NULL;
-    }
-    SDL_Surface *cur = raw;
-    int owns_cur = 0;
-    while (cur->w >= tw * 2 && cur->h >= th * 2) {
-        int hw = cur->w / 2;
-        int hh = cur->h / 2;
-        SDL_Surface *half = SDL_CreateSurface(hw, hh, SDL_PIXELFORMAT_ARGB8888);
-        if (!half) {
-            break;
-        }
-        SDL_SetSurfaceBlendMode(cur, SDL_BLENDMODE_NONE);
-        SDL_BlitSurfaceScaled(cur, NULL, half, NULL, SDL_SCALEMODE_LINEAR);
-        if (owns_cur) {
-            SDL_DestroySurface(cur);
-        }
-        cur = half;
-        owns_cur = 1;
-    }
-    SDL_Surface *dst = SDL_CreateSurface(tw, th, SDL_PIXELFORMAT_ARGB8888);
-    if (dst) {
-        SDL_SetSurfaceBlendMode(cur, SDL_BLENDMODE_NONE);
-        SDL_BlitSurfaceScaled(cur, NULL, dst, NULL, SDL_SCALEMODE_LINEAR);
-    }
-    if (owns_cur) {
-        SDL_DestroySurface(cur);
-    }
-    return dst;
 }
 
 static int osd_utf8_next(const char *text, size_t len, size_t *pos);
@@ -875,82 +838,15 @@ static int osd_text_block(SDL_Renderer *r, const OsdTextStyle *st,
     return (int)((ndraw - 1) * step + line_h + 0.5);
 }
 
-static void subtitle_strip_ass(const char *in, char *out, size_t outsz) {
-    if (outsz == 0) {
-        return;
-    }
-    out[0] = '\0';
-    if (!in) {
-        return;
-    }
-
-    const char *p = in;
-    int skip = 8; /* ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect */
-    if (!strncmp(p, "Dialogue:", 9)) {
-        p += 9;
-        skip = 9; /* Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect */
-    }
-    for (int i = 0; i < skip && *p; i++) {
-        const char *c = strchr(p, ',');
-        if (!c) {
-            break;
-        }
-        p = c + 1;
-    }
-
-    size_t o = 0;
-    while (*p && o + 1 < outsz) {
-        if (*p == '{') {
-            const char *e = strchr(p, '}');
-            if (e) {
-                p = e + 1;
-                continue;
-            }
-        }
-        if (p[0] == '\\' && (p[1] == 'N' || p[1] == 'n')) {
-            out[o++] = '\n';
-            p += 2;
-            continue;
-        }
-        if (p[0] == '\\' && p[1] == 'h') {
-            out[o++] = ' ';
-            p += 2;
-            continue;
-        }
-        out[o++] = *p++;
-    }
-    out[o] = '\0';
-    while (o > 0 && (out[o - 1] == '\n' || out[o - 1] == '\r' || out[o - 1] == ' ')) {
-        out[--o] = '\0';
-    }
-}
-
 static double osd_display_pos(VideoState *is) {
     return effective_playhead(is);
 }
 
-static Frame *active_text_subtitle(VideoState *is) {
-    if (!is->subtitle_st || frame_queue_nb_remaining(&is->subpq) <= 0) {
-        return NULL;
-    }
-    Frame *sp = frame_queue_peek(&is->subpq);
-    if (sp->sub.format == 0) {
-        return NULL;
-    }
-    double clock = get_master_clock(is);
-    if (isnan(clock)) {
-        return NULL;
-    }
-    double start = sp->pts + sp->sub.start_display_time / 1000.0;
-    double end = sp->pts + sp->sub.end_display_time / 1000.0;
-    if (clock < start || clock > end) {
-        return NULL;
-    }
-    return sp;
-}
-
 static int has_active_subtitle(VideoState *is) {
-    return active_text_subtitle(is) != NULL;
+    if (!is->subtitle_st) {
+        return 0;
+    }
+    return subtitles_visible_at(get_master_clock(is));
 }
 
 static int osd_utf8_next(const char *text, size_t len, size_t *pos) {
@@ -989,353 +885,23 @@ static int osd_utf8_next(const char *text, size_t len, size_t *pos) {
     return cp;
 }
 
-static int osd_cp_is_emoji(uint32_t cp) {
-    if (!osd_emoji_font || cp < 0x80) {
-        return 0;
-    }
-    if (osd_faces[OSD_FACE_UI].fill &&
-        TTF_FontHasGlyph(osd_faces[OSD_FACE_UI].fill, cp)) {
-        return 0;
-    }
-    return TTF_FontHasGlyph(osd_emoji_font, cp);
-}
-
-static int osd_cp_is_emoji_join(uint32_t cp) {
-    return cp == 0x200D || cp == 0xFE0F || cp == 0x20E3 ||
-        (cp >= 0x1F3FB && cp <= 0x1F3FF);
-}
-
-static SDL_Surface *osd_render_emoji_scaled(const char *s, size_t len,
-                                            int target_h) {
-    SDL_Color white = {255, 255, 255, 255};
-    SDL_Surface *raw = TTF_RenderText_Blended(osd_emoji_font, s, len, white);
-    if (!raw) {
-        return NULL;
-    }
-    if (raw->h <= 0 || raw->w <= 0) {
-        SDL_DestroySurface(raw);
-        return NULL;
-    }
-    if (raw->h == target_h) {
-        return raw;
-    }
-    int tw = (int)((double)raw->w * target_h / raw->h + 0.5);
-    if (tw < 1) {
-        tw = 1;
-    }
-    SDL_Surface *dst = osd_scale_down(raw, tw, target_h);
-    SDL_DestroySurface(raw);
-    return dst;
-}
-
-enum { OSD_SUB_TEXT = 0,
-       OSD_SUB_SPACE,
-       OSD_SUB_EMOJI,
-       OSD_SUB_NEWLINE };
-
-typedef struct {
-    int kind;
-    size_t start, len;
-    SDL_Surface *surf;
-    int w, h;
-    int relx, line;
-} OsdSubToken;
-
-static void osd_sub_cache_clear(void) {
-    osd_cached_texture_clear(&osd_sub_tex);
-    if (osd_sub_cache.surf) {
-        SDL_DestroySurface(osd_sub_cache.surf);
-        osd_sub_cache.surf = NULL;
-    }
-    osd_sub_cache.text[0] = '\0';
-    osd_sub_cache.content_w = osd_sub_cache.content_h = 0;
-    osd_sub_cache.pad = 0;
-    osd_sub_cache.max_w = 0;
-    osd_sub_cache.base_px = osd_sub_cache.ss = 0;
-}
-
-static SDL_Surface *osd_sub_render_surface(const char *text, size_t used,
-                                           int max_w, int *content_w,
-                                           int *content_h, int *pad_out) {
-    OsdFaceSet *fs = &osd_faces[OSD_FACE_UI];
-    int ss = osd_ss > 0 ? osd_ss : 1;
-    double ratio = OSD_SUB_SIZE_RATIO;
-    double fscale = ratio / ss;
-    SDL_Color white = {255, 255, 255, 255};
-
-    int fh = fs->fill ? TTF_GetFontHeight(fs->fill) : 0;
-    if (fh <= 0) {
-        return NULL;
-    }
-    int line_h = (int)(fh * fscale + 0.5);
-    if (line_h < 1) {
-        line_h = 1;
-    }
-    if (max_w < line_h) {
-        max_w = line_h;
-    }
-
-    OsdSubToken toks[OSD_SUB_MAX_TOKENS];
-    int nalloc = 0;
-    size_t pos = 0;
-    while (pos < used && nalloc < OSD_SUB_MAX_TOKENS) {
-        size_t start = pos;
-        uint32_t cp = osd_utf8_next(text, used, &pos);
-        if (cp == '\n') {
-            toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_NEWLINE, .line = -1};
-            continue;
-        }
-        if (cp == ' ' || cp == '\t') {
-            int w = 0;
-            TTF_GetStringSize(fs->fill, " ", 1, &w, NULL);
-            toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_SPACE,
-                                           .start = start,
-                                           .len = pos - start,
-                                           .w = (int)(w * fscale + 0.5),
-                                           .h = line_h,
-                                           .line = -1};
-            continue;
-        }
-        if (osd_cp_is_emoji(cp)) {
-            for (;;) {
-                size_t save = pos;
-                if (pos >= used) {
-                    break;
-                }
-                uint32_t n = osd_utf8_next(text, used, &pos);
-                if (osd_cp_is_emoji(n) || osd_cp_is_emoji_join(n)) {
-                    continue;
-                }
-                pos = save;
-                break;
-            }
-            SDL_Surface *s =
-                osd_render_emoji_scaled(text + start, pos - start, line_h);
-            if (s) {
-                toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_EMOJI,
-                                               .surf = s,
-                                               .w = s->w,
-                                               .h = s->h,
-                                               .line = -1};
-            }
-            continue;
-        }
-        for (;;) {
-            size_t save = pos;
-            if (pos >= used) {
-                break;
-            }
-            uint32_t n = osd_utf8_next(text, used, &pos);
-            if (n == '\n' || n == ' ' || n == '\t' || osd_cp_is_emoji(n)) {
-                pos = save;
-                break;
-            }
-        }
-        int w = 0;
-        TTF_GetStringSize(fs->fill, text + start, pos - start, &w, NULL);
-        w = (int)(w * fscale + 0.5);
-        if (w <= max_w) {
-            toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_TEXT,
-                                           .start = start,
-                                           .len = pos - start,
-                                           .w = w,
-                                           .h = line_h,
-                                           .line = -1};
-            continue;
-        }
-        size_t gp = start;
-        while (gp < pos && nalloc < OSD_SUB_MAX_TOKENS) {
-            size_t chunk = gp;
-            int chunk_w = 0;
-
-            while (chunk < pos) {
-                size_t next = chunk;
-                int cw = 0;
-
-                osd_utf8_next(text, pos, &next);
-                TTF_GetStringSize(fs->fill, text + gp, next - gp, &cw, NULL);
-                cw = (int)(cw * fscale + 0.5);
-                if (chunk > gp && cw > max_w) {
-                    break;
-                }
-                chunk = next;
-                chunk_w = cw;
-            }
-            toks[nalloc++] = (OsdSubToken){.kind = OSD_SUB_TEXT,
-                                           .start = gp,
-                                           .len = chunk - gp,
-                                           .w = chunk_w,
-                                           .h = line_h,
-                                           .line = -1};
-            gp = chunk;
-        }
-    }
-
-    int line_w[OSD_SUB_MAX_LINES] = {0};
-    int nlines = 0;
-    int cur_w = 0;
-    for (int i = 0; i < nalloc && nlines < OSD_SUB_MAX_LINES; i++) {
-        if (toks[i].kind == OSD_SUB_NEWLINE) {
-            line_w[nlines++] = cur_w;
-            cur_w = 0;
-            continue;
-        }
-        if (cur_w > 0 && toks[i].kind != OSD_SUB_SPACE &&
-            cur_w + toks[i].w > max_w) {
-            line_w[nlines++] = cur_w;
-            cur_w = 0;
-            if (nlines >= OSD_SUB_MAX_LINES) {
-                break;
-            }
-        }
-        toks[i].line = nlines;
-        toks[i].relx = cur_w;
-        cur_w += toks[i].w;
-    }
-    if (nlines < OSD_SUB_MAX_LINES) {
-        line_w[nlines++] = cur_w;
-    }
-
-    int block_w = 0;
-    for (int l = 0; l < nlines; l++) {
-        if (line_w[l] > block_w) {
-            block_w = line_w[l];
-        }
-    }
-    int total_h = nlines * line_h;
-    if (block_w < 1 || total_h < 1) {
-        for (int i = 0; i < nalloc; i++) {
-            if (toks[i].surf) {
-                SDL_DestroySurface(toks[i].surf);
-            }
-        }
-        return NULL;
-    }
-
-    int pad = (int)ceil((double)osd_outline_px * ss * fscale) + 2;
-    if (pad < 1) {
-        pad = 1;
-    }
-
-    SDL_Surface *surf = SDL_CreateSurface(block_w + 2 * pad, total_h + 2 * pad,
-                                          SDL_PIXELFORMAT_ARGB8888);
-    SDL_Renderer *sr = surf ? SDL_CreateSoftwareRenderer(surf) : NULL;
-    if (!sr) {
-        SDL_DestroySurface(surf);
-        for (int i = 0; i < nalloc; i++) {
-            if (toks[i].surf) {
-                SDL_DestroySurface(toks[i].surf);
-            }
-        }
-        return NULL;
-    }
-    SDL_SetRenderDrawBlendMode(sr, SDL_BLENDMODE_NONE);
-    SDL_SetRenderDrawColor(sr, 0, 0, 0, 0);
-    SDL_RenderClear(sr);
-
-    for (int i = 0; i < nalloc; i++) {
-        if (toks[i].line < 0) {
-            if (toks[i].surf) {
-                SDL_DestroySurface(toks[i].surf);
-            }
-            continue;
-        }
-        int l = toks[i].line;
-        int x = pad + (block_w - line_w[l]) / 2 + toks[i].relx;
-        int y = pad + l * line_h;
-        if (toks[i].kind == OSD_SUB_EMOJI) {
-            if (toks[i].surf) {
-                osd_draw_tex(sr, toks[i].surf, (float)x, (float)y, 1.0,
-                             SDL_BLENDMODE_BLEND_PREMULTIPLIED);
-                SDL_DestroySurface(toks[i].surf);
-            }
-        } else if (toks[i].kind == OSD_SUB_TEXT) {
-            osd_blit_run(sr, fs, text + toks[i].start, toks[i].len, x, y, white,
-                         fscale);
-        }
-    }
-    SDL_RenderPresent(sr);
-    SDL_DestroyRenderer(sr);
-
-    *content_w = block_w;
-    *content_h = total_h;
-    *pad_out = pad;
-    return surf;
-}
-
 static void osd_draw_subtitle(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
-    Frame *sp = active_text_subtitle(is);
-    OsdFaceSet *fs = &osd_faces[OSD_FACE_UI];
-    if (!sp || !fs->fill) {
-        return;
-    }
-    int cw = L->cw, ch = L->ch;
-    int max_w = L->sub_wrap_w > 0 ? L->sub_wrap_w : (cw > 0 ? cw : (1 << 28));
+    SubtitleOverlay ov;
+    SDL_Rect vr = is->render_params.target_rect;
 
-    char text[2048];
-    size_t used = 0;
-    text[0] = '\0';
-    for (unsigned i = 0; i < sp->sub.num_rects; i++) {
-        AVSubtitleRect *rect = sp->sub.rects[i];
-        char line[1024];
-        if (rect->ass) {
-            subtitle_strip_ass(rect->ass, line, sizeof(line));
-        } else if (rect->text) {
-            snprintf(line, sizeof(line), "%s", rect->text);
-        } else {
-            line[0] = '\0';
-        }
-        if (!line[0]) {
-            continue;
-        }
-        if (used && used + 1 < sizeof(text)) {
-            text[used++] = '\n';
-        }
-        int n = snprintf(text + used, sizeof(text) - used, "%s", line);
-        if (n < 0) {
-            break;
-        }
-        used += (size_t)n;
-        if (used >= sizeof(text)) {
-            used = sizeof(text) - 1;
-            break;
-        }
-    }
-    text[used] = '\0';
-    if (!text[0]) {
+    if (!subtitles_render(is, L->cw, L->ch, &vr, get_master_clock(is), &ov) ||
+        !ov.surf) {
         return;
     }
 
-    OsdSubCache *c = &osd_sub_cache;
-    if (!c->surf || c->max_w != max_w || c->base_px != osd_base_px ||
-        c->ss != osd_ss || strcmp(c->text, text) != 0) {
-        osd_sub_cache_clear();
-        int w = 0, h = 0, pad = 0;
-        c->surf = osd_sub_render_surface(text, used, max_w, &w, &h, &pad);
-        c->content_w = w;
-        c->content_h = h;
-        c->pad = pad;
-        c->max_w = max_w;
-        c->base_px = osd_base_px;
-        c->ss = osd_ss;
-        snprintf(c->text, sizeof(c->text), "%s", text);
-    }
-    if (!c->surf) {
-        return;
+    if (ov.generation != osd_sub_generation) {
+        osd_cached_texture_clear(&osd_sub_tex);
+        osd_sub_generation = ov.generation;
     }
 
-    int y0 = ch - c->content_h - L->sub_bottom;
-    if (y0 < 0) {
-        y0 = 0;
-    }
-    L->subs_top = y0;
+    L->subs_top = ov.y;
 
-    int x = (cw - c->content_w) / 2 - c->pad;
-    if (x < 0) {
-        x = 0;
-    }
-    osd_draw_cached_surface(r, &osd_sub_tex, c->surf, (float)x,
-                            (float)(y0 - c->pad),
+    osd_draw_cached_surface(r, &osd_sub_tex, ov.surf, (float)ov.x, (float)ov.y,
                             SDL_BLENDMODE_BLEND_PREMULTIPLIED);
 }
 
@@ -1353,7 +919,6 @@ static void osd_layout_init(OsdLayout *L, int cw, int ch) {
     L->topleft.h = ch - 2 * L->my;
     L->topleft_cur = L->my;
     L->sub_bottom = ch / 12;
-    L->sub_wrap_w = cw > 0 ? cw * 9 / 10 : 0;
     L->subs_top = ch;
     L->seek_bar_y = ch * 3 / 4;
     L->seek_label_h = osd_line_height(&ST_PRIMARY, "00:00:00");
@@ -1461,14 +1026,8 @@ static void osd_draw_status(SDL_Renderer *r, VideoState *is, OsdLayout *L) {
 }
 
 static int osd_sub_reserved_top(const OsdLayout *L) {
-    OsdFaceSet *fs = &osd_faces[OSD_FACE_UI];
-    int ss = osd_ss > 0 ? osd_ss : 1;
-    int fh = fs->fill ? TTF_GetFontHeight(fs->fill) : 0;
-    int line_h = (int)(fh * OSD_SUB_SIZE_RATIO / ss + 0.5);
-    if (line_h < 1) {
-        line_h = 1;
-    }
-    int top = L->ch - (OSD_SUB_RESERVE_LINES * line_h + L->sub_bottom);
+    int top = L->ch - (int)(L->ch * OSD_SUB_RESERVE_RATIO + 0.5) - L->sub_bottom;
+
     return top > 0 ? top : 0;
 }
 
@@ -2021,36 +1580,6 @@ void osd_init_fonts(void) {
     int num_seen = 0;
 
 #if !defined(_WIN32) && !defined(__APPLE__)
-    {
-        char path[512];
-        if (osd_fc_match("emoji", path, sizeof(path))) {
-            osd_emoji_font = TTF_OpenFont(path, 64.0f);
-            if (osd_emoji_font) {
-                snprintf(seen_paths[num_seen++], sizeof(seen_paths[0]), "%s", path);
-            }
-        }
-    }
-#else
-    {
-        static const char *const emoji_paths[] = {
-#if defined(_WIN32)
-            "C:\\Windows\\Fonts\\seguiemj.ttf",
-#elif defined(__APPLE__)
-            "/System/Library/Fonts/Apple Color Emoji.ttc",
-#endif
-            NULL,
-        };
-        for (int ei = 0; emoji_paths[ei] && !osd_emoji_font; ei++) {
-            osd_emoji_font = TTF_OpenFont(emoji_paths[ei], 64.0f);
-            if (osd_emoji_font) {
-                snprintf(seen_paths[num_seen++], sizeof(seen_paths[0]), "%s",
-                         emoji_paths[ei]);
-            }
-        }
-    }
-#endif
-
-#if !defined(_WIN32) && !defined(__APPLE__)
     static const char *const fallback_patterns[] = {
         ":lang=ja",
         ":lang=ko",
@@ -2139,7 +1668,7 @@ void osd_init_fonts(void) {
 
 void osd_uninit(void) {
     osd_info_cache_clear();
-    osd_sub_cache_clear();
+    osd_cached_texture_clear(&osd_sub_tex);
     if (osd_sw_renderer) {
         SDL_DestroyRenderer(osd_sw_renderer);
         osd_sw_renderer = NULL;
@@ -2172,10 +1701,6 @@ void osd_uninit(void) {
         }
     }
     osd_num_fallback_fonts = 0;
-    if (osd_emoji_font) {
-        TTF_CloseFont(osd_emoji_font);
-        osd_emoji_font = NULL;
-    }
     osd_base_px = 0;
     osd_outline_px = 0;
 }

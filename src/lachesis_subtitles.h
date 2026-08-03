@@ -21,10 +21,35 @@
 #ifndef LACHESIS_SUBTITLE_H
 #define LACHESIS_SUBTITLE_H
 
+#include <SDL3/SDL.h>
+
+#include <libavcodec/avcodec.h>
+
 #include "lachesis_internal.h"
 
 int subtitle_thread(void *arg);
 int open_external_subtitle(VideoState *is);
 void close_external_subtitle(VideoState *is);
+
+typedef struct SubtitleOverlay {
+    SDL_Surface *surf;
+    int x, y;
+    unsigned generation;
+} SubtitleOverlay;
+
+void subtitles_init(void);
+
+int subtitles_track_open(AVCodecContext *avctx);
+void subtitles_track_close(void);
+
+void subtitles_track_flush(void);
+void subtitles_uninit(void);
+void subtitles_reap(void);
+
+int subtitles_track_attached(void);
+int subtitles_visible_at(double now);
+int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
+                     const SDL_Rect *video_rect, double now,
+                     SubtitleOverlay *out);
 
 #endif /* LACHESIS_SUBTITLE_H */

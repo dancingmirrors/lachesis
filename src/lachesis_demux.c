@@ -414,6 +414,8 @@ int stream_component_open(VideoState *is, int stream_index) {
         is->queue_attachments_req = 1;
         break;
     case AVMEDIA_TYPE_SUBTITLE:
+        subtitles_track_open(avctx);
+
         is->subtitle_stream = stream_index;
         is->subtitle_st = ic->streams[stream_index];
 
@@ -993,6 +995,7 @@ int read_thread(void *arg) {
                 if (is->subtitle_stream >= 0) {
                     packet_queue_flush(&is->subtitleq);
                 }
+                subtitles_track_flush();
                 if (is->video_stream >= 0) {
                     packet_queue_flush(&is->videoq);
                 }
