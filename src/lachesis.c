@@ -92,6 +92,7 @@
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
 #include "lachesis_demux.h"
+#include "lachesis_equalizer.h"
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -1054,6 +1055,10 @@ static void video_image_display(VideoState *is) {
         is->render_params.deinterlace = deinterlace;
         is->render_params.rotate = video_rotate;
         is->render_params.next_frame = NULL;
+        EqualizerValues eq = equalizer_get();
+        is->render_params.eq_brightness = eq.brightness;
+        is->render_params.eq_gamma = eq.gamma;
+        is->render_params.eq_contrast = eq.contrast;
         if (deinterlace == DEINTERLACE_YADIF &&
             frame_queue_nb_remaining(&is->pictq) > 0) {
             Frame *nextvp = frame_queue_peek(&is->pictq);
@@ -1163,13 +1168,16 @@ static void video_image_display(VideoState *is) {
 
     set_sdl_yuv_conversion_mode(vp->frame);
 
-    if (!vp->uploaded) {
-        if (upload_texture(&is->vid_texture, vp->frame) < 0) {
+    if (!vp->uploaded || is->vid_texture_eq_gen != equalizer_generation()) {
+        AVFrame *adjusted = equalizer_apply(vp->frame);
+
+        if (upload_texture(&is->vid_texture, adjusted) < 0) {
             set_sdl_yuv_conversion_mode(NULL);
             return;
         }
         vp->uploaded = 1;
-        vp->flip_v = vp->frame->linesize[0] < 0;
+        vp->flip_v = adjusted->linesize[0] < 0;
+        is->vid_texture_eq_gen = equalizer_generation();
     }
 
     draw_video_background(is);
@@ -1337,6 +1345,7 @@ av_noreturn void do_exit(VideoState *is) {
     if (is) {
         stream_close(is);
     }
+    equalizer_uninit();
     view360_free();
     if (renderer) {
         SDL_DestroyRenderer(renderer);
@@ -1566,6 +1575,10 @@ static void video_display(VideoState *is) {
             bh = is->height;
         }
         is->render_params.target_rect = (SDL_Rect){0, 0, bw, bh};
+        /* Nothing to do. */
+        is->render_params.eq_brightness = 0;
+        is->render_params.eq_gamma = 0;
+        is->render_params.eq_contrast = 0;
         vk_renderer_display_blank(vk_renderer, &is->render_params);
     }
     osd_draw(is);

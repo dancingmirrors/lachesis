@@ -63,6 +63,9 @@ typedef struct RenderParams {
     int deinterlace;
     AVFrame *next_frame;
     int rotate;
+    int eq_brightness;
+    int eq_gamma;
+    int eq_contrast;
     int64_t present_done_us;
     int64_t present_block_us;
 } RenderParams;

@@ -155,6 +155,7 @@ add_sources(
     "src/lachesis_audio.c",
     "src/lachesis_delete.c",
     "src/lachesis_demux.c",
+    "src/lachesis_equalizer.c",
     "src/lachesis_filters.c",
     "src/lachesis_information.c",
     "src/lachesis_keys.c",

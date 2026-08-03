@@ -21,6 +21,7 @@
 
 /* clang-format off */
 #include "lachesis_config.h"
+#include "lachesis_equalizer.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
 #include "lachesis_view360.h"
@@ -1668,16 +1669,27 @@ static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx
     return &pl_filter_catmull_rom;
 }
 
+static struct pl_color_adjustment equalizer_adjustment(const RenderParams *params) {
+    struct pl_color_adjustment adj = {PL_COLOR_ADJUSTMENT_NEUTRAL};
+
+    adj.brightness = equalizer_pl_brightness(params->eq_brightness);
+    adj.contrast = equalizer_pl_contrast(params->eq_contrast);
+    adj.gamma = equalizer_pl_gamma(params->eq_gamma);
+
+    return adj;
+}
+
 static int display(VkRenderer *renderer, AVFrame *frame, RenderParams *params) {
     struct pl_swapchain_frame swap_frame = {0};
     struct pl_frame pl_frame = {0};
     struct pl_frame target = {0};
     RendererContext *ctx = (RendererContext *)renderer;
+    struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
     struct pl_render_params pl_params = {
         .upscaler = &pl_filter_bilinear,
         .downscaler = pick_downscaler(ctx, params),
         .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
-        .color_adjustment = pl_render_default_params.color_adjustment,
+        .color_adjustment = &color_adjustment,
         .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
         .cone_params = pl_render_default_params.cone_params,
         .color_map_params = pl_render_default_params.color_map_params,
@@ -1843,11 +1855,12 @@ static int capture(VkRenderer *renderer, AVFrame *frame, RenderParams *params,
     RendererContext *ctx = (RendererContext *)renderer;
     struct pl_frame pl_frame = {0};
     struct pl_frame target = {0};
+    struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
     struct pl_render_params pl_params = {
         .upscaler = &pl_filter_bilinear,
         .downscaler = pick_downscaler(ctx, params),
         .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
-        .color_adjustment = pl_render_default_params.color_adjustment,
+        .color_adjustment = &color_adjustment,
         .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
         .cone_params = pl_render_default_params.cone_params,
         .color_map_params = pl_render_default_params.color_map_params,

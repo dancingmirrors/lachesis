@@ -213,6 +213,7 @@ typedef struct VideoState {
     RenderParams render_params;
     SDL_Texture *sub_texture;
     SDL_Texture *vid_texture;
+    unsigned vid_texture_eq_gen;
     uint8_t *sub_rgba;
     int sub_rgba_w;
     int sub_rgba_h;

@@ -36,6 +36,7 @@
 #include <SDL3/SDL_scancode.h>
 
 #include "lachesis_delete.h"
+#include "lachesis_equalizer.h"
 #include "lachesis_internal.h"
 #include "lachesis_keys.h"
 #include "lachesis_log.h"
@@ -413,6 +414,30 @@ void event_loop(VideoState **pis) {
                 break;
             case SDLK_2:
                 osd_toggle_info_page(2);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_3:
+                equalizer_adjust(EQ_BRIGHTNESS, -1);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_4:
+                equalizer_adjust(EQ_BRIGHTNESS, 1);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_5:
+                equalizer_adjust(EQ_GAMMA, -1);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_6:
+                equalizer_adjust(EQ_GAMMA, 1);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_7:
+                equalizer_adjust(EQ_CONTRAST, -1);
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_8:
+                equalizer_adjust(EQ_CONTRAST, 1);
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_I:
