@@ -239,7 +239,13 @@ static AVFrame *frame_to_cpu(AVFrame *frame) {
     }
 
     if (sw->crop_left || sw->crop_top || sw->crop_right || sw->crop_bottom) {
-        av_frame_apply_cropping(sw, AV_FRAME_CROP_UNALIGNED);
+        int crop_ret = av_frame_apply_cropping(sw, AV_FRAME_CROP_UNALIGNED);
+
+        if (crop_ret < 0) {
+            log_warn("Failed to apply frame cropping: %s.\n", av_err2str(crop_ret));
+            av_frame_free(&sw);
+            return NULL;
+        }
     }
 
     return sw;

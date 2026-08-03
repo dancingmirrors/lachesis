@@ -1006,6 +1006,38 @@ static void prepare_vulkan_subtitles(VideoState *is, Frame *vp) {
     is->render_params.sub_stride = is->sub_rgba_w * 4;
 }
 
+static int video_src_rect(const Frame *vp, SDL_FRect *out) {
+    const AVFrame *f = vp->frame;
+    size_t x, y;
+
+    if (!f || f->width <= 0 || f->height <= 0) {
+        return 0;
+    }
+    if (vp->width <= 0 || vp->height <= 0 ||
+        vp->width > f->width || vp->height > f->height) {
+        return 0;
+    }
+    if (vp->width == f->width && vp->height == f->height) {
+        return 0;
+    }
+
+    x = f->crop_left;
+    y = vp->flip_v ? f->crop_bottom : f->crop_top;
+
+    if (x > (size_t)f->width || y > (size_t)f->height ||
+        x + (size_t)vp->width > (size_t)f->width ||
+        y + (size_t)vp->height > (size_t)f->height) {
+        return 0;
+    }
+
+    out->x = (float)x;
+    out->y = (float)y;
+    out->w = (float)vp->width;
+    out->h = (float)vp->height;
+
+    return 1;
+}
+
 static void video_image_display(VideoState *is) {
     Frame *vp;
     Frame *sp = NULL;
@@ -1158,8 +1190,10 @@ static void video_image_display(VideoState *is) {
                                 sbs360_hfov, video_rotate, vp->flip_v) >= 0;
     }
     if (!drew_360) {
-        SDL_RenderTextureRotated(renderer, is->vid_texture, NULL, &dst_rectf,
-                                 (double)video_rotate, NULL,
+        SDL_FRect srcf;
+        SDL_RenderTextureRotated(renderer, is->vid_texture,
+                                 video_src_rect(vp, &srcf) ? &srcf : NULL,
+                                 &dst_rectf, (double)video_rotate, NULL,
                                  vp->flip_v ? SDL_FLIP_VERTICAL : SDL_FLIP_NONE);
     }
     set_sdl_yuv_conversion_mode(NULL);
@@ -2079,7 +2113,13 @@ static void hwframe_download_inplace(AVFrame *frame) {
 
     av_frame_copy_props(sw, frame);
     if (sw->crop_left || sw->crop_top || sw->crop_right || sw->crop_bottom) {
-        av_frame_apply_cropping(sw, 0);
+        static int crop_warned = 0;
+        int crop_ret = av_frame_apply_cropping(sw, 0);
+
+        if (crop_ret < 0 && !crop_warned) {
+            crop_warned = 1;
+            log_warn("Failed to apply frame cropping: %s.\n", av_err2str(crop_ret));
+        }
     }
     av_frame_unref(frame);
     av_frame_move_ref(frame, sw);
@@ -2255,6 +2295,7 @@ int video_thread(void *arg) {
     AVRational last_out_fr = {0, 0};
     int download_active = 0;
     int report_out_pending = 0;
+    int crop_warned = 0;
 
     if (!frame) {
         return AVERROR(ENOMEM);
@@ -2365,7 +2406,13 @@ int video_thread(void *arg) {
             if (!frame->hw_frames_ctx &&
                 (frame->crop_left || frame->crop_top ||
                  frame->crop_right || frame->crop_bottom)) {
-                av_frame_apply_cropping(frame, 0);
+                int crop_ret = av_frame_apply_cropping(frame, 0);
+
+                if (crop_ret < 0 && !crop_warned) {
+                    crop_warned = 1;
+                    log_warn("Failed to apply frame cropping: %s.\n",
+                             av_err2str(crop_ret));
+                }
             }
 
             if (report_out_pending) {
