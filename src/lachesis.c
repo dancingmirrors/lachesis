@@ -68,7 +68,6 @@
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_mutex.h>
-#include <SDL3_ttf/SDL_ttf.h>
 
 #include <stdbool.h>
 #include <strings.h>
@@ -1369,7 +1368,6 @@ av_noreturn void do_exit(VideoState *is) {
     avformat_network_deinit();
     subtitles_uninit();
     osd_uninit();
-    TTF_Quit();
     SDL_Quit();
     exit(0);
 }
@@ -3193,9 +3191,7 @@ int main(int argc, char **argv) {
             create_sdl_renderer_for_window();
         }
 
-        if (TTF_Init()) {
-            osd_init_fonts();
-        }
+        osd_init();
         subtitles_init();
         osd_set_info_provider(format_media_info);
         osd_set_stats_provider(format_playback_stats);

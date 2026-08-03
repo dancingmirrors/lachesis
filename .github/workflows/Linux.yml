@@ -55,14 +55,6 @@ jobs:
           make -j$(nproc)
           sudo make install
 
-          git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
-          cd SDL_ttf
-          mkdir build
-          cd build
-          cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
-          make -j$(nproc)
-          sudo make install
-
           git clone --depth 1 --recursive https://github.com/google/shaderc.git
           cd shaderc
           ./utils/git-sync-deps

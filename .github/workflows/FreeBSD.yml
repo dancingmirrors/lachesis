@@ -24,7 +24,7 @@ jobs:
             set -x
             pkg install -y ccache cmake evdev-proto ffmpeg git libarchive libass \
             libevdev libinput libplacebo libxkbcommon mpv ninja pkgconf python3 \
-            sdl3 sdl3_ttf vulkan-headers wayland wayland-protocols
+            sdl3 vulkan-headers wayland wayland-protocols
 
           run: |
             set -x

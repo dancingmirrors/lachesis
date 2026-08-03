@@ -23,14 +23,6 @@ jobs:
           prepare: |
             set -x
             pkg_add ccache cmake ffmpeg git gmake libarchive libass libevdev-openbsd libinput-openbsd libplacebo libxkbcommon mpv ninja sdl3 wayland wayland-protocols
-
-            git clone --depth 1 https://github.com/libsdl-org/SDL_ttf.git
-            cd SDL_ttf
-            mkdir build
-            cd build
-            cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local -DBUILD_SHARED_LIBS=ON
-            make install
-            ln -sf "$(ls /usr/local/lib/libSDL3_ttf.so.* | sort -V | tail -1)" /usr/local/lib/libSDL3_ttf.so
             
           run: |
             set -x

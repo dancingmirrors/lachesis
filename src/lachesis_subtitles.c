@@ -18,14 +18,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include <ass/ass.h>
-#include <zlib.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -34,14 +32,12 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_ass.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
-#include "lachesis_osd.h"
-#include "lachesis_osd_emoji_font.h"
 #include "lachesis_subtitles.h"
 
-#define ASS_EMOJI_FAMILY "Noto Emoji"
 #define ASS_EVENT_MAX 8192
 
 static ASS_Library *ass_library;
@@ -59,24 +55,6 @@ static int ass_surface_x, ass_surface_y;
 static int ass_surface_stale;
 static unsigned ass_generation;
 
-static void ass_message_cb(int level, const char *fmt, va_list va, void *data) {
-    char buf[512];
-
-    (void)data;
-
-    /* 0 is fatal, 1 is error, 2 is warning, and 4 is info. */
-    if (level > 4) {
-        return;
-    }
-
-    vsnprintf(buf, sizeof(buf), fmt, va);
-    if (level <= 1) {
-        log_warn("libass: %s\n", buf);
-    } else {
-        log_verbose("libass: %s\n", buf);
-    }
-}
-
 static void ass_engine_uninit_locked(void) {
     if (ass_track) {
         ass_free_track(ass_track);
@@ -86,10 +64,8 @@ static void ass_engine_uninit_locked(void) {
         ass_renderer_done(ass_renderer);
         ass_renderer = NULL;
     }
-    if (ass_library) {
-        ass_library_done(ass_library);
-        ass_library = NULL;
-    }
+    lass_library_free(ass_library);
+    ass_library = NULL;
     if (ass_surface) {
         SDL_DestroySurface(ass_surface);
         ass_surface = NULL;
@@ -98,32 +74,16 @@ static void ass_engine_uninit_locked(void) {
     ass_storage_w = ass_storage_h = 0;
 }
 
-static void ass_add_emoji_font_locked(void);
-
 static int ass_engine_init_locked(void) {
-    size_t font_size = 0;
-    const void *font_data;
-
     if (ass_renderer) {
         return 0;
     }
 
     if (!ass_library) {
-        ass_library = ass_library_init();
+        ass_library = lass_library_new(1);
         if (!ass_library) {
-            log_warn("Could not initialize libass.\n");
             return -1;
         }
-        ass_set_message_cb(ass_library, ass_message_cb, NULL);
-        ass_set_extract_fonts(ass_library, 1);
-
-        /* The last resort. */
-        font_data = osd_embedded_ui_font(&font_size);
-        if (font_data && font_size) {
-            ass_add_font(ass_library, "lachesis-ui", font_data, font_size);
-        }
-
-        ass_add_emoji_font_locked();
     }
 
     ass_renderer = ass_renderer_init(ass_library);
@@ -132,10 +92,7 @@ static int ass_engine_init_locked(void) {
         return -1;
     }
 
-    ass_set_shaper(ass_renderer, ASS_SHAPING_COMPLEX);
-    ass_set_hinting(ass_renderer, ASS_HINTING_NONE);
-    ass_set_fonts(ass_renderer, NULL, "Arial", ASS_FONTPROVIDER_AUTODETECT,
-                  NULL, 1);
+    lass_renderer_setup(ass_renderer, "Arial");
 
     return 0;
 }
@@ -150,74 +107,10 @@ static int ass_have_lock(void) {
     return ass_lock != NULL;
 }
 
-static void ass_add_emoji_font_locked(void) {
-    uLongf len = osd_emoji_font_size;
-    unsigned char *buf = av_malloc(len);
+static const char *ass_style_font_locked(const char *name, size_t len,
+                                         void *ctx) {
+    (void)ctx;
 
-    if (!buf) {
-        return;
-    }
-    if (uncompress(buf, &len, osd_emoji_font_deflate,
-                   osd_emoji_font_deflate_size) != Z_OK ||
-        len != osd_emoji_font_size) {
-        log_warn("Could not decompress the bundled emoji font.\n");
-        av_free(buf);
-        return;
-    }
-
-    ass_add_font(ass_library, "NotoEmoji", (const char *)buf, (int)len);
-    av_free(buf);
-}
-
-static uint32_t ass_utf8_next(const char *s, size_t len, size_t *pos) {
-    unsigned char c = (unsigned char)s[*pos];
-    uint32_t cp;
-    int extra;
-
-    if (c < 0x80) {
-        (*pos)++;
-        return c;
-    } else if ((c & 0xE0) == 0xC0) {
-        cp = c & 0x1F;
-        extra = 1;
-    } else if ((c & 0xF0) == 0xE0) {
-        cp = c & 0x0F;
-        extra = 2;
-    } else if ((c & 0xF8) == 0xF0) {
-        cp = c & 0x07;
-        extra = 3;
-    } else {
-        (*pos)++;
-        return 0xFFFD;
-    }
-    if (*pos + (size_t)extra >= len) {
-        *pos = len;
-        return 0xFFFD;
-    }
-    for (int k = 1; k <= extra; k++) {
-        unsigned char cc = (unsigned char)s[*pos + k];
-
-        if ((cc & 0xC0) != 0x80) {
-            (*pos)++;
-            return 0xFFFD;
-        }
-        cp = (cp << 6) | (cc & 0x3F);
-    }
-    *pos += (size_t)extra + 1;
-
-    return cp;
-}
-
-static int cp_is_emoji_base(uint32_t cp) {
-    return cp >= 0x1F000 && cp <= 0x1FAFF;
-}
-
-static int cp_is_emoji_join(uint32_t cp) {
-    return cp == 0x200D || cp == 0xFE0F || cp == 0x20E3 ||
-        (cp >= 0x1F3FB && cp <= 0x1F3FF);
-}
-
-static const char *ass_style_font_locked(const char *name, size_t len) {
     if (!ass_track) {
         return NULL;
     }
@@ -236,16 +129,13 @@ static const char *ass_style_font_locked(const char *name, size_t len) {
     return NULL;
 }
 
+/* ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text */
 static int ass_route_emoji_locked(const char *in, char *out, size_t outsz) {
     const char *style = NULL, *text = NULL;
     const char *cur_font;
-    char held[256];
-    size_t style_len = 0, o = 0, p, tlen;
+    size_t style_len = 0, head;
     int fields = 0;
-    int in_override = 0;
-    int found = 0;
 
-    /* ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text */
     for (const char *c = in; *c; c++) {
         if (*c != ',') {
             continue;
@@ -264,139 +154,21 @@ static int ass_route_emoji_locked(const char *in, char *out, size_t outsz) {
         return 0;
     }
 
-    cur_font = ass_style_font_locked(style, style_len);
+    cur_font = ass_style_font_locked(style, style_len, NULL);
     if (!cur_font || !*cur_font) {
         return 0;
     }
 
-    tlen = strlen(text);
-    for (p = 0; p < tlen;) {
-        size_t save = p;
-        uint32_t cp = ass_utf8_next(text, tlen, &p);
-
-        if (cp == '{') {
-            in_override = 1;
-        } else if (cp == '}') {
-            in_override = 0;
-        } else if (!in_override && cp_is_emoji_base(cp)) {
-            found = 1;
-            break;
-        }
-        if (p == save) {
-            break;
-        }
-    }
-    if (!found) {
+    head = (size_t)(text - in);
+    if (head >= outsz) {
         return 0;
     }
+    memcpy(out, in, head);
 
-    o = (size_t)(text - in);
-    if (o >= outsz) {
+    if (!lass_route_emoji(text, cur_font, ass_style_font_locked, NULL,
+                          out + head, outsz - head)) {
         return 0;
     }
-    memcpy(out, in, o);
-
-#define EMIT(str, n) \
-    do { \
-        if (o + (n) >= outsz) { \
-            return 0; \
-        } \
-        memcpy(out + o, (str), (n)); \
-        o += (n); \
-    } while (0)
-
-    in_override = 0;
-    for (p = 0; p < tlen;) {
-        size_t start = p;
-        uint32_t cp = ass_utf8_next(text, tlen, &p);
-
-        if (p == start) {
-            break;
-        }
-
-        if (in_override) {
-            if (cp == '\\' && p < tlen) {
-                if (!strncmp(text + p, "fn", 2)) {
-                    const char *fn = text + p + 2;
-                    size_t n = strcspn(fn, "\\}");
-
-                    if (n && n < sizeof(held)) {
-                        memcpy(held, fn, n);
-                        held[n] = '\0';
-                        cur_font = held;
-                    }
-                } else if (text[p] == 'r') {
-                    const char *rn = text + p + 1;
-                    size_t n = strcspn(rn, "\\}");
-                    const char *f = n ? ass_style_font_locked(rn, n)
-                                      : ass_style_font_locked(style, style_len);
-
-                    if (f && *f) {
-                        cur_font = f;
-                    }
-                }
-            }
-            if (cp == '}') {
-                in_override = 0;
-            }
-            EMIT(text + start, p - start);
-            continue;
-        }
-
-        if (cp == '{') {
-            in_override = 1;
-            EMIT(text + start, p - start);
-            continue;
-        }
-
-        if (cp_is_emoji_base(cp)) {
-            EMIT("{\\fn" ASS_EMOJI_FAMILY "}",
-                 sizeof("{\\fn" ASS_EMOJI_FAMILY "}") - 1);
-            for (;;) {
-                size_t save = p;
-                uint32_t n;
-
-                if (p >= tlen) {
-                    break;
-                }
-                n = ass_utf8_next(text, tlen, &p);
-                if (cp_is_emoji_base(n) || cp_is_emoji_join(n)) {
-                    continue;
-                }
-                p = save;
-                break;
-            }
-            EMIT(text + start, p - start);
-            EMIT("{\\fn", 4);
-            EMIT(cur_font, strlen(cur_font));
-            EMIT("}", 1);
-            continue;
-        }
-
-        if (p < tlen) {
-            size_t peek = p;
-
-            if (ass_utf8_next(text, tlen, &peek) == 0xFE0F) {
-                EMIT("{\\fn" ASS_EMOJI_FAMILY "}",
-                     sizeof("{\\fn" ASS_EMOJI_FAMILY "}") - 1);
-                EMIT(text + start, peek - start);
-                EMIT("{\\fn", 4);
-                EMIT(cur_font, strlen(cur_font));
-                EMIT("}", 1);
-                p = peek;
-                continue;
-            }
-        }
-
-        EMIT(text + start, p - start);
-    }
-
-    if (o >= outsz) {
-        return 0;
-    }
-    out[o] = '\0';
-
-#undef EMIT
 
     return 1;
 }
@@ -615,89 +387,10 @@ int subtitles_visible_at(double now) {
     return visible;
 }
 
-static void ass_blend_image(uint32_t *pixels, int pitch_px, int surf_w,
-                            int surf_h, const ASS_Image *img, int ox, int oy) {
-    unsigned sr = (img->color >> 24) & 0xFF;
-    unsigned sg = (img->color >> 16) & 0xFF;
-    unsigned sb = (img->color >> 8) & 0xFF;
-    unsigned opacity = 255 - (img->color & 0xFF);
-
-    if (!opacity) {
-        return;
-    }
-
-    for (int y = 0; y < img->h; y++) {
-        int dy = oy + y;
-        const unsigned char *src;
-        uint32_t *dst;
-
-        if (dy < 0 || dy >= surf_h) {
-            continue;
-        }
-        src = img->bitmap + (size_t)y * (size_t)img->stride;
-        dst = pixels + (size_t)dy * (size_t)pitch_px;
-
-        for (int x = 0; x < img->w; x++) {
-            unsigned cov = src[x];
-            unsigned a, inv;
-            uint32_t d;
-            unsigned da, dr, dg, db;
-            int dx = ox + x;
-
-            if (!cov || dx < 0 || dx >= surf_w) {
-                continue;
-            }
-            a = (cov * opacity + 127) / 255;
-            if (!a) {
-                continue;
-            }
-            inv = 255 - a;
-
-            d = dst[dx];
-            da = (d >> 24) & 0xFF;
-            dr = (d >> 16) & 0xFF;
-            dg = (d >> 8) & 0xFF;
-            db = d & 0xFF;
-
-            dr = (sr * a + 127) / 255 + (dr * inv + 127) / 255;
-            dg = (sg * a + 127) / 255 + (dg * inv + 127) / 255;
-            db = (sb * a + 127) / 255 + (db * inv + 127) / 255;
-            da = a + (da * inv + 127) / 255;
-
-            dst[dx] = (FFMIN(da, 255u) << 24) | (FFMIN(dr, 255u) << 16) |
-                (FFMIN(dg, 255u) << 8) | FFMIN(db, 255u);
-        }
-    }
-}
-
 static int ass_composite_locked(ASS_Image *img, int frame_w, int frame_h) {
-    int min_x = INT_MAX, min_y = INT_MAX, max_x = INT_MIN, max_y = INT_MIN;
-    uint32_t *pixels;
-    int pitch_px;
+    LassBounds b;
 
-    for (ASS_Image *p = img; p; p = p->next) {
-        if (p->w <= 0 || p->h <= 0) {
-            continue;
-        }
-        min_x = FFMIN(min_x, p->dst_x);
-        min_y = FFMIN(min_y, p->dst_y);
-        max_x = FFMAX(max_x, p->dst_x + p->w);
-        max_y = FFMAX(max_y, p->dst_y + p->h);
-    }
-
-    if (min_x > max_x || min_y > max_y) {
-        if (ass_surface) {
-            SDL_DestroySurface(ass_surface);
-            ass_surface = NULL;
-        }
-        return 0;
-    }
-
-    min_x = FFMAX(min_x, 0);
-    min_y = FFMAX(min_y, 0);
-    max_x = FFMIN(max_x, frame_w);
-    max_y = FFMIN(max_y, frame_h);
-    if (max_x <= min_x || max_y <= min_y) {
+    if (!lass_bounds(img, frame_w, frame_h, &b)) {
         if (ass_surface) {
             SDL_DestroySurface(ass_surface);
             ass_surface = NULL;
@@ -708,25 +401,17 @@ static int ass_composite_locked(ASS_Image *img, int frame_w, int frame_h) {
     if (ass_surface) {
         SDL_DestroySurface(ass_surface);
     }
-    ass_surface = SDL_CreateSurface(max_x - min_x, max_y - min_y,
+    ass_surface = SDL_CreateSurface(b.x1 - b.x0, b.y1 - b.y0,
                                     SDL_PIXELFORMAT_ARGB8888);
     if (!ass_surface) {
         return 0;
     }
     SDL_ClearSurface(ass_surface, 0.0f, 0.0f, 0.0f, 0.0f);
 
-    pixels = ass_surface->pixels;
-    pitch_px = ass_surface->pitch / 4;
-    for (ASS_Image *p = img; p; p = p->next) {
-        if (p->w <= 0 || p->h <= 0) {
-            continue;
-        }
-        ass_blend_image(pixels, pitch_px, ass_surface->w, ass_surface->h, p,
-                        p->dst_x - min_x, p->dst_y - min_y);
-    }
+    lass_blend(ass_surface, img, b.x0, b.y0);
 
-    ass_surface_x = min_x;
-    ass_surface_y = min_y;
+    ass_surface_x = b.x0;
+    ass_surface_y = b.y0;
 
     return 1;
 }

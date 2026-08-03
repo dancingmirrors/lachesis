@@ -119,12 +119,6 @@ check(
     required=True,
 )
 check(
-    desc="SDL3_ttf",
-    fn=lambda: check_pkg_config("sdl3-ttf >= 3.0.0")
-    or check_pkg_config("SDL3_ttf >= 3.0.0"),
-    required=True,
-)
-check(
     "-libarchive*",
     desc="libarchive",
     fn=lambda: check_pkg_config("libarchive >= 3.0.0"),
@@ -157,6 +151,7 @@ check(
 add_sources(
     "src/lachesis.c",
     "src/lachesis_archive.c",
+    "src/lachesis_ass.c",
     "src/lachesis_audio.c",
     "src/lachesis_delete.c",
     "src/lachesis_demux.c",

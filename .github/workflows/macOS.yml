@@ -40,7 +40,6 @@ jobs:
             yasm \
             pkg-config \
             sdl3 \
-            sdl3_ttf \
             libarchive \
             libass \
             shaderc \

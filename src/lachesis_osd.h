@@ -28,10 +28,8 @@
 
 #include "lachesis_internal.h"
 
-void osd_init_fonts(void);
+void osd_init(void);
 void osd_uninit(void);
-
-const void *osd_embedded_ui_font(size_t *size);
 
 void osd_draw(VideoState *is);
 void osd_prepare_vulkan(VideoState *is);
