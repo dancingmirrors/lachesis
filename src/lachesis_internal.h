@@ -356,10 +356,20 @@ static inline void frame_visible_size(const AVFrame *frame, int *w, int *h) {
 }
 
 static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int *out_h) {
-    double scale = (double)max_dim / FFMAX(w, h);
+    int64_t m = FFMAX(w, h);
+    int64_t sw, sh;
 
-    *out_w = FFMAX(2, FFMIN(max_dim, (int)(w * scale)) & ~1);
-    *out_h = FFMAX(2, FFMIN(max_dim, (int)(h * scale)) & ~1);
+    if (m <= 0 || max_dim <= 0) {
+        *out_w = FFMAX(2, w & ~1);
+        *out_h = FFMAX(2, h & ~1);
+        return;
+    }
+
+    sw = FFMIN((int64_t)w, (int64_t)w * max_dim / m);
+    sh = FFMIN((int64_t)h, (int64_t)h * max_dim / m);
+
+    *out_w = (int)FFMAX(2, sw & ~(int64_t)1);
+    *out_h = (int)FFMAX(2, sh & ~(int64_t)1);
 }
 
 void renderer_device_reset(VideoState *is, int device_lost);
