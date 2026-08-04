@@ -27,6 +27,8 @@ typedef struct PresentStats {
     double nominal_hz;
     double measured_hz;
     double jitter;
+    int samples;
+    int samples_needed;
     int measuring;
     int snapping;
 } PresentStats;

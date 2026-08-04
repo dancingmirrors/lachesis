@@ -56,6 +56,7 @@ typedef struct RenderParams {
     SDL_Rect target_rect;
     uint8_t video_background_color[4];
     enum VideoBackgroundType video_background_type;
+    int video_background_explicit;
     void *osd_pixels;
     int osd_width;
     int osd_height;
@@ -68,6 +69,7 @@ typedef struct RenderParams {
     int disable_linear_scaling;
     int skip_anti_aliasing;
     int deinterlace;
+    int reset_history;
     AVFrame *next_frame;
     int rotate;
     int eq_brightness;
@@ -93,7 +95,7 @@ typedef struct RendererOpenParams {
 } RendererOpenParams;
 
 int renderer_open(const RendererOpenParams *params, SDL_Window **window,
-                  Renderer **out);
+                  Renderer **out, char *why, size_t why_size);
 
 enum RendererApi renderer_api(const Renderer *renderer);
 const char *renderer_api_name(const Renderer *renderer);

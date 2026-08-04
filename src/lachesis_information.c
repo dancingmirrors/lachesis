@@ -283,6 +283,11 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
                      ps.nominal_hz, ps.measured_hz,
                      ps.measuring ? ", in use" : "", ps.jitter * 100.0,
                      ps.snapping ? "" : ", snap off");
+        } else if (ps.samples > 0) {
+            snprintf(disp_line, sizeof(disp_line),
+                     "Display: %.2f Hz (measuring, %d/%d)%s", ps.nominal_hz,
+                     ps.samples, ps.samples_needed,
+                     ps.snapping ? "" : ", snap off");
         } else {
             snprintf(disp_line, sizeof(disp_line), "Display: %.2f Hz%s",
                      ps.nominal_hz, ps.snapping ? "" : ", snap off");

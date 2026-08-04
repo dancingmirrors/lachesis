@@ -448,9 +448,9 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
         origin_x = origin_y = 0;
     }
 
-    if (is && is->video_st && is->video_st->codecpar) {
-        storage_w = is->video_st->codecpar->width;
-        storage_h = is->video_st->codecpar->height;
+    if (is && is->render_storage_w > 0 && is->render_storage_h > 0) {
+        storage_w = is->render_storage_w;
+        storage_h = is->render_storage_h;
     }
 
     now_ms = (long long)(now * 1000.0);
@@ -481,6 +481,10 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
         ass_storage_h = storage_h;
         ass_set_storage_size(ass_renderer, storage_w, storage_h);
         geometry_changed = 1;
+    }
+    if (geometry_changed) {
+        log_verbose("libass: frame %dx%d, storage %dx%d.\n", frame_w,
+                    frame_h, storage_w, storage_h);
     }
 
     img = ass_render_frame(ass_renderer, ass_track, now_ms, &changed);

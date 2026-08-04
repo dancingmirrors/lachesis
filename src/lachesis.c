@@ -831,13 +831,47 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
     is->render_params.sub_stride = is->sub_rgba_w * 4;
 }
 
+static void video_update_target_rect(VideoState *is) {
+    SDL_Rect *rect = &is->render_params.target_rect;
+
+    if (is->video_st) {
+        Frame *vp = frame_queue_peek_last(&is->pictq);
+        int rotated = video_rotate == 90 || video_rotate == 270;
+
+        calculate_display_rect(rect, is->xleft, is->ytop, is->width, is->height,
+                               vp->width, vp->height, vp->sar);
+        is->render_storage_w = rotated ? vp->height : vp->width;
+        is->render_storage_h = rotated ? vp->width : vp->height;
+        return;
+    }
+
+    int bw = 0, bh = 0;
+
+    SDL_GetWindowSizeInPixels(window, &bw, &bh);
+    if (bw <= 0 || bh <= 0) {
+        bw = is->width;
+        bh = is->height;
+    }
+    *rect = (SDL_Rect){0, 0, bw, bh};
+    is->render_storage_w = is->render_storage_h = 0;
+}
+
+void video_prepare_overlays(VideoState *is) {
+    is->render_params.osd_pixels = NULL;
+    is->render_params.sub_pixels = NULL;
+    is->render_params.next_frame = NULL;
+    /* This thread owns the composited subtitle surface, so it frees it. */
+    subtitles_reap();
+    video_update_target_rect(is);
+    osd_prepare(is);
+    if (is->video_st && !subtitle_disable) {
+        prepare_subtitles(is, frame_queue_peek_last(&is->pictq));
+    }
+}
+
 static void video_image_display(VideoState *is) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
-    SDL_Rect *rect = &is->render_params.target_rect;
     int ret;
-
-    calculate_display_rect(rect, is->xleft, is->ytop, is->width, is->height,
-                           vp->width, vp->height, vp->sar);
 
     if (enable_360sbs) {
         renderer_update_360(renderer, sbs360_yaw, sbs360_pitch, sbs360_roll, sbs360_hfov);
@@ -848,6 +882,8 @@ static void video_image_display(VideoState *is) {
     is->render_params.deinterlace = deinterlace;
     is->render_params.rotate = video_rotate;
     is->render_params.next_frame = NULL;
+    is->render_params.reset_history = vp->serial != is->last_render_serial;
+    is->last_render_serial = vp->serial;
     EqualizerValues eq = equalizer_get();
     is->render_params.eq_brightness = eq.brightness;
     is->render_params.eq_gamma = eq.gamma;
@@ -859,9 +895,6 @@ static void video_image_display(VideoState *is) {
             is->render_params.next_frame = nextvp->frame;
         }
     }
-    if (!subtitle_disable) {
-        prepare_subtitles(is, vp);
-    }
 
     ret = renderer_display(renderer, vp->frame, &is->render_params);
     if (ret == AVERROR(ERANGE)) {
@@ -870,7 +903,7 @@ static void video_image_display(VideoState *is) {
         int limit = render_ever_ok ? RENDER_FAULT_LIMIT_LATE : RENDER_FAULT_LIMIT;
         /* Can't be used to determine the renderer's health. */
         if (!(SDL_GetWindowFlags(window) &
-              (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN)) &&
+              (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN | SDL_WINDOW_OCCLUDED)) &&
             !render_fault_event_sent && ++render_fail_streak >= limit) {
             SDL_Event event;
             SDL_zero(event);
@@ -1225,25 +1258,13 @@ static void video_display(VideoState *is) {
         return;
     }
 
-    is->render_params.osd_pixels = NULL;
-    is->render_params.sub_pixels = NULL;
-    is->render_params.next_frame = NULL;
     is->render_params.present_done_us = 0;
     is->render_params.present_block_us = 0;
-    /* This thread owns the composited subtitle surface, so it frees it. */
-    subtitles_reap();
-    osd_prepare(is);
+    video_prepare_overlays(is);
 
     if (is->video_st) {
         video_image_display(is);
     } else {
-        int bw = 0, bh = 0;
-        SDL_GetWindowSizeInPixels(window, &bw, &bh);
-        if (bw <= 0 || bh <= 0) {
-            bw = is->width;
-            bh = is->height;
-        }
-        is->render_params.target_rect = (SDL_Rect){0, 0, bw, bh};
         /* Nothing to do. */
         is->render_params.eq_brightness = 0;
         is->render_params.eq_gamma = 0;
@@ -2126,6 +2147,7 @@ static VideoState *stream_open(const char *filename,
         return NULL;
     }
     is->vfilter_idx = startup_vfilter_idx;
+    is->last_render_serial = -1;
     is->last_video_stream = is->video_stream = -1;
     is->last_audio_stream = is->audio_stream = -1;
     is->last_subtitle_stream = is->subtitle_stream = -1;
@@ -2185,6 +2207,7 @@ static VideoState *stream_open(const char *filename,
                 goto fail;
             }
         }
+        is->render_params.video_background_explicit = 1;
     }
     int vol_max_pct = allow_volume_boost ? VOLUME_BOOST_MAX_PCT : 100;
     is->audio_volume_max = allow_volume_boost
@@ -2319,6 +2342,7 @@ static void open_renderer(enum RendererApi api) {
     RendererOpenParams params = {0};
     AVDictionary *dict = build_renderer_options();
     char *title = startup_window_title();
+    char why[512];
     int ret;
 
     params.title = title ? title : program_name;
@@ -2332,13 +2356,16 @@ static void open_renderer(enum RendererApi api) {
     }
     params.opt = dict;
 
-    ret = renderer_open(&params, &window, &renderer);
+    ret = renderer_open(&params, &window, &renderer, why, sizeof(why));
     av_dict_free(&dict);
     av_free(title);
 
     if (ret < 0) {
-        fatal_quit("Failed to create a window and a GPU renderer: %s!\n",
-                   av_err2str(ret));
+        const char *driver = SDL_GetCurrentVideoDriver();
+
+        fatal_quit("Failed to create a window and a GPU renderer on the "
+                   "\"%s\" video driver: %s.\n",
+                   driver ? driver : "none", why);
     }
 
     if (enable_360sbs && renderer_enable_360(renderer, view360_layout) < 0) {
@@ -2364,6 +2391,12 @@ void render_fault_fallback(VideoState **pis) {
 
     /* Avoid an infinite loop. */
     renderer_faulted_apis |= 1u << renderer_api(renderer);
+    if (gpu_api != RENDERER_API_AUTO &&
+        (renderer_faulted_apis & (1u << gpu_api))) {
+        log_dead("The %s renderer faulted and there is nothing to fall back to.\n",
+                 gpu_api == RENDERER_API_VULKAN ? "Vulkan" : "OpenGL");
+        do_exit(*pis);
+    }
 
     keep_paused = *pis && (*pis)->paused;
     if (*pis) {
@@ -2383,7 +2416,7 @@ void render_fault_fallback(VideoState **pis) {
     }
     osd_invalidate_textures();
 
-    open_renderer(RENDERER_API_AUTO);
+    open_renderer(gpu_api);
     present_reset();
 
     render_fail_streak = 0;
@@ -2631,34 +2664,91 @@ static int opt_input_file(void *optctx av_unused, const char *filename) {
 enum VideoDriverList {
     VIDEO_DRIVERS_ALL,
     VIDEO_DRIVERS_NO_WAYLAND,
+    VIDEO_DRIVERS_PREFER_WAYLAND,
 };
+
+static int have_video_driver(const char *name) {
+    int num = SDL_GetNumVideoDrivers();
+
+    for (int i = 0; i < num; i++) {
+        const char *have = SDL_GetVideoDriver(i);
+
+        if (have && !strcmp(have, name)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int want_video_driver(const char *name, enum VideoDriverList which,
+                             int pass) {
+    int wayland = !strcmp(name, "wayland");
+
+    if (pass == 0) {
+        return wayland && which == VIDEO_DRIVERS_PREFER_WAYLAND;
+    }
+    if (wayland) {
+        return which == VIDEO_DRIVERS_ALL;
+    }
+    if (!strcmp(name, "dummy") || !strcmp(name, "evdev") ||
+        !strcmp(name, "offscreen")) {
+        return which == VIDEO_DRIVERS_ALL;
+    }
+
+    return 1;
+}
 
 static const char *video_driver_list(char *buf, size_t size,
                                      enum VideoDriverList which) {
+    const char *sep = which == VIDEO_DRIVERS_ALL ? ", " : ",";
     int num = SDL_GetNumVideoDrivers();
 
     buf[0] = '\0';
-    for (int i = 0; i < num; i++) {
-        const char *name = SDL_GetVideoDriver(i);
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < num; i++) {
+            const char *name = SDL_GetVideoDriver(i);
+            size_t len = strlen(buf);
 
-        if (!name) {
-            continue;
-        }
-        if (which == VIDEO_DRIVERS_NO_WAYLAND) {
-            if (!strcmp(name, "dummy") || !strcmp(name, "offscreen")) {
-                break;
-            }
-            if (!strcmp(name, "wayland")) {
+            if (!name || !want_video_driver(name, which, pass)) {
                 continue;
             }
+            if (len && av_strlcat(buf, sep, size) >= size) {
+                buf[len] = '\0';
+                return buf;
+            }
+            /* A truncated name is a driver that does not exist. */
+            if (av_strlcat(buf, name, size) >= size) {
+                buf[len] = '\0';
+                return buf;
+            }
         }
-        if (buf[0]) {
-            av_strlcat(buf, which == VIDEO_DRIVERS_ALL ? ", " : ",", size);
-        }
-        av_strlcat(buf, name, size);
     }
 
     return buf;
+}
+
+static void pick_video_drivers(char *buf, size_t size) {
+    const char *runtime_dir;
+    enum VideoDriverList which;
+
+    if (SDL_getenv("SDL_VIDEO_DRIVER") || SDL_getenv("SDL_VIDEODRIVER")) {
+        return;
+    }
+    if (!have_video_driver("wayland") || !have_video_driver("x11")) {
+        return;
+    }
+
+    runtime_dir = SDL_getenv("XDG_RUNTIME_DIR");
+    which = runtime_dir && runtime_dir[0] &&
+            (SDL_getenv("WAYLAND_DISPLAY") || SDL_getenv("WAYLAND_SOCKET"))
+        ? VIDEO_DRIVERS_PREFER_WAYLAND
+        : VIDEO_DRIVERS_NO_WAYLAND;
+
+    if (*video_driver_list(buf, size, which)) {
+        log_verbose("Asking SDL for these video drivers: %s.\n", buf);
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, buf);
+    }
 }
 
 int main(int argc, char **argv) {
@@ -2758,20 +2848,13 @@ int main(int argc, char **argv) {
     if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
         SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
     }
-    if (!SDL_getenv("SDL_VIDEO_DRIVER") && !SDL_getenv("SDL_VIDEODRIVER")) {
-        const char *runtime_dir = SDL_getenv("XDG_RUNTIME_DIR");
-
-        if (runtime_dir && runtime_dir[0]) {
-            if (SDL_getenv("WAYLAND_DISPLAY")) {
-                SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
-            }
-        } else if (*video_driver_list(drivers, sizeof(drivers),
-                                      VIDEO_DRIVERS_NO_WAYLAND)) {
-            SDL_SetHint(SDL_HINT_VIDEO_DRIVER, drivers);
-        }
-    }
+    pick_video_drivers(drivers, sizeof(drivers));
     if (!SDL_Init(flags)) {
-        fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
+        fatal_quit("Could not initialize SDL: %s! Available video drivers: %s.\n",
+                   SDL_GetError(),
+                   *video_driver_list(drivers, sizeof(drivers), VIDEO_DRIVERS_ALL)
+                       ? drivers
+                       : "none");
     }
 
     window_size_req_lock = SDL_CreateMutex();

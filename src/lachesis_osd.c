@@ -213,31 +213,35 @@ static int osd_engine_ensure(void) {
         return 0;
     }
 
-    osd_library = lass_library_new(0);
     if (!osd_library) {
-        osd_engine_failed = 1;
-        return 0;
+        osd_library = lass_library_new(0);
+    }
+    if (osd_library) {
+        if (!osd_renderer && (osd_renderer = ass_renderer_init(osd_library))) {
+            lass_renderer_setup(osd_renderer, osd_ui_family());
+        }
+        if (!osd_measure_renderer &&
+            (osd_measure_renderer = ass_renderer_init(osd_library))) {
+            lass_renderer_setup(osd_measure_renderer, osd_ui_family());
+            ass_set_frame_size(osd_measure_renderer,
+                               OSD_MEASURE_RES / OSD_MEASURE_SCALE,
+                               OSD_MEASURE_RES / OSD_MEASURE_SCALE);
+        }
+        if (!osd_track) {
+            osd_track = osd_track_new(osd_library, (int)OSD_RES_H, (int)OSD_RES_H);
+        }
+        if (!osd_measure_track) {
+            osd_measure_track = osd_track_new(osd_library, OSD_MEASURE_RES,
+                                              OSD_MEASURE_RES);
+        }
     }
 
-    osd_renderer = ass_renderer_init(osd_library);
-    osd_measure_renderer = ass_renderer_init(osd_library);
-    if (osd_renderer && osd_measure_renderer) {
-        osd_track = osd_track_new(osd_library, (int)OSD_RES_H, (int)OSD_RES_H);
-        osd_measure_track = osd_track_new(osd_library, OSD_MEASURE_RES,
-                                          OSD_MEASURE_RES);
-    }
     if (!osd_renderer || !osd_measure_renderer || !osd_track ||
         !osd_measure_track) {
         log_warn("Could not initialize the libass renderer for the OSD.\n");
         osd_engine_failed = 1;
         return 0;
     }
-
-    lass_renderer_setup(osd_renderer, osd_ui_family());
-    lass_renderer_setup(osd_measure_renderer, osd_ui_family());
-
-    ass_set_frame_size(osd_measure_renderer, OSD_MEASURE_RES / OSD_MEASURE_SCALE,
-                       OSD_MEASURE_RES / OSD_MEASURE_SCALE);
 
     return 1;
 }

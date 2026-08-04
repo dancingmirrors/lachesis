@@ -151,6 +151,8 @@ typedef struct RendererContext {
     enum AVPixelFormat *pixfmts;
     int num_pixfmts;
 
+    int zero_copy_failed;
+
     char api_name[64];
     char device_name[256];
 
@@ -775,8 +777,6 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
 }
 
 static void vk_backend_destroy(RendererContext *ctx) {
-    PFN_vkDestroySurfaceKHR destroy_surface;
-
     av_frame_free(&ctx->vk_frame);
     av_freep(&ctx->transfer_formats);
     av_hwframe_constraints_free(&ctx->constraints);
@@ -786,9 +786,7 @@ static void vk_backend_destroy(RendererContext *ctx) {
     pl_vulkan_destroy(&ctx->placebo_vulkan);
 
     if (ctx->vk_surface) {
-        destroy_surface = (PFN_vkDestroySurfaceKHR)
-                              ctx->get_proc_addr(ctx->inst, "vkDestroySurfaceKHR");
-        destroy_surface(ctx->inst, ctx->vk_surface, NULL);
+        SDL_Vulkan_DestroySurface(ctx->inst, ctx->vk_surface, NULL);
         ctx->vk_surface = VK_NULL_HANDLE;
     }
 
@@ -1742,11 +1740,35 @@ static int convert_frame(Renderer *renderer, AVFrame *frame) {
     }
 #endif
 
-    if (pl_test_pixfmt(ctx->gpu, frame->format)) {
+    if (!ctx->zero_copy_failed && pl_test_pixfmt(ctx->gpu, frame->format)) {
         return 0;
     }
 
     return convert_frame_readback(ctx, frame);
+}
+
+static bool map_video_frame(RendererContext *ctx, AVFrame *frame,
+                            struct pl_frame *out) {
+    if (pl_map_avframe_ex(ctx->gpu, out,
+                          pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+        return true;
+    }
+
+    if (!frame->hw_frames_ctx) {
+        return false;
+    }
+    if (!ctx->zero_copy_failed) {
+        ctx->zero_copy_failed = 1;
+        log_warn("The GPU rejected a zero copy import of a %s frame. Falling "
+                 "back to a system memory copy.\n",
+                 av_get_pix_fmt_name(frame->format));
+    }
+    if (convert_frame_readback(ctx, frame) < 0) {
+        return false;
+    }
+
+    return pl_map_avframe_ex(ctx->gpu, out,
+                             pl_avframe_params(.frame = frame, .tex = ctx->tex));
 }
 
 static bool frames_alias(const AVFrame *a, const AVFrame *b) {
@@ -1947,23 +1969,36 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         clip_crops_to_target(pl_frame, target,
                              pl_rotation_normalize(rotation - target->rotation));
     }
-    if (pl_frame->repr.alpha != PL_ALPHA_NONE) {
-        switch (params->video_background_type) {
-        case VIDEO_BACKGROUND_TILES:
-            pl_params->background = PL_CLEAR_TILES;
-            pl_params->tile_size = VIDEO_BACKGROUND_TILE_SIZE * 2;
-            break;
-        case VIDEO_BACKGROUND_COLOR:
-            pl_params->background = PL_CLEAR_COLOR;
-            for (int i = 0; i < 3; i++) {
-                pl_params->background_color[i] = params->video_background_color[i] / 255.0;
-            }
-            pl_params->background_transparency = (255 - params->video_background_color[3]) / 255.0;
-            break;
-        case VIDEO_BACKGROUND_NONE:
-            pl_frame->repr.alpha = PL_ALPHA_NONE;
-            break;
+    int transparent = pl_frame->repr.alpha != PL_ALPHA_NONE;
+    int border = params->video_background_explicit;
+
+    switch (params->video_background_type) {
+    case VIDEO_BACKGROUND_TILES:
+        pl_params->tile_size = VIDEO_BACKGROUND_TILE_SIZE * 2;
+        if (border) {
+            pl_params->border = PL_CLEAR_TILES;
         }
+        if (transparent) {
+            pl_params->background = PL_CLEAR_TILES;
+        }
+        break;
+    case VIDEO_BACKGROUND_COLOR:
+        for (int i = 0; i < 3; i++) {
+            pl_params->background_color[i] = params->video_background_color[i] / 255.0;
+        }
+        pl_params->background_transparency = (255 - params->video_background_color[3]) / 255.0;
+        if (border) {
+            pl_params->border = PL_CLEAR_COLOR;
+        }
+        if (transparent) {
+            pl_params->background = PL_CLEAR_COLOR;
+        }
+        break;
+    case VIDEO_BACKGROUND_NONE:
+        if (transparent) {
+            pl_frame->repr.alpha = PL_ALPHA_NONE;
+        }
+        break;
     }
 
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
@@ -2079,6 +2114,10 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     int64_t _ts1, _ts2, _ts3 = 0, prs_us = 0;
     uint32_t max_dim;
 
+    if (params->reset_history) {
+        av_frame_free(&ctx->deint_prev);
+    }
+
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
         return ret;
@@ -2099,7 +2138,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
         goto done;
     }
 
-    if (!pl_map_avframe_ex(ctx->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+    if (!map_video_frame(ctx, frame, &pl_frame)) {
         ret = AVERROR_EXTERNAL;
         goto done;
     }
@@ -2268,7 +2307,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
         convert_frame(renderer, params->next_frame);
     }
 
-    if (!pl_map_avframe_ex(ctx->gpu, &pl_frame, pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+    if (!map_video_frame(ctx, frame, &pl_frame)) {
         return AVERROR_EXTERNAL;
     }
 
@@ -2351,6 +2390,9 @@ out:
 static int resize(Renderer *renderer, int width, int height) {
     RendererContext *ctx = (RendererContext *)renderer;
 
+    if (!ctx || !ctx->swapchain) {
+        return AVERROR(EINVAL);
+    }
     if (!pl_swapchain_resize(ctx->swapchain, &width, &height)) {
         return AVERROR_EXTERNAL;
     }
@@ -2455,6 +2497,7 @@ static void destroy(Renderer *renderer) {
     av_frame_free(&ctx->blank_frame);
     av_frame_free(&ctx->sw_frame);
     av_freep(&ctx->pixfmts);
+    ctx->num_pixfmts = 0;
 
     if (ctx->sbs360_hook) {
         view360_pl_hook_destroy(&ctx->sbs360_hook);
@@ -2509,7 +2552,6 @@ static const AVClass renderer_class = {
 
 static const enum RendererApi renderer_api_order[] = {
 #ifdef __APPLE__
-    /* XXX */
 #if LACHESIS_HAVE_OPENGL
     RENDERER_API_OPENGL,
 #endif
@@ -2583,9 +2625,27 @@ static const char *api_prepare_attempt(enum RendererApi api, int attempt,
     return api_label(api);
 }
 
+static void note_failure(char *why, size_t why_size, const char *what,
+                         const char *detail, int ret) {
+    char errbuf[AV_ERROR_MAX_STRING_SIZE];
+    char line[256];
+    size_t len = strlen(why);
+
+    if (!detail || !*detail) {
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        detail = errbuf;
+    }
+    log_verbose("Failed to open the %s renderer: %s.\n", what, detail);
+    if (len && strstr(why, detail)) {
+        return;
+    }
+    snprintf(line, sizeof(line), "%s%s: %s", len ? "; " : "", what, detail);
+    av_strlcat(why, line, why_size);
+}
+
 static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
                         int attempt, SDL_Window **out_window,
-                        Renderer **out_renderer) {
+                        Renderer **out_renderer, char *why, size_t why_size) {
     SDL_Window *window;
     Renderer *renderer;
     const char *what;
@@ -2594,11 +2654,12 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     what = api_prepare_attempt(api, attempt, params->opt);
 
+    SDL_ClearError();
+
     window = SDL_CreateWindow(params->title, params->width, params->height,
                               params->window_flags | api_window_flag(api));
     if (!window) {
-        log_verbose("Failed to create a %s window: %s.\n", what,
-                    SDL_GetError());
+        note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
         return AVERROR_EXTERNAL;
     }
 
@@ -2610,6 +2671,7 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     ret = create(renderer, window, params->opt);
     if (ret < 0) {
+        note_failure(why, why_size, what, SDL_GetError(), ret);
         goto fail;
     }
 
@@ -2628,6 +2690,7 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
     ret = self_test(renderer, w, h);
     if (ret < 0) {
         log_warn("The %s renderer initialized but cannot render.\n", what);
+        note_failure(why, why_size, what, "initialized but cannot render", ret);
         goto fail;
     }
 
@@ -2649,42 +2712,41 @@ fail:
 }
 
 int renderer_open(const RendererOpenParams *params, SDL_Window **window,
-                  Renderer **out) {
-    enum RendererApi order[FF_ARRAY_ELEMS(renderer_api_order) + 1];
+                  Renderer **out, char *why, size_t why_size) {
+    enum RendererApi order[FF_ARRAY_ELEMS(renderer_api_order)];
+    const char *driver = SDL_GetCurrentVideoDriver();
     size_t num = 0;
     int last = AVERROR(ENOSYS);
 
-    for (size_t i = 0; params->api != RENDERER_API_AUTO &&
-         i < FF_ARRAY_ELEMS(renderer_api_order);
-         i++) {
-        if (renderer_api_order[i] == params->api &&
-            !(params->exclude & (1u << params->api))) {
-            order[num++] = params->api;
-            break;
-        }
-    }
+    why[0] = '\0';
+
     for (size_t i = 0; i < FF_ARRAY_ELEMS(renderer_api_order); i++) {
-        if (params->exclude & (1u << renderer_api_order[i])) {
+        enum RendererApi api = renderer_api_order[i];
+
+        if (params->exclude & (1u << api)) {
             continue;
         }
-        if (!num || order[0] != renderer_api_order[i]) {
-            order[num++] = renderer_api_order[i];
+        if (params->api != RENDERER_API_AUTO && api != params->api) {
+            continue;
         }
+        order[num++] = api;
     }
 
     if (!num) {
+        snprintf(why, why_size, "no backend is compiled in or left enabled%s",
+                 params->api != RENDERER_API_AUTO ? " for the requested GPU API" : "");
         return AVERROR(ENOSYS);
     }
 
-    log_verbose("SDL video driver: %s.\n",
-                SDL_GetCurrentVideoDriver() ? SDL_GetCurrentVideoDriver() : "none");
+    log_verbose("SDL video driver: %s.\n", driver ? driver : "none");
 
     for (size_t i = 0; i < num; i++) {
         enum RendererApi api = order[i];
         int attempts = api_num_attempts(api);
 
         for (int attempt = 0; attempt < attempts; attempt++) {
-            int ret = renderer_try(params, api, attempt, window, out);
+            int ret = renderer_try(params, api, attempt, window, out, why,
+                                   why_size);
 
             if (ret >= 0) {
                 return 0;
@@ -2695,6 +2757,10 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
             log_warn("Falling back from the %s renderer to %s.\n",
                      api_label(api), api_label(order[i + 1]));
         }
+    }
+
+    if (!why[0]) {
+        snprintf(why, why_size, "no reason reported");
     }
 
     return last;
@@ -2762,6 +2828,9 @@ int renderer_enable_360(Renderer *renderer, enum View360Layout layout) {
 void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll, float hfov) {
     RendererContext *ctx = (RendererContext *)renderer;
 
+    if (!ctx) {
+        return;
+    }
     ctx->sbs360_yaw = yaw;
     ctx->sbs360_pitch = pitch;
     ctx->sbs360_roll = roll;

@@ -276,12 +276,9 @@ static int screenshot_window(VideoState *is, const char *path) {
         av_frame_free(&rgba);
         return ret;
     }
-    calculate_display_rect(&is->render_params.target_rect, is->xleft,
-                           is->ytop, is->width, is->height, vp->width,
-                           vp->height, vp->sar);
+    video_prepare_overlays(is);
     is->render_params.rotate = video_rotate;
     is->render_params.still_image = is->is_still_image;
-    is->render_params.next_frame = NULL;
     ret = renderer_capture(renderer, vp->frame, &is->render_params,
                            w, h, rgba->data[0], rgba->linesize[0]);
     if (ret >= 0) {

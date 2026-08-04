@@ -210,6 +210,9 @@ typedef struct VideoState {
     int render_low_quality;
 
     RenderParams render_params;
+    int last_render_serial;
+    int render_storage_w;
+    int render_storage_h;
     uint8_t *sub_rgba;
     int sub_rgba_w;
     int sub_rgba_h;
@@ -356,6 +359,8 @@ void sync_clock_to_slave(Clock *c, Clock *slave);
 int get_master_sync_type(VideoState *is);
 int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                           AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
+
+void video_prepare_overlays(VideoState *is);
 
 void calculate_display_rect(SDL_Rect *rect,
                             int scr_xleft, int scr_ytop, int scr_width, int scr_height,

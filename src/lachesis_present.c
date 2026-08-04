@@ -63,10 +63,14 @@ static double vsync_stddev(double ref_us) {
     return sqrt(jitter / pres.num_samples);
 }
 
+static int enough_samples(void) {
+    return pres.num_total_samples >= MAX_VSYNC_SAMPLES / 2;
+}
+
 static void check_estimated_display_fps(void) {
     int use_estimated = 0;
 
-    if (pres.num_total_samples >= MAX_VSYNC_SAMPLES / 2 &&
+    if (enough_samples() &&
         pres.estimated_us <= 1e6 / 20.0 && pres.estimated_us >= 1e6 / 400.0) {
         use_estimated = 1;
         for (int n = 0; n < pres.num_samples; n++) {
@@ -169,7 +173,7 @@ void present_feedback(int64_t submit_us, int64_t done_us) {
         return;
     }
 
-    double ref_us = pres.interval_us;
+    double ref_us = pres.nominal_us > 0 ? pres.nominal_us : pres.interval_us;
     int64_t delta = done_us - prev_blocked;
     int64_t folds = 1;
     if (ref_us > 0) {
@@ -198,11 +202,12 @@ void present_feedback(int64_t submit_us, int64_t done_us) {
         avg += pres.samples[n];
     }
     pres.estimated_us = avg / pres.num_samples;
+
+    check_estimated_display_fps();
+
     if (pres.interval_us > 0) {
         pres.jitter = vsync_stddev(pres.interval_us) / pres.interval_us;
     }
-
-    check_estimated_display_fps();
 }
 
 double present_vsync_sec(void) {
@@ -239,7 +244,13 @@ double present_snap(double ideal_sec, double now_sec) {
 void present_get_stats(PresentStats *st) {
     memset(st, 0, sizeof(*st));
     st->nominal_hz = pres.nominal_us > 0 ? 1e6 / pres.nominal_us : 0;
-    st->measured_hz = pres.estimated_us > 0 ? 1e6 / pres.estimated_us : 0;
+    if (pres.estimated_us > 0 && enough_samples()) {
+        st->measured_hz = 1e6 / pres.estimated_us;
+    }
+    st->samples_needed = MAX_VSYNC_SAMPLES / 2;
+    st->samples = pres.num_total_samples >= st->samples_needed
+        ? st->samples_needed
+        : (int)pres.num_total_samples;
     st->jitter = pres.jitter;
     st->measuring = pres.use_estimated;
     st->snapping = !pres.snap_disabled && pres.interval_us > 0;
