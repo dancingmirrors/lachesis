@@ -2628,7 +2628,41 @@ static int opt_input_file(void *optctx av_unused, const char *filename) {
     return playlist_add_input(filename);
 }
 
+enum VideoDriverList {
+    VIDEO_DRIVERS_ALL,
+    VIDEO_DRIVERS_NO_WAYLAND,
+};
+
+static const char *video_driver_list(char *buf, size_t size,
+                                     enum VideoDriverList which) {
+    int num = SDL_GetNumVideoDrivers();
+
+    buf[0] = '\0';
+    for (int i = 0; i < num; i++) {
+        const char *name = SDL_GetVideoDriver(i);
+
+        if (!name) {
+            continue;
+        }
+        if (which == VIDEO_DRIVERS_NO_WAYLAND) {
+            if (!strcmp(name, "dummy") || !strcmp(name, "offscreen")) {
+                break;
+            }
+            if (!strcmp(name, "wayland")) {
+                continue;
+            }
+        }
+        if (buf[0]) {
+            av_strlcat(buf, which == VIDEO_DRIVERS_ALL ? ", " : ",", size);
+        }
+        av_strlcat(buf, name, size);
+    }
+
+    return buf;
+}
+
 int main(int argc, char **argv) {
+    char drivers[256];
     int flags, ret;
     VideoState *is;
 
@@ -2724,9 +2758,17 @@ int main(int argc, char **argv) {
     if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
         SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
     }
-    if (SDL_getenv("WAYLAND_DISPLAY") && !SDL_getenv("SDL_VIDEO_DRIVER") &&
-        !SDL_getenv("SDL_VIDEODRIVER")) {
-        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+    if (!SDL_getenv("SDL_VIDEO_DRIVER") && !SDL_getenv("SDL_VIDEODRIVER")) {
+        const char *runtime_dir = SDL_getenv("XDG_RUNTIME_DIR");
+
+        if (runtime_dir && runtime_dir[0]) {
+            if (SDL_getenv("WAYLAND_DISPLAY")) {
+                SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+            }
+        } else if (*video_driver_list(drivers, sizeof(drivers),
+                                      VIDEO_DRIVERS_NO_WAYLAND)) {
+            SDL_SetHint(SDL_HINT_VIDEO_DRIVER, drivers);
+        }
     }
     if (!SDL_Init(flags)) {
         fatal_quit("Could not initialize SDL: %s!\n", SDL_GetError());
