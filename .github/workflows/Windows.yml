@@ -79,7 +79,7 @@ jobs:
 
       - name: Build, install, run
         run: |
-          set -x
+          set -ex
 
           CFLAGS="-Werror" ./configure
 
@@ -93,7 +93,6 @@ jobs:
         run: |
           set -x
 
-          # For Wine testing, you might need to delete vulkan-1.dll.
           dist=lachesis-windows-x86_64
           rm -fr "$dist"
           mkdir -p "$dist"
