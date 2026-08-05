@@ -882,15 +882,6 @@ int read_thread(void *arg) {
         }
     }
 
-    if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
-        AVStream *st = ic->streams[st_index[AVMEDIA_TYPE_VIDEO]];
-        AVCodecParameters *codecpar = st->codecpar;
-        AVRational sar = av_guess_sample_aspect_ratio(ic, st, NULL);
-        if (codecpar->width) {
-            set_default_window_size(codecpar->width, codecpar->height, sar);
-        }
-    }
-
     if ((start_paused || is->begin_paused) && !is->is_still_image) {
         is->start_pause_pending = 1;
     }

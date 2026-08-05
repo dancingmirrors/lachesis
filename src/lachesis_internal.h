@@ -318,7 +318,6 @@ void decoder_abort(Decoder *d, FrameQueue *fq);
 int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub);
 int video_thread(void *arg);
 void apply_degraded_decode(AVCodecContext *avctx);
-void set_default_window_size(int width, int height, AVRational sar);
 void update_screen_size(void);
 float window_pixel_density(void);
 

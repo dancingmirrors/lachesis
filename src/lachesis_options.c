@@ -56,10 +56,6 @@
 const AVInputFormat *file_iformat;
 const char *window_title;
 char *window_title_auto;
-int cmd_width = 0;
-int cmd_height = 0;
-int screen_left = SDL_WINDOWPOS_CENTERED;
-int screen_top = SDL_WINDOWPOS_CENTERED;
 int audio_disable;
 int video_disable;
 int subtitle_disable;
@@ -68,9 +64,7 @@ int seek_by_bytes = -1;
 float seek_interval = 5.0;
 int display_disable;
 int benchmark;
-int borderless;
 int alwaysontop;
-int no_keep_aspect;
 int startup_volume = 100;
 int av_sync_type = AV_SYNC_AUDIO_MASTER;
 int av_sync_type_explicit = 0;
@@ -187,28 +181,6 @@ static int opt_rotate(void *optctx av_unused, const char *opt av_unused,
     return 0;
 }
 
-static int opt_width(void *optctx av_unused, const char *opt, const char *arg) {
-    double num;
-    int ret = parse_number(opt, arg, OPT_TYPE_INT64, 1, INT_MAX, &num);
-    if (ret < 0) {
-        return ret;
-    }
-    cmd_width = num;
-
-    return 0;
-}
-
-static int opt_height(void *optctx av_unused, const char *opt, const char *arg) {
-    double num;
-    int ret = parse_number(opt, arg, OPT_TYPE_INT64, 1, INT_MAX, &num);
-    if (ret < 0) {
-        return ret;
-    }
-    cmd_height = num;
-
-    return 0;
-}
-
 static int opt_autofit(void *optctx av_unused, const char *opt, const char *arg) {
     double num;
     int ret = parse_number(opt, arg, OPT_TYPE_FLOAT,
@@ -252,8 +224,6 @@ const OptionDef options[] = {
     {"v", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_version}, "show version"},
     {"version", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_version}, "show version"},
     {"quiet", OPT_TYPE_FUNC, 0, {.func_arg = opt_quiet}, "silence all logging (overrides -loglevel)"},
-    {"x", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_width}, "force displayed width", "width"},
-    {"y", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_height}, "force displayed height", "height"},
     {"windowed", OPT_TYPE_BOOL, 0, {&start_windowed}, "start windowed instead of fullscreen"},
     {"autofit", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_autofit}, "limit windowed size to this fraction of the display (default 0.85)", "fraction"},
     {"an", OPT_TYPE_BOOL, 0, {&audio_disable}, "disable audio"},
@@ -267,8 +237,6 @@ const OptionDef options[] = {
     {"seek_interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
     {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)", ""},
-    {"noborder", OPT_TYPE_BOOL, 0, {&borderless}, "enable borderless window mode"},
-    {"no-keep-aspect", OPT_TYPE_BOOL, 0, {&no_keep_aspect}, "let the window be resized to any aspect ratio", ""},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to keep the window always on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 260)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
@@ -286,8 +254,6 @@ const OptionDef options[] = {
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
-    {"left", OPT_TYPE_INT, 0, {&screen_left}, "set the x position for the left of the window", "x pos"},
-    {"top", OPT_TYPE_INT, 0, {&screen_top}, "set the y position for the top of the window", "y pos"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
     {"audio-spdif", OPT_TYPE_STRING, 0, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ':'", "codecs"},
