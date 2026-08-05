@@ -108,12 +108,13 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
 
 static int create_hwaccel(AVBufferRef **device_ctx) {
     static const char *auto_hwaccels_vk[] = {
-        "vulkan", "vaapi", "videotoolbox", "d3d11va", "dxva2", NULL};
+        "vulkan", "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
     static const char *auto_hwaccels_other[] = {
-        "vaapi", "videotoolbox", "d3d11va", "dxva2", NULL};
+        "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
     const char *const *auto_hwaccels =
         renderer_api(renderer) == RENDERER_API_VULKAN ? auto_hwaccels_vk
                                                       : auto_hwaccels_other;
+    int saved_level;
     int ret;
 
     *device_ctx = NULL;
@@ -133,14 +134,20 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
         return ret < 0 ? ret : 0;
     }
 
+    saved_level = av_log_get_level();
+    if (saved_level < AV_LOG_VERBOSE) {
+        av_log_set_level(AV_LOG_QUIET);
+    }
     for (int i = 0; auto_hwaccels[i]; i++) {
         ret = try_hwaccel(device_ctx, auto_hwaccels[i]);
         if (!ret) {
+            av_log_set_level(saved_level);
             media_info_set_hwaccel(auto_hwaccels[i]);
             return 0;
         }
         *device_ctx = NULL;
     }
+    av_log_set_level(saved_level);
 
     return 0;
 }

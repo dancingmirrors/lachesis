@@ -1769,6 +1769,12 @@ static void enable_degraded_decode(VideoState *is) {
     if (is->viddec.avctx) {
         apply_degraded_decode(is->viddec.avctx);
     }
+    if (!is->degraded_warned) {
+        is->degraded_warned = 1;
+        log_warn("Degraded decoding engaged. Quality will suffer.\n");
+    } else {
+        log_verbose("Degraded decoding engaged.\n");
+    }
 }
 
 static void disable_degraded_decode(VideoState *is) {
@@ -1783,6 +1789,7 @@ static void disable_degraded_decode(VideoState *is) {
         is->viddec.avctx->skip_loop_filter = AVDISCARD_DEFAULT;
         is->viddec.avctx->skip_frame = AVDISCARD_DEFAULT;
     }
+    log_verbose("Degraded decoding disengaged.\n");
 }
 
 static void hwframe_download_inplace(AVFrame *frame) {
@@ -2406,7 +2413,7 @@ void render_fault_fallback(VideoState **pis) {
     if (gpu_api != RENDERER_API_AUTO &&
         (renderer_faulted_apis & (1u << gpu_api))) {
         log_dead("The %s renderer faulted and there is nothing to fall back to.\n",
-                 gpu_api == RENDERER_API_VULKAN ? "Vulkan" : "OpenGL");
+                 renderer_api_name(renderer));
         do_exit(*pis);
     }
 
@@ -2763,6 +2770,45 @@ static void pick_video_drivers(char *buf, size_t size) {
     }
 }
 
+static const char *audio_driver_list(char *buf, size_t size) {
+    int num = SDL_GetNumAudioDrivers();
+
+    buf[0] = '\0';
+    for (int i = 0; i < num; i++) {
+        const char *name = SDL_GetAudioDriver(i);
+        size_t len = strlen(buf);
+
+        if (!name) {
+            continue;
+        }
+        if (len && av_strlcat(buf, ", ", size) >= size) {
+            buf[len] = '\0';
+            return buf;
+        }
+        /* A truncated name is a driver that does not exist. */
+        if (av_strlcat(buf, name, size) >= size) {
+            buf[len] = '\0';
+            return buf;
+        }
+    }
+
+    return buf;
+}
+
+static void fatal_sdl_init(const char *subsystem) {
+    char video[256];
+    char audio[256];
+    char err[256];
+
+    snprintf(err, sizeof(err), "%s", SDL_GetError());
+    video_driver_list(video, sizeof(video), VIDEO_DRIVERS_ALL);
+    audio_driver_list(audio, sizeof(audio));
+
+    fatal_quit("Could not initialize SDL %s: %s! Available video drivers: %s. "
+               "Available audio drivers: %s.\n",
+               subsystem, err, *video ? video : "none", *audio ? audio : "none");
+}
+
 int main(int argc, char **argv) {
     char drivers[256];
     int flags, ret;
@@ -2849,24 +2895,19 @@ int main(int argc, char **argv) {
     playlist_pos = 0;
     playlist_skip_unreachable();
 
-    flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO;
-    if (audio_disable) {
-        flags &= ~SDL_INIT_AUDIO;
-    }
+    flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
     if (display_disable) {
         flags &= ~SDL_INIT_VIDEO;
     }
-    flags |= SDL_INIT_EVENTS;
     if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
         SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
     }
     pick_video_drivers(drivers, sizeof(drivers));
     if (!SDL_Init(flags)) {
-        fatal_quit("Could not initialize SDL: %s! Available video drivers: %s.\n",
-                   SDL_GetError(),
-                   *video_driver_list(drivers, sizeof(drivers), VIDEO_DRIVERS_ALL)
-                       ? drivers
-                       : "none");
+        fatal_sdl_init(display_disable ? "events" : "video");
+    }
+    if (!audio_disable && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        fatal_sdl_init("audio");
     }
 
     window_size_req_lock = SDL_CreateMutex();
@@ -2889,6 +2930,9 @@ int main(int argc, char **argv) {
             gpu_api = RENDERER_API_VULKAN;
         } else if (!strcmp(gpu_api_name, "opengl") || !strcmp(gpu_api_name, "gl")) {
             gpu_api = RENDERER_API_OPENGL;
+        } else if (!strcmp(gpu_api_name, "d3d11") ||
+                   !strcmp(gpu_api_name, "direct3d11")) {
+            gpu_api = RENDERER_API_D3D11;
         } else {
             fatal_quit("Unknown GPU API '%s'.\n",
                        gpu_api_name);

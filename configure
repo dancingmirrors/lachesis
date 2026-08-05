@@ -156,9 +156,19 @@ check(
 )
 
 check(
+    "-d3d11*",
+    desc="Direct3D 11",
+    deps="Windows",
+    fn=lambda: check_cc(include="libplacebo/config.h", defined="PL_HAVE_D3D11")
+    and check_cc(
+        include=["windows.h", "d3d11.h", "d3d10.h", "dxgi.h"], link="-ldxguid"
+    ),
+)
+
+check(
     desc="a libplacebo GPU backend",
-    deps_any=["vulkan", "opengl"],
-    required="libplacebo: built without both Vulkan and OpenGL support",
+    deps_any=["vulkan", "opengl", "d3d11"],
+    required="libplacebo: built without Vulkan, OpenGL, and Direct3D 11 support",
 )
 
 add_sources(

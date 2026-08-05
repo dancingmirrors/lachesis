@@ -76,6 +76,12 @@
 #include <libplacebo/opengl.h>
 #endif
 
+#if LACHESIS_HAVE_D3D11
+#include <d3d10.h>
+#include <libavutil/hwcontext_d3d11va.h>
+#include <libplacebo/d3d11.h>
+#endif
+
 #include <libavutil/bprint.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
@@ -126,12 +132,13 @@ typedef struct RendererContext {
     AVFrame *deint_prev;
     AVFrame *sw_frame;
 
+    AVBufferRef *hw_device_ref;
+
 #if LACHESIS_HAVE_VULKAN
     pl_vk_inst placebo_instance;
     pl_vulkan placebo_vulkan;
     VkSurfaceKHR vk_surface;
 
-    AVBufferRef *hw_device_ref;
     AVBufferRef *hw_frame_ref;
     enum AVPixelFormat *transfer_formats;
     AVHWFramesConstraints *constraints;
@@ -155,6 +162,14 @@ typedef struct RendererContext {
 #if LACHESIS_HAVE_OPENGL
     pl_opengl placebo_gl;
     SDL_GLContext gl_context;
+#endif
+
+#if LACHESIS_HAVE_D3D11
+    pl_d3d11 placebo_d3d11;
+    ID3D11Texture2D *d3d11_pool;
+    pl_tex *d3d11_views;
+    unsigned d3d11_num_views;
+    int d3d11_planes;
 #endif
 
     /* See build_pixfmt_list(). */
@@ -1158,6 +1173,233 @@ static void gl_backend_destroy(RendererContext *ctx) {
 
 #endif /* LACHESIS_HAVE_OPENGL */
 
+#if LACHESIS_HAVE_D3D11
+
+static void d3d11_read_device_name(RendererContext *ctx) {
+    IDXGIDevice *dxgi_dev = NULL;
+    IDXGIAdapter *adapter = NULL;
+    DXGI_ADAPTER_DESC desc;
+
+    if (FAILED(ID3D11Device_QueryInterface(ctx->placebo_d3d11->device,
+                                           &IID_IDXGIDevice,
+                                           (void **)&dxgi_dev))) {
+        return;
+    }
+    if (SUCCEEDED(IDXGIDevice_GetAdapter(dxgi_dev, &adapter)) &&
+        SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc))) {
+        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, ctx->device_name,
+                            (int)sizeof(ctx->device_name), NULL, NULL);
+    }
+    if (adapter) {
+        IDXGIAdapter_Release(adapter);
+    }
+    IDXGIDevice_Release(dxgi_dev);
+}
+
+static void d3d11_protect_device(RendererContext *ctx) {
+    ID3D10Multithread *multithread = NULL;
+
+    if (FAILED(ID3D11Device_QueryInterface(ctx->placebo_d3d11->device,
+                                           &IID_ID3D10Multithread,
+                                           (void **)&multithread))) {
+        return;
+    }
+    ID3D10Multithread_SetMultithreadProtected(multithread, TRUE);
+    ID3D10Multithread_Release(multithread);
+}
+
+static int d3d11_create_hw_device(RendererContext *ctx) {
+    AVD3D11VADeviceContext *hwctx;
+    AVHWDeviceContext *dev;
+    int ret;
+
+    ctx->hw_device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_D3D11VA);
+    if (!ctx->hw_device_ref) {
+        return AVERROR(ENOMEM);
+    }
+
+    dev = (AVHWDeviceContext *)ctx->hw_device_ref->data;
+    hwctx = dev->hwctx;
+
+    ID3D11Device_AddRef(ctx->placebo_d3d11->device);
+    hwctx->device = ctx->placebo_d3d11->device;
+    hwctx->BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+
+    ret = av_hwdevice_ctx_init(ctx->hw_device_ref);
+    if (ret < 0) {
+        av_buffer_unref(&ctx->hw_device_ref);
+        return ret;
+    }
+
+    return 0;
+}
+
+static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
+                                AVDictionary *opt) {
+    HWND hwnd;
+    int w, h;
+
+    hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                                        NULL);
+    if (!hwnd) {
+        return AVERROR_EXTERNAL;
+    }
+
+    /* clang-format off */
+    ctx->placebo_d3d11 = pl_d3d11_create(ctx->log_ctx,
+                                         pl_d3d11_params(
+                                             .debug = enable_debug(opt),
+                                             .allow_software = false,
+                                             .flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                                             .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
+    /* clang-format on */
+    if (!ctx->placebo_d3d11) {
+        return AVERROR_EXTERNAL;
+    }
+
+    ctx->gpu = ctx->placebo_d3d11->gpu;
+    d3d11_protect_device(ctx);
+
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) {
+        w = h = 1;
+    }
+
+    /* clang-format off */
+    ctx->swapchain = pl_d3d11_create_swapchain(ctx->placebo_d3d11,
+                                               pl_d3d11_swapchain_params(
+                                                   .window = hwnd,
+                                                   .width = w,
+                                                   .height = h, ));
+    /* clang-format on */
+    if (!ctx->swapchain) {
+        return AVERROR_EXTERNAL;
+    }
+
+    if (!pl_swapchain_resize(ctx->swapchain, &w, &h)) {
+        return AVERROR_EXTERNAL;
+    }
+
+    snprintf(ctx->api_name, sizeof(ctx->api_name), "Direct3D 11");
+    d3d11_read_device_name(ctx);
+
+    if (d3d11_create_hw_device(ctx) < 0) {
+    }
+
+    return 0;
+}
+
+static int d3d11_plane_view_formats(DXGI_FORMAT packed, DXGI_FORMAT *view) {
+    switch (packed) {
+    case DXGI_FORMAT_NV12:
+        view[0] = DXGI_FORMAT_R8_UNORM;
+        view[1] = DXGI_FORMAT_R8G8_UNORM;
+        return 2;
+    case DXGI_FORMAT_P010:
+    case DXGI_FORMAT_P016:
+        view[0] = DXGI_FORMAT_R16_UNORM;
+        view[1] = DXGI_FORMAT_R16G16_UNORM;
+        return 2;
+    default:
+        return 0;
+    }
+}
+
+static void d3d11_drop_views(RendererContext *ctx) {
+    for (unsigned i = 0; i < ctx->d3d11_num_views; i++) {
+        pl_tex_destroy(ctx->gpu, &ctx->d3d11_views[i]);
+    }
+    av_freep(&ctx->d3d11_views);
+    ctx->d3d11_num_views = 0;
+    ctx->d3d11_pool = NULL;
+}
+
+static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
+                            struct pl_frame *out) {
+    const AVHWFramesContext *hwfc =
+        (const AVHWFramesContext *)frame->hw_frames_ctx->data;
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(hwfc->sw_format);
+    ID3D11Texture2D *texture = (ID3D11Texture2D *)frame->data[0];
+    unsigned slice = (unsigned)(intptr_t)frame->data[1];
+    DXGI_FORMAT view_fmt[4];
+    D3D11_TEXTURE2D_DESC tex_desc;
+    unsigned need;
+    int planes;
+
+    if (!texture || !desc) {
+        return false;
+    }
+
+    ID3D11Texture2D_GetDesc(texture, &tex_desc);
+    planes = d3d11_plane_view_formats(tex_desc.Format, view_fmt);
+    if (!planes || slice >= tex_desc.ArraySize) {
+        return false;
+    }
+
+    need = tex_desc.ArraySize * (unsigned)planes;
+    if (ctx->d3d11_pool != texture || ctx->d3d11_num_views != need) {
+        d3d11_drop_views(ctx);
+        ctx->d3d11_views = av_calloc(need, sizeof(*ctx->d3d11_views));
+        if (!ctx->d3d11_views) {
+            return false;
+        }
+        ctx->d3d11_num_views = need;
+        ctx->d3d11_planes = planes;
+        ctx->d3d11_pool = texture;
+    }
+
+    pl_frame_from_avframe(out, frame);
+    if (out->num_planes != planes) {
+        return false;
+    }
+
+    for (int i = 0; i < planes; i++) {
+        pl_tex *slot = &ctx->d3d11_views[slice * (unsigned)planes + i];
+
+        if (!*slot) {
+            int full_w = (int)tex_desc.Width;
+            int full_h = (int)tex_desc.Height;
+            int sub_w = i ? desc->log2_chroma_w : 0;
+            int sub_h = i ? desc->log2_chroma_h : 0;
+
+            /* clang-format off */
+            *slot = pl_d3d11_wrap(ctx->gpu,
+                                  pl_d3d11_wrap_params(
+                                      .tex = (ID3D11Resource *)texture,
+                                      .array_slice = (int)slice,
+                                      .fmt = view_fmt[i],
+                                      .w = AV_CEIL_RSHIFT(full_w, sub_w),
+                                      .h = AV_CEIL_RSHIFT(full_h, sub_h), ));
+            /* clang-format on */
+            if (!*slot) {
+                return false;
+            }
+        }
+        out->planes[i].texture = *slot;
+    }
+
+    out->repr.bits.color_depth = desc->comp[0].depth;
+    out->repr.bits.bit_shift = FFMAX(desc->comp[0].shift, 0);
+    out->repr.bits.sample_depth =
+        out->planes[0].texture->params.format->component_depth[0];
+
+    if (desc->log2_chroma_w || desc->log2_chroma_h) {
+        pl_frame_set_chroma_location(out, pl_chroma_from_av(frame->chroma_location));
+    }
+
+    return true;
+}
+
+static void d3d11_backend_destroy(RendererContext *ctx) {
+    d3d11_drop_views(ctx);
+    av_buffer_unref(&ctx->hw_device_ref);
+    pl_swapchain_destroy(&ctx->swapchain);
+    pl_d3d11_destroy(&ctx->placebo_d3d11);
+}
+
+#endif /* LACHESIS_HAVE_D3D11 */
+
 #ifdef LACHESIS_CAN_ITERATE_LIBS
 #define LACHESIS_MAX_PLACEBO_LIBS 8
 
@@ -1327,6 +1569,8 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
     int enabled = entry && entry->value ? strtol(entry->value, NULL, 10) : 1;
     const char *leaf = ctx->api.backend == RENDERER_API_OPENGL
         ? LACHESIS_PATH_SEP "shaders-OpenGL.bin"
+        : ctx->api.backend == RENDERER_API_D3D11
+        ? LACHESIS_PATH_SEP "shaders-D3D11.bin"
         : LACHESIS_PATH_SEP "shaders-Vulkan.bin";
     size_t need;
     FILE *f;
@@ -1612,6 +1856,11 @@ static int create(Renderer *renderer, SDL_Window *window, AVDictionary *opt) {
         ret = gl_backend_create(ctx, window, opt);
         break;
 #endif
+#if LACHESIS_HAVE_D3D11
+    case RENDERER_API_D3D11:
+        ret = d3d11_backend_create(ctx, window, opt);
+        break;
+#endif
     default:
         ret = AVERROR(ENOSYS);
         break;
@@ -1823,16 +2072,18 @@ static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
     create_hw_frame(renderer, frame);
 
     for (int use_hw = 1; use_hw >= 0; use_hw--) {
-        ret = map_frame(renderer, frame, use_hw);
-        if (!ret) {
-            return 0;
-        }
+        const char *how = "mapping";
 
-        ret = transfer_frame(renderer, frame, use_hw);
+        ret = map_frame(renderer, frame, use_hw);
+        if (ret) {
+            ret = transfer_frame(renderer, frame, use_hw);
+            how = "copy";
+        }
         if (!ret) {
             if (!use_hw && !warned_download) {
                 warned_download = 1;
-                log_info("Displaying hardware frames via a system memory copy.\n");
+                log_info("Displaying hardware frames via a system memory %s.\n",
+                         how);
             }
             return 0;
         }
@@ -1890,6 +2141,13 @@ static int convert_frame(Renderer *renderer, AVFrame *frame) {
     }
 #endif
 
+#if LACHESIS_HAVE_D3D11
+    if (renderer->backend == RENDERER_API_D3D11 &&
+        frame->format == AV_PIX_FMT_D3D11 && !ctx->zero_copy_failed) {
+        return 0;
+    }
+#endif
+
     if (!ctx->zero_copy_failed && pl_test_pixfmt(ctx->gpu, frame->format)) {
         return 0;
     }
@@ -1899,6 +2157,24 @@ static int convert_frame(Renderer *renderer, AVFrame *frame) {
 
 static bool map_video_frame(RendererContext *ctx, AVFrame *frame,
                             struct pl_frame *out) {
+#if LACHESIS_HAVE_D3D11
+    if (ctx->api.backend == RENDERER_API_D3D11 &&
+        frame->format == AV_PIX_FMT_D3D11) {
+        if (map_d3d11_frame(ctx, frame, out)) {
+            return true;
+        }
+        if (!ctx->zero_copy_failed) {
+            ctx->zero_copy_failed = 1;
+            log_warn("The GPU rejected a zero copy import of a %s frame. "
+                     "Falling back to a system memory copy.\n",
+                     av_get_pix_fmt_name(frame->format));
+        }
+        if (convert_frame_readback(ctx, frame) < 0) {
+            return false;
+        }
+    }
+#endif
+
     if (pl_map_avframe_ex(ctx->gpu, out,
                           pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
         return true;
@@ -1943,8 +2219,16 @@ static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
     if (!frame || frames_alias(frame, self)) {
         return NULL;
     }
-    if (!pl_map_avframe_ex(ctx->gpu, out,
-                           pl_avframe_params(.frame = frame, .tex = tex))) {
+#if LACHESIS_HAVE_D3D11
+    if (ctx->api.backend == RENDERER_API_D3D11 &&
+        frame->format == AV_PIX_FMT_D3D11) {
+        if (!map_d3d11_frame(ctx, frame, out)) {
+            return NULL;
+        }
+    } else
+#endif
+        if (!pl_map_avframe_ex(ctx->gpu, out,
+                               pl_avframe_params(.frame = frame, .tex = tex))) {
         return NULL;
     }
     if (out->num_planes != cur->num_planes) {
@@ -2723,6 +3007,11 @@ static void destroy(Renderer *renderer) {
         gl_backend_destroy(ctx);
         break;
 #endif
+#if LACHESIS_HAVE_D3D11
+    case RENDERER_API_D3D11:
+        d3d11_backend_destroy(ctx);
+        break;
+#endif
     default:
         break;
     }
@@ -2740,6 +3029,9 @@ static const AVClass renderer_class = {
 static const enum RendererApi renderer_api_order[] = {
 #if LACHESIS_HAVE_VULKAN
     RENDERER_API_VULKAN,
+#endif
+#if LACHESIS_HAVE_D3D11
+    RENDERER_API_D3D11,
 #endif
 #if LACHESIS_HAVE_OPENGL
     RENDERER_API_OPENGL,
@@ -2775,6 +3067,8 @@ static const char *api_label(enum RendererApi api) {
         return "Vulkan";
     case RENDERER_API_OPENGL:
         return "OpenGL";
+    case RENDERER_API_D3D11:
+        return "Direct3D 11";
     default:
         return "unknown";
     }
@@ -3017,15 +3311,12 @@ void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll,
 }
 
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {
-#if LACHESIS_HAVE_VULKAN
     RendererContext *ctx = (RendererContext *)renderer;
 
-    if (renderer && renderer->backend == RENDERER_API_VULKAN) {
+    if (renderer && ctx->hw_device_ref) {
         *dev = ctx->hw_device_ref;
         return 0;
     }
-#endif
-    (void)renderer;
     *dev = NULL;
 
     return AVERROR(ENOSYS);

@@ -297,7 +297,7 @@ const OptionDef options[] = {
     {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},
     {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation", ""},
     {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees", "degrees"},
-    {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl)", "api"},
+    {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl, d3d11)", "api"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
     {"gpu-params", OPT_TYPE_STRING, 0, {&gpu_params}, "backend configuration using a list of key=value pairs separated by ':'"},
     {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
