@@ -314,8 +314,17 @@ static const char *select_device(const AVDictionary *opt) {
 
 static int want_host_image_copy(const AVDictionary *opt) {
     const AVDictionaryEntry *entry = av_dict_get(opt, "host_image_copy", NULL, 0);
+#ifdef __APPLE__
+    int want = 0;
+#else
+    int want = 1;
+#endif
 
-    return !(entry && entry->value && !strtol(entry->value, NULL, 10));
+    if (entry && entry->value) {
+        want = strtol(entry->value, NULL, 10) != 0;
+    }
+
+    return want;
 }
 
 static const char *const *drop_host_image_copy(RendererContext *ctx,
@@ -2729,20 +2738,11 @@ static const AVClass renderer_class = {
 };
 
 static const enum RendererApi renderer_api_order[] = {
-#ifdef __APPLE__
-#if LACHESIS_HAVE_OPENGL
-    RENDERER_API_OPENGL,
-#endif
-#if LACHESIS_HAVE_VULKAN
-    RENDERER_API_VULKAN,
-#endif
-#else
 #if LACHESIS_HAVE_VULKAN
     RENDERER_API_VULKAN,
 #endif
 #if LACHESIS_HAVE_OPENGL
     RENDERER_API_OPENGL,
-#endif
 #endif
 };
 
