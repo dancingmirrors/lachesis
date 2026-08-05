@@ -1260,6 +1260,9 @@ static void video_display(VideoState *is) {
 
     is->render_params.present_done_us = 0;
     is->render_params.present_block_us = 0;
+    is->render_params.present_source = PRESENT_SOURCE_SWAP;
+    is->render_params.present_display_us = 0;
+    is->render_params.present_refresh_us = 0;
     video_prepare_overlays(is);
 
     if (is->video_st) {
@@ -1274,9 +1277,18 @@ static void video_display(VideoState *is) {
     }
 
     {
-        int64_t done = is->render_params.present_done_us;
-        if (done > 0) {
-            present_feedback(done - is->render_params.present_block_us, done);
+        const RenderParams *rp = &is->render_params;
+
+        if (rp->present_source != PRESENT_SOURCE_SWAP) {
+            present_note_present(rp->present_done_us);
+            if (rp->present_display_us > 0) {
+                present_feedback_display(rp->present_source,
+                                         rp->present_display_us,
+                                         rp->present_refresh_us);
+            }
+        } else if (rp->present_done_us > 0) {
+            present_feedback(rp->present_done_us - rp->present_block_us,
+                             rp->present_done_us);
         }
     }
 

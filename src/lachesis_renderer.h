@@ -77,6 +77,9 @@ typedef struct RenderParams {
     int eq_contrast;
     int64_t present_done_us;
     int64_t present_block_us;
+    int present_source;
+    int64_t present_display_us;
+    double present_refresh_us;
 } RenderParams;
 
 #define RENDERER_DECODE_CAP_H264 (1u << 0)

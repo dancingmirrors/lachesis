@@ -23,6 +23,14 @@
 
 #include <stdint.h>
 
+enum PresentSource {
+    PRESENT_SOURCE_SWAP = 0,
+    PRESENT_SOURCE_PRESENT_WAIT,
+    PRESENT_SOURCE_DISPLAY_TIMING,
+};
+
+const char *present_source_name(int source);
+
 typedef struct PresentStats {
     double nominal_hz;
     double measured_hz;
@@ -31,13 +39,19 @@ typedef struct PresentStats {
     int samples_needed;
     int measuring;
     int snapping;
+    int source;
+    int driver_refresh;
 } PresentStats;
 
 void present_update_display_mode(void);
 void present_disable_snap(void);
 void present_restore_snap(void);
 void present_reset(void);
+
 void present_feedback(int64_t submit_us, int64_t done_us);
+void present_feedback_display(int source, int64_t display_us, double refresh_us);
+void present_note_present(int64_t done_us);
+void present_set_refresh_interval(double refresh_us);
 
 double present_vsync_sec(void);
 

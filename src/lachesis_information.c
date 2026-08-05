@@ -40,7 +40,7 @@ static char audio_device_format_line[96] = "";
 static char audio_passthrough_line[96] = "";
 static char media_info_vout_line[128] = "";
 
-static char playback_stats_cached[384] = "";
+static char playback_stats_cached[512] = "";
 static int64_t playback_stats_next_refresh_us = 0;
 
 static const char *media_info_renderer(void) {
@@ -274,23 +274,28 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
             snprintf(sync_line, sizeof(sync_line), "A-V: unavailable");
         }
 
-        char disp_line[96];
+        char disp_line[160];
         PresentStats ps;
         present_get_stats(&ps);
+        const char *hz_from = ps.driver_refresh ? " reported" : "";
+        char feedback[32];
+        snprintf(feedback, sizeof(feedback), " [%s]",
+                 present_source_name(ps.source));
         if (ps.measured_hz > 0) {
             snprintf(disp_line, sizeof(disp_line),
-                     "Display: %.2f Hz (measured %.3f Hz%s, jitter %.1f%%)%s",
-                     ps.nominal_hz, ps.measured_hz,
+                     "Display: %.2f%s Hz (measured %.3f Hz%s, jitter %.1f%%)%s%s",
+                     ps.nominal_hz, hz_from, ps.measured_hz,
                      ps.measuring ? ", in use" : "", ps.jitter * 100.0,
-                     ps.snapping ? "" : ", snap off");
+                     ps.snapping ? "" : ", snap off", feedback);
         } else if (ps.samples > 0) {
             snprintf(disp_line, sizeof(disp_line),
-                     "Display: %.2f Hz (measuring, %d/%d)%s", ps.nominal_hz,
-                     ps.samples, ps.samples_needed,
-                     ps.snapping ? "" : ", snap off");
+                     "Display: %.2f%s Hz (measuring, %d/%d)%s%s", ps.nominal_hz,
+                     hz_from, ps.samples, ps.samples_needed,
+                     ps.snapping ? "" : ", snap off", feedback);
         } else {
-            snprintf(disp_line, sizeof(disp_line), "Display: %.2f Hz%s",
-                     ps.nominal_hz, ps.snapping ? "" : ", snap off");
+            snprintf(disp_line, sizeof(disp_line), "Display: %.2f%s Hz%s%s",
+                     ps.nominal_hz, hz_from, ps.snapping ? "" : ", snap off",
+                     feedback);
         }
 
         snprintf(cached, cached_size,

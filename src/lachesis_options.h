@@ -85,7 +85,7 @@ int opt_quiet(void *optctx, const char *opt, const char *arg);
     {"?", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},     \
     {"help", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"},  \
     {"-help", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"}, \
-    {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set FFmpeg's logging level", "loglevel"},
+    {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set the logging level", "loglevel"},
 /* clang-format on */
 int opt_help(void *optctx, const char *opt, const char *arg);
 

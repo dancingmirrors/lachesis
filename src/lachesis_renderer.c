@@ -22,6 +22,7 @@
 /* clang-format off */
 #include "lachesis_config.h"
 #include "lachesis_equalizer.h"
+#include "lachesis_icon.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
 #include "lachesis_view360.h"
@@ -51,6 +52,8 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include <libplacebo/vulkan.h>
+
+#include "lachesis_present_vulkan.h"
 
 #ifndef FF_API_VULKAN_SYNC_QUEUES
 #define FF_API_VULKAN_SYNC_QUEUES (LIBAVUTIL_VERSION_MAJOR < 61)
@@ -138,6 +141,12 @@ typedef struct RendererContext {
 
     PFN_vkGetInstanceProcAddr get_proc_addr;
     VkInstance inst;
+
+    const char *const *dev_extensions;
+    int num_dev_extensions;
+    const VkPhysicalDeviceFeatures2 *dev_features;
+
+    int present_timing_silent;
 
     AVFrame *vk_frame;
 #endif
@@ -258,7 +267,7 @@ static int add_instance_extension(const char **ext, unsigned num_ext,
 }
 
 static int add_device_extension(const AVDictionary *opt,
-                                AVDictionary **dict) {
+                                AVDictionary **dict, int present_timing) {
     const char *dev_ext_key = "device_extensions";
     AVDictionaryEntry *entry;
     AVBPrint buf;
@@ -269,6 +278,15 @@ static int add_device_extension(const AVDictionary *opt,
     av_bprintf(&buf, "%s", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     for (int i = 0; i < pl_vulkan_num_recommended_extensions; i++) {
         av_bprintf(&buf, "+%s", pl_vulkan_recommended_extensions[i]);
+    }
+    if (present_timing) {
+        int num_present_ext = 0;
+        const char *const *present_ext =
+            vkpresent_device_extensions(&num_present_ext);
+
+        for (int i = 0; i < num_present_ext; i++) {
+            av_bprintf(&buf, "+%s", present_ext[i]);
+        }
     }
 
     entry = av_dict_get(opt, dev_ext_key, NULL, 0);
@@ -295,11 +313,11 @@ static const char *select_device(const AVDictionary *opt) {
 
 static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
-                                const AVDictionary *opt);
+                                const AVDictionary *opt, int present_timing);
 
 static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
-                                  const AVDictionary *opt) {
+                                  const AVDictionary *opt, int present_timing) {
     RendererContext *ctx = (RendererContext *)renderer;
     AVHWDeviceContext *dev;
     AVVulkanDeviceContext *hwctx;
@@ -310,7 +328,7 @@ static int create_vk_by_hwcontext(Renderer *renderer,
     if (ret < 0) {
         return ret;
     }
-    ret = add_device_extension(opt, &dict);
+    ret = add_device_extension(opt, &dict, present_timing);
     if (ret) {
         av_dict_free(&dict);
         return ret;
@@ -329,7 +347,7 @@ static int create_vk_by_hwcontext(Renderer *renderer,
     if (hwctx->get_proc_addr != (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr()) {
         av_buffer_unref(&ctx->hw_device_ref);
         ctx->inst = NULL;
-        return create_vk_by_placebo(renderer, ext, num_ext, opt);
+        return create_vk_by_placebo(renderer, ext, num_ext, opt, present_timing);
     }
 
     ctx->get_proc_addr = hwctx->get_proc_addr;
@@ -337,7 +355,9 @@ static int create_vk_by_hwcontext(Renderer *renderer,
 
     struct pl_vulkan_import_params import_params = {
         .instance = hwctx->inst,
-        .get_proc_addr = hwctx->get_proc_addr,
+        .get_proc_addr = present_timing
+            ? vkpresent_wrap_proc_addr(hwctx->get_proc_addr)
+            : hwctx->get_proc_addr,
         .phys_device = hwctx->phys_dev,
         .device = hwctx->act_dev,
         .extensions = hwctx->enabled_dev_extensions,
@@ -397,10 +417,15 @@ static int create_vk_by_hwcontext(Renderer *renderer,
                     VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
             av_buffer_unref(&ctx->hw_device_ref);
             ctx->inst = NULL;
-            return create_vk_by_placebo(renderer, ext, num_ext, opt);
+            return create_vk_by_placebo(renderer, ext, num_ext, opt,
+                                        present_timing);
         }
     }
 #endif
+    ctx->dev_extensions = hwctx->enabled_dev_extensions;
+    ctx->num_dev_extensions = hwctx->nb_enabled_dev_extensions;
+    ctx->dev_features = &hwctx->device_features;
+
     ctx->placebo_vulkan = pl_vulkan_import(ctx->log_ctx, &import_params);
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
@@ -474,10 +499,13 @@ static int get_decode_queue(Renderer *renderer, int *index, int *count) {
 
 static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
-                                const AVDictionary *opt) {
+                                const AVDictionary *opt, int present_timing) {
     RendererContext *ctx = (RendererContext *)renderer;
     AVHWDeviceContext *device_ctx;
     AVVulkanDeviceContext *vk_dev_ctx;
+    PFN_vkGetInstanceProcAddr placebo_proc_addr;
+    const char **opt_exts = NULL;
+    int num_opt_exts = 0;
     int decode_index;
     int decode_count;
     int ret;
@@ -487,39 +515,80 @@ static int create_vk_by_placebo(Renderer *renderer,
 #endif
 
     ctx->get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    placebo_proc_addr = present_timing
+        ? vkpresent_wrap_proc_addr(ctx->get_proc_addr)
+        : ctx->get_proc_addr;
 
-    ctx->placebo_instance = pl_vk_inst_create(ctx->log_ctx, pl_vk_inst_params(.get_proc_addr = ctx->get_proc_addr, .debug = enable_debug(opt), .extensions = ext, .num_extensions = num_ext));
+    /* clang-format off */
+    ctx->placebo_instance = pl_vk_inst_create(ctx->log_ctx, pl_vk_inst_params(
+        .get_proc_addr = placebo_proc_addr,
+        .debug = enable_debug(opt),
+        .extensions = ext,
+        .num_extensions = num_ext));
+    /* clang-format on */
     if (!ctx->placebo_instance) {
         return AVERROR_EXTERNAL;
     }
     ctx->inst = ctx->placebo_instance->instance;
 
-    /* clang-format off */
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     dev_exts = av_vk_get_optional_device_extensions(&num_dev_exts);
     if (!dev_exts) {
         return AVERROR(ENOMEM);
     }
+    opt_exts = dev_exts;
+    num_opt_exts = num_dev_exts;
 #endif
+
+    if (present_timing) {
+        int num_present_ext = 0;
+        const char *const *present_ext =
+            vkpresent_device_extensions(&num_present_ext);
+        const char **merged = av_calloc(num_opt_exts + num_present_ext,
+                                        sizeof(*merged));
+
+        if (!merged) {
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
+            av_free(dev_exts);
+#endif
+            return AVERROR(ENOMEM);
+        }
+        for (int i = 0; i < num_opt_exts; i++) {
+            merged[i] = opt_exts[i];
+        }
+        for (int i = 0; i < num_present_ext; i++) {
+            merged[num_opt_exts + i] = present_ext[i];
+        }
+        opt_exts = merged;
+        num_opt_exts += num_present_ext;
+    }
+
+    /* clang-format off */
     ctx->placebo_vulkan = pl_vulkan_create(ctx->log_ctx,
                                            pl_vulkan_params(
                                                .instance = ctx->placebo_instance->instance,
                                                .get_proc_addr = ctx->placebo_instance->get_proc_addr,
                                                .surface = ctx->vk_surface,
                                                .allow_software = false,
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
-                                               .opt_extensions = dev_exts,
-                                               .num_opt_extensions = num_dev_exts,
-#endif
+                                               .opt_extensions = opt_exts,
+                                               .num_opt_extensions = num_opt_exts,
+                                               .features = present_timing ? vkpresent_device_features() : NULL,
                                                .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
                                                .device_name = select_device(opt), ));
+    /* clang-format on */
+    if (present_timing) {
+        av_free((void *)opt_exts);
+    }
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     av_free(dev_exts);
 #endif
-    /* clang-format on */
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
     }
+    ctx->dev_extensions = ctx->placebo_vulkan->extensions;
+    ctx->num_dev_extensions = ctx->placebo_vulkan->num_extensions;
+    ctx->dev_features = ctx->placebo_vulkan->features;
+
     ctx->hw_device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
     if (!ctx->hw_device_ref) {
         return AVERROR(ENOMEM);
@@ -553,7 +622,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     FF_ENABLE_DEPRECATION_WARNINGS
 #endif
 
-    vk_dev_ctx->get_proc_addr = ctx->placebo_instance->get_proc_addr;
+    vk_dev_ctx->get_proc_addr = ctx->get_proc_addr;
 
     vk_dev_ctx->inst = ctx->placebo_instance->instance;
     vk_dev_ctx->phys_dev = ctx->placebo_vulkan->phys_device;
@@ -698,8 +767,14 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
     AVDictionaryEntry *entry;
     unsigned num_ext = 0;
     const char **ext = NULL;
+    int present_timing = 1;
     int ret;
     int w, h;
+
+    entry = av_dict_get(opt, "present_timing", NULL, 0);
+    if (entry && entry->value && !strtol(entry->value, NULL, 10)) {
+        present_timing = 0;
+    }
 
     {
         Uint32 sdl_num_ext = 0;
@@ -720,9 +795,9 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
 
     entry = av_dict_get(opt, "create_by_placebo", NULL, 0);
     if (entry && strtol(entry->value, NULL, 10)) {
-        ret = create_vk_by_placebo(renderer, ext, num_ext, opt);
+        ret = create_vk_by_placebo(renderer, ext, num_ext, opt, present_timing);
     } else {
-        ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt);
+        ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt, present_timing);
     }
     av_free(ext);
     if (ret < 0) {
@@ -731,6 +806,11 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
 
     if (!SDL_Vulkan_CreateSurface(window, ctx->inst, NULL, &ctx->vk_surface)) {
         return AVERROR_EXTERNAL;
+    }
+
+    if (present_timing) {
+        vkpresent_attach(ctx->placebo_vulkan->device, ctx->dev_extensions,
+                         ctx->num_dev_extensions, ctx->dev_features);
     }
 
     entry = av_dict_get(opt, "present_mode", NULL, 0);
@@ -792,6 +872,8 @@ static void vk_backend_destroy(RendererContext *ctx) {
 
     av_buffer_unref(&ctx->hw_device_ref);
     pl_vk_inst_destroy(&ctx->placebo_instance);
+
+    vkpresent_shutdown();
 }
 
 #endif /* LACHESIS_HAVE_VULKAN */
@@ -2072,6 +2154,42 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
 #define LACHESIS_STAT_EMA_FRAMES 30
 
+#define LACHESIS_PRESENT_TIMING_GRACE 120
+
+static void collect_present_timing(RendererContext *ctx, RenderParams *params) {
+#if LACHESIS_HAVE_VULKAN
+    VkPresentSample sample;
+
+    if (ctx->api.backend != RENDERER_API_VULKAN) {
+        return;
+    }
+
+    params->present_source = vkpresent_source();
+    if (params->present_source == PRESENT_SOURCE_SWAP) {
+        return;
+    }
+
+    if (vkpresent_poll(&sample)) {
+        ctx->present_timing_silent = 0;
+        params->present_source = sample.source;
+        params->present_display_us = sample.display_us;
+        params->present_refresh_us = sample.refresh_us;
+        return;
+    }
+
+    if (++ctx->present_timing_silent > LACHESIS_PRESENT_TIMING_GRACE) {
+        log_warn("No presentation feedback after %d presents. Timing the swap "
+                 "on the CPU instead.\n",
+                 LACHESIS_PRESENT_TIMING_GRACE);
+        vkpresent_disable();
+        params->present_source = PRESENT_SOURCE_SWAP;
+    }
+#else
+    (void)ctx;
+    (void)params;
+#endif
+}
+
 static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx,
                                                       const RenderParams *params) {
     if (ctx->benchmark || params->disable_linear_scaling || !params->still_image) {
@@ -2222,6 +2340,7 @@ out:
                 t_prs += prs_us;
                 params->present_done_us = done;
                 params->present_block_us = (_ts1 - _ts0) + prs_us;
+                collect_present_timing(ctx, params);
             }
         }
     }
@@ -2662,6 +2781,7 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
         note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
         return AVERROR_EXTERNAL;
     }
+    icon_set_window_icon(window);
 
     renderer = renderer_alloc(api);
     if (!renderer) {
