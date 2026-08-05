@@ -2787,6 +2787,10 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
         ret = AVERROR_EXTERNAL;
         goto out;
     }
+    if (!(fmt->caps & PL_FMT_CAP_HOST_READABLE)) {
+        ret = AVERROR(ENOSYS);
+        goto out;
+    }
     cap_params = (struct pl_tex_params){
         .w = width,
         .h = height,
@@ -2937,6 +2941,9 @@ static int self_test(Renderer *renderer, int width, int height) {
         if (bright < size * size / 2) {
             ret = AVERROR_EXTERNAL;
         }
+    } else if (ret == AVERROR(ENOSYS)) {
+        log_verbose("Screenshots will not work on this renderer.\n");
+        ret = 0;
     }
     av_free(pixels);
     av_frame_free(&frame);
