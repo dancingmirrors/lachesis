@@ -2942,7 +2942,6 @@ static int self_test(Renderer *renderer, int width, int height) {
             ret = AVERROR_EXTERNAL;
         }
     } else if (ret == AVERROR(ENOSYS)) {
-        log_verbose("Screenshots will not work on this renderer.\n");
         ret = 0;
     }
     av_free(pixels);
