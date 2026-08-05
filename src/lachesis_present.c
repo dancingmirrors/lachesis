@@ -399,7 +399,7 @@ static struct {
     double refresh_us;
 } vkp;
 
-static int64_t driver_ns_to_relative_us(uint64_t driver_ns) {
+av_unused static int64_t driver_ns_to_relative_us(uint64_t driver_ns) {
 #if HAVE_DISPLAY_TIMING
     struct timespec ts;
 
