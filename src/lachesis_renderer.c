@@ -147,6 +147,7 @@ typedef struct RendererContext {
     const VkPhysicalDeviceFeatures2 *dev_features;
 
     int present_timing_silent;
+    const char **filtered_dev_exts;
 
     AVFrame *vk_frame;
 #endif
@@ -311,6 +312,49 @@ static const char *select_device(const AVDictionary *opt) {
     return NULL;
 }
 
+static int want_host_image_copy(const AVDictionary *opt) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "host_image_copy", NULL, 0);
+
+    return !(entry && entry->value && !strtol(entry->value, NULL, 10));
+}
+
+static const char *const *drop_host_image_copy(RendererContext *ctx,
+                                               const char *const *exts,
+                                               int num_exts, int *out_num) {
+    const char **filtered;
+    int n = 0;
+
+    *out_num = num_exts;
+    for (int i = 0; i < num_exts; i++) {
+        if (!strcmp(exts[i], VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME)) {
+            n = 1;
+            break;
+        }
+    }
+    if (!n) {
+        return exts;
+    }
+
+    filtered = av_calloc(num_exts, sizeof(*filtered));
+    if (!filtered) {
+        return exts;
+    }
+    n = 0;
+    for (int i = 0; i < num_exts; i++) {
+        if (strcmp(exts[i], VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME)) {
+            filtered[n++] = exts[i];
+        }
+    }
+
+    av_free(ctx->filtered_dev_exts);
+    ctx->filtered_dev_exts = filtered;
+    *out_num = n;
+    log_verbose("Withholding %s from libplacebo.\n",
+                VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+
+    return (const char *const *)filtered;
+}
+
 static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
                                 const AVDictionary *opt, int present_timing);
@@ -353,6 +397,14 @@ static int create_vk_by_hwcontext(Renderer *renderer,
     ctx->get_proc_addr = hwctx->get_proc_addr;
     ctx->inst = hwctx->inst;
 
+    const char *const *import_exts = hwctx->enabled_dev_extensions;
+    int num_import_exts = hwctx->nb_enabled_dev_extensions;
+
+    if (!want_host_image_copy(opt)) {
+        import_exts = drop_host_image_copy(ctx, import_exts, num_import_exts,
+                                           &num_import_exts);
+    }
+
     struct pl_vulkan_import_params import_params = {
         .instance = hwctx->inst,
         .get_proc_addr = present_timing
@@ -360,8 +412,8 @@ static int create_vk_by_hwcontext(Renderer *renderer,
             : hwctx->get_proc_addr,
         .phys_device = hwctx->phys_dev,
         .device = hwctx->act_dev,
-        .extensions = hwctx->enabled_dev_extensions,
-        .num_extensions = hwctx->nb_enabled_dev_extensions,
+        .extensions = import_exts,
+        .num_extensions = num_import_exts,
         .features = &hwctx->device_features,
         .lock_queue = hwctx_lock_queue,
         .unlock_queue = hwctx_unlock_queue,
@@ -422,8 +474,8 @@ static int create_vk_by_hwcontext(Renderer *renderer,
         }
     }
 #endif
-    ctx->dev_extensions = hwctx->enabled_dev_extensions;
-    ctx->num_dev_extensions = hwctx->nb_enabled_dev_extensions;
+    ctx->dev_extensions = import_exts;
+    ctx->num_dev_extensions = num_import_exts;
     ctx->dev_features = &hwctx->device_features;
 
     ctx->placebo_vulkan = pl_vulkan_import(ctx->log_ctx, &import_params);
@@ -505,6 +557,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     AVVulkanDeviceContext *vk_dev_ctx;
     PFN_vkGetInstanceProcAddr placebo_proc_addr;
     const char **opt_exts = NULL;
+    const char **merged_exts = NULL;
     int num_opt_exts = 0;
     int decode_index;
     int decode_count;
@@ -540,12 +593,14 @@ static int create_vk_by_placebo(Renderer *renderer,
     num_opt_exts = num_dev_exts;
 #endif
 
-    if (present_timing) {
+    if (present_timing || !want_host_image_copy(opt)) {
         int num_present_ext = 0;
         const char *const *present_ext =
-            vkpresent_device_extensions(&num_present_ext);
+            present_timing ? vkpresent_device_extensions(&num_present_ext) : NULL;
         const char **merged = av_calloc(num_opt_exts + num_present_ext,
                                         sizeof(*merged));
+        int keep_host_copy = want_host_image_copy(opt);
+        int n = 0;
 
         if (!merged) {
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
@@ -554,13 +609,18 @@ static int create_vk_by_placebo(Renderer *renderer,
             return AVERROR(ENOMEM);
         }
         for (int i = 0; i < num_opt_exts; i++) {
-            merged[i] = opt_exts[i];
+            if (!keep_host_copy &&
+                !strcmp(opt_exts[i], VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME)) {
+                continue;
+            }
+            merged[n++] = opt_exts[i];
         }
         for (int i = 0; i < num_present_ext; i++) {
-            merged[num_opt_exts + i] = present_ext[i];
+            merged[n++] = present_ext[i];
         }
         opt_exts = merged;
-        num_opt_exts += num_present_ext;
+        merged_exts = merged;
+        num_opt_exts = n;
     }
 
     /* clang-format off */
@@ -576,9 +636,7 @@ static int create_vk_by_placebo(Renderer *renderer,
                                                .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
                                                .device_name = select_device(opt), ));
     /* clang-format on */
-    if (present_timing) {
-        av_free((void *)opt_exts);
-    }
+    av_free(merged_exts);
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     av_free(dev_exts);
 #endif
@@ -872,6 +930,7 @@ static void vk_backend_destroy(RendererContext *ctx) {
 
     av_buffer_unref(&ctx->hw_device_ref);
     pl_vk_inst_destroy(&ctx->placebo_instance);
+    av_freep(&ctx->filtered_dev_exts);
 
     vkpresent_shutdown();
 }
