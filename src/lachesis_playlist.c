@@ -22,6 +22,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -313,6 +314,39 @@ int playlist_entry_is_reachable(int pos) {
     return 0;
 }
 
+static int entry_is_inherited_terminal(const char *url, const char *proto) {
+#if defined(_WIN32)
+    (void)url;
+    (void)proto;
+
+    return 0;
+#else
+    const char *spec = url;
+    char *end;
+    long fd;
+
+    if (!strcmp(proto, "fd")) {
+        av_strstart(spec, "fd:", &spec);
+        if (*spec) {
+            return 0;
+        }
+        fd = STDIN_FILENO;
+    } else if (!strcmp(proto, "pipe")) {
+        av_strstart(spec, "pipe:", &spec);
+        fd = strtol(spec, &end, 10);
+        if (!*spec) {
+            fd = STDIN_FILENO;
+        } else if (end == spec || *end || fd < 0 || fd > INT_MAX) {
+            return 0;
+        }
+    } else {
+        return 0;
+    }
+
+    return isatty((int)fd);
+#endif
+}
+
 void playlist_drop_character_devices(int format_forced) {
     if (format_forced) {
         return;
@@ -328,7 +362,14 @@ void playlist_drop_character_devices(int format_forced) {
             continue;
         }
         proto = avio_find_protocol_name(path);
-        if (!proto || strcmp(proto, "file")) {
+        if (!proto) {
+            continue;
+        }
+        if (strcmp(proto, "file")) {
+            if (!entry_is_inherited_terminal(path, proto)) {
+                continue;
+            }
+            playlist_remove_at(i);
             continue;
         }
         if (!strncmp(path, "file:", 5)) {
@@ -1290,6 +1331,35 @@ static char *read_avio(AVIOContext *avio, const char *name, size_t *out_len) {
     return buf;
 }
 
+static int is_regular_file(const char *path) {
+#if defined(_WIN32)
+    wchar_t *wpath;
+    int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    DWORD attr;
+
+    if (n <= 0) {
+        return 0;
+    }
+    wpath = av_malloc_array((size_t)n, sizeof(*wpath));
+    if (!wpath) {
+        return 0;
+    }
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, n) <= 0) {
+        av_free(wpath);
+        return 0;
+    }
+    attr = GetFileAttributesW(wpath);
+    av_free(wpath);
+
+    return attr != INVALID_FILE_ATTRIBUTES &&
+        !(attr & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat st;
+
+    return stat(path, &st) == 0 && S_ISREG(st.st_mode);
+#endif
+}
+
 static char *read_local_file(const char *path, size_t *out_len) {
     AVDictionary *opts = NULL;
     AVIOContext *avio = NULL;
@@ -1297,6 +1367,10 @@ static char *read_local_file(const char *path, size_t *out_len) {
     int ret;
 
     *out_len = 0;
+    if (!is_regular_file(path)) {
+        log_warn("%s: only a regular file can be expanded as a playlist.\n", path);
+        return NULL;
+    }
     av_dict_set(&opts, "protocol_whitelist", "file", 0);
     ret = avio_open2(&avio, path, AVIO_FLAG_READ, NULL, &opts);
     av_dict_free(&opts);

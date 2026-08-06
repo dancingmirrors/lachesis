@@ -618,8 +618,11 @@ void event_loop(VideoState **pis) {
                 break;
             }
             if (seek_by_bytes || cur_stream->ic->duration <= 0) {
-                uint64_t size = avio_size(cur_stream->ic->pb);
-                stream_seek(cur_stream, size * x / cur_stream->width, 0, 1);
+                int64_t size = avio_size(cur_stream->ic->pb);
+                if (size <= 0) {
+                    break;
+                }
+                stream_seek(cur_stream, (int64_t)(size * x / cur_stream->width), 0, 1);
             } else {
                 int64_t ts;
                 frac = x / cur_stream->width;

@@ -145,7 +145,13 @@ typedef struct Decoder {
 typedef struct VideoState {
     SDL_Thread *read_tid;
     const AVInputFormat *iformat;
-    int abort_request;
+    volatile int abort_request;
+    SDL_AtomicInt read_thread_done;
+    SDL_AtomicInt audio_read_thread_done;
+    SDL_AtomicInt sub_read_thread_done;
+    volatile int abandoned;
+    /* Held while a reader claims something the rest of the process shares. */
+    SDL_Mutex *pipeline_mutex;
     int force_refresh;
     int paused;
     int last_paused;
@@ -397,6 +403,9 @@ extern int default_height;
 extern int cursor_hidden;
 extern int64_t cursor_last_shown;
 extern int fatal_error_pending;
+
+int pipeline_setup_begin(VideoState *is);
+void pipeline_setup_end(VideoState *is);
 
 av_noreturn void do_exit(VideoState *is);
 void toggle_pause(VideoState *is);

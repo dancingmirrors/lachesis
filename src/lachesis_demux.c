@@ -224,7 +224,7 @@ static int is_http_input(const char *fn) {
     return fn && (!strncmp(fn, "http://", 7) || !strncmp(fn, "https://", 8) || !strncmp(fn, "ytdl://", 7));
 }
 
-int stream_component_open(VideoState *is, int stream_index) {
+static int component_open(VideoState *is, int stream_index) {
     AVFormatContext *ic = is->ic;
     AVCodecContext *avctx;
     const AVCodec *codec;
@@ -451,6 +451,18 @@ fail:
 out:
     av_channel_layout_uninit(&ch_layout);
     av_dict_free(&opts);
+
+    return ret;
+}
+
+int stream_component_open(VideoState *is, int stream_index) {
+    int ret;
+
+    if (!pipeline_setup_begin(is)) {
+        return AVERROR_EXIT;
+    }
+    ret = component_open(is, stream_index);
+    pipeline_setup_end(is);
 
     return ret;
 }
@@ -703,6 +715,7 @@ static int audio_read_thread(void *arg) {
     int sent_eof = 0;
 
     if (!pkt) {
+        SDL_SetAtomicInt(&is->audio_read_thread_done, 1);
         return AVERROR(ENOMEM);
     }
 
@@ -762,6 +775,7 @@ static int audio_read_thread(void *arg) {
         }
     }
     av_packet_free(&pkt);
+    SDL_SetAtomicInt(&is->audio_read_thread_done, 1);
 
     return 0;
 }
@@ -777,6 +791,7 @@ int read_thread(void *arg) {
     int pkt_in_play_range = 0;
     const AVDictionaryEntry *t;
     SDL_Mutex *wait_mutex = SDL_CreateMutex();
+    AVDictionary *fmt_opts = NULL;
     int scan_all_pmts_set = 0;
     int extension_picky_set = 0;
     int64_t pkt_ts;
@@ -788,6 +803,10 @@ int read_thread(void *arg) {
 
     if (!wait_mutex) {
         ret = AVERROR(ENOMEM);
+        goto fail;
+    }
+    ret = av_dict_copy(&fmt_opts, format_opts, 0);
+    if (ret < 0) {
         goto fail;
     }
 
@@ -807,13 +826,13 @@ int read_thread(void *arg) {
     }
     ic->interrupt_callback.callback = decode_interrupt_cb;
     ic->interrupt_callback.opaque = is;
-    if (!av_dict_get(format_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE)) {
-        av_dict_set(&format_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
+    if (!av_dict_get(fmt_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE)) {
+        av_dict_set(&fmt_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
         scan_all_pmts_set = 1;
     }
     if (is_http_input(is->filename) &&
-        !av_dict_get(format_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE)) {
-        av_dict_set(&format_opts, "extension_picky", "0", AV_DICT_DONT_OVERWRITE);
+        !av_dict_get(fmt_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE)) {
+        av_dict_set(&fmt_opts, "extension_picky", "0", AV_DICT_DONT_OVERWRITE);
         extension_picky_set = 1;
     }
     if (is->archive_path && is->entry_name) {
@@ -850,7 +869,7 @@ int read_thread(void *arg) {
                     ic->pb = ytdl_chunked_pb(is->ytdl_vio);
                     ic->flags |= AVFMT_FLAG_CUSTOM_IO;
                 } else {
-                    set_ytdl_http_opts(&format_opts);
+                    set_ytdl_http_opts(&fmt_opts);
                 }
             } else if (is->abort_request) {
                 ret = -1;
@@ -880,13 +899,13 @@ int read_thread(void *arg) {
         if (!open_fmt && is->archive_avio && is->entry_name) {
             open_fmt = guess_archive_entry_format(is->entry_name);
         }
-        err = avformat_open_input(&ic, open_url, open_fmt, &format_opts);
+        err = avformat_open_input(&ic, open_url, open_fmt, &fmt_opts);
     }
     if (scan_all_pmts_set) {
-        av_dict_set(&format_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE);
+        av_dict_set(&fmt_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE);
     }
     if (extension_picky_set) {
-        av_dict_set(&format_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE);
+        av_dict_set(&fmt_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE);
     }
     if (err < 0) {
         print_error(is->filename, err);
@@ -894,7 +913,14 @@ int read_thread(void *arg) {
         ret = -1;
         goto fail;
     }
-    ret = check_avoptions(format_opts);
+    /* An open can outlive the abort request that was meant to cut it short, and
+     * everything below here starts claiming shared state.
+     */
+    if (is->abort_request) {
+        ret = -1;
+        goto fail;
+    }
+    ret = check_avoptions(fmt_opts);
     if (ret < 0) {
         goto fail;
     }
@@ -906,6 +932,10 @@ int read_thread(void *arg) {
             ret = -1;
             goto fail;
         }
+    }
+    if (is->abort_request) {
+        ret = -1;
+        goto fail;
     }
 
     is->is_still_image = detect_still_image(ic);
@@ -1023,7 +1053,7 @@ int read_thread(void *arg) {
 
     if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
         ret = stream_component_open(is, st_index[AVMEDIA_TYPE_VIDEO]);
-        if (ret < 0 && hwaccel && !no_hwaccel) {
+        if (ret < 0 && hwaccel && !no_hwaccel && !is->abort_request) {
             fatal_error_pending = 1;
             goto fail;
         }
@@ -1035,6 +1065,11 @@ int read_thread(void *arg) {
 
     if (!is->subtitle_st) {
         open_external_subtitle(is);
+    }
+
+    if (is->abort_request) {
+        ret = -1;
+        goto fail;
     }
 
     print_stream_info(is);
@@ -1062,11 +1097,14 @@ int read_thread(void *arg) {
                 if (aidx >= 0) {
                     is->audio_ic = aic;
                     AVFormatContext *save_ic = is->ic;
+                    int aret;
                     is->ic = aic;
-                    stream_component_open(is, aidx);
+                    aret = stream_component_open(is, aidx);
                     is->ic = save_ic;
-                    is->audio_read_tid = SDL_CreateThread(audio_read_thread,
-                                                          "audio_read", is);
+                    SDL_SetAtomicInt(&is->audio_read_thread_done, 0);
+                    is->audio_read_tid = aret < 0
+                        ? NULL
+                        : SDL_CreateThread(audio_read_thread, "audio_read", is);
                     if (!is->audio_read_tid) {
                         avformat_close_input(&is->audio_ic);
                         ytdl_chunked_free(&is->ytdl_aio);
@@ -1118,8 +1156,10 @@ int read_thread(void *arg) {
             int64_t seek_target = is->seek_pos;
             int64_t seek_min = is->seek_rel > 0 ? seek_target - is->seek_rel + 2 : INT64_MIN;
             int64_t seek_max = is->seek_rel < 0 ? seek_target - is->seek_rel - 2 : INT64_MAX;
-            /* XXX */
             ret = avformat_seek_file(is->ic, -1, seek_min, seek_target, seek_max, is->seek_flags);
+            if (is->abort_request) {
+                break;
+            }
             if (ret < 0) {
             } else {
                 if (is->audio_stream >= 0) {
@@ -1296,19 +1336,24 @@ int read_thread(void *arg) {
 
     ret = 0;
 fail:
-    if (ic && !is->ic) {
+    if (is->abandoned && is->ic) {
+        avformat_close_input(&is->ic);
+        ic = NULL;
+    }
+    if (!is->ic) {
         avformat_close_input(&ic);
-        /* ic->pb (archive_avio) is not freed by avformat_close_input with
-         * AVFMT_FLAG_CUSTOM_IO, so free it now since is->ic was never set.
+        /* ic->pb is not freed by avformat_close_input with AVFMT_FLAG_CUSTOM_IO,
+         * so free it now since is->ic was never set.
          */
         archive_entry_close_avio(is->archive_avio);
         is->archive_avio = NULL;
     }
-    /* If is->ic was set, stream_close() will call avformat_close_input and
-     * then archive_entry_close_avio via is->archive_avio.
+    /* If is->ic was set, stream_close() will call avformat_close_input and then
+     * free the archive I/O.
      */
+    av_dict_free(&fmt_opts);
     av_packet_free(&pkt);
-    if (ret != 0) {
+    if (ret != 0 && !is->abort_request) {
         SDL_Event event;
 
         SDL_zero(event);
@@ -1318,6 +1363,7 @@ fail:
         SDL_PushEvent(&event);
     }
     SDL_DestroyMutex(wait_mutex);
+    SDL_SetAtomicInt(&is->read_thread_done, 1);
 
     return 0;
 }

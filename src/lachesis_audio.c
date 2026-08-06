@@ -1050,6 +1050,11 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
         SDL_SetHint(SDL_HINT_AUDIO_DEVICE_SAMPLE_FRAMES, frames_str);
     }
 
+    if (audio_stream_dev) {
+        SDL_DestroyAudioStream(audio_stream_dev);
+        audio_stream_dev = NULL;
+        audio_dev = 0;
+    }
     audio_stream_dev = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK,
                                                  &wanted_spec,
                                                  sdl_audio_stream_callback, opaque);

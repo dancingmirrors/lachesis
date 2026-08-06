@@ -578,6 +578,7 @@ static int sub_read_thread(void *arg) {
     int sent_eof = 0;
 
     if (!pkt) {
+        SDL_SetAtomicInt(&is->sub_read_thread_done, 1);
         return AVERROR(ENOMEM);
     }
 
@@ -626,6 +627,7 @@ static int sub_read_thread(void *arg) {
         }
     }
     av_packet_free(&pkt);
+    SDL_SetAtomicInt(&is->sub_read_thread_done, 1);
 
     return 0;
 }
@@ -659,7 +661,7 @@ static int sub_is_regular_file(const char *path) {
 #endif
 }
 
-int open_external_subtitle(VideoState *is) {
+static int external_subtitle_open(VideoState *is) {
     static const char *const sub_exts[] = {
         "srt", "ass", "ssa", "vtt", "sub", NULL};
 
@@ -770,6 +772,7 @@ int open_external_subtitle(VideoState *is) {
         goto fail;
     }
 
+    SDL_SetAtomicInt(&is->sub_read_thread_done, 0);
     is->sub_read_tid = SDL_CreateThread(sub_read_thread, "sub_reader", is);
     if (!is->sub_read_tid) {
         decoder_abort(&is->subdec, &is->subpq);
@@ -786,6 +789,18 @@ int open_external_subtitle(VideoState *is) {
 
 fail:
     avformat_close_input(&sic);
+    return ret;
+}
+
+int open_external_subtitle(VideoState *is) {
+    int ret;
+
+    if (!pipeline_setup_begin(is)) {
+        return AVERROR_EXIT;
+    }
+    ret = external_subtitle_open(is);
+    pipeline_setup_end(is);
+
     return ret;
 }
 

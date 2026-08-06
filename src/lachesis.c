@@ -272,7 +272,6 @@ static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     q->size += pkt1.pkt->size + sizeof(pkt1);
     q->duration += pkt1.pkt->duration;
 
-    /* XXX */
     SDL_SignalCondition(q->cond);
 
     return 0;
@@ -963,16 +962,111 @@ static void stream_component_close(VideoState *is, int stream_index) {
     }
 }
 
-static void stream_close(VideoState *is) {
-    /* XXX */
-    is->abort_request = 1;
-    SDL_WaitThread(is->read_tid, NULL);
+#define READER_JOIN_TIMEOUT_US (2 * 1000 * 1000)
+
+static int reader_abandoned;
+
+#define PIPELINE_LOCK_TIMEOUT_US (2 * 1000 * 1000)
+#define ABANDON_LOCK_TIMEOUT_US (250 * 1000)
+
+static int pipeline_lock(VideoState *is, int64_t timeout_us) {
+    int64_t deadline = av_gettime_relative() + timeout_us;
+
+    while (!SDL_TryLockMutex(is->pipeline_mutex)) {
+        if (av_gettime_relative() >= deadline) {
+            return 0;
+        }
+        SDL_Delay(1);
+    }
+
+    return 1;
+}
+
+int pipeline_setup_begin(VideoState *is) {
+    if (!pipeline_lock(is, PIPELINE_LOCK_TIMEOUT_US)) {
+        return 0;
+    }
+    if (is->abort_request) {
+        SDL_UnlockMutex(is->pipeline_mutex);
+        return 0;
+    }
+
+    return 1;
+}
+
+void pipeline_setup_end(VideoState *is) {
+    SDL_UnlockMutex(is->pipeline_mutex);
+}
+
+static int reader_join(SDL_Thread **tid, SDL_AtomicInt *done, int64_t deadline) {
+    if (!*tid) {
+        return 1;
+    }
+    while (!SDL_GetAtomicInt(done)) {
+        if (av_gettime_relative() >= deadline) {
+            return 0;
+        }
+        SDL_Delay(1);
+    }
+    SDL_WaitThread(*tid, NULL);
+    *tid = NULL;
+
+    return 1;
+}
+
+static void stream_abandon(VideoState *is) {
+    is->abandoned = 1;
+
+    packet_queue_abort(&is->videoq);
+    packet_queue_abort(&is->audioq);
+    packet_queue_abort(&is->subtitleq);
+    SDL_SignalCondition(is->continue_read_thread);
+
+    if (pipeline_lock(is, ABANDON_LOCK_TIMEOUT_US)) {
+        if (is->audio_stream >= 0) {
+            decoder_abort(&is->auddec, &is->sampq);
+            audio_device_close();
+            decoder_destroy(&is->auddec);
+        }
+        if (is->video_stream >= 0) {
+            decoder_abort(&is->viddec, &is->pictq);
+            decoder_destroy(&is->viddec);
+        }
+        if (is->subtitle_stream >= 0 || is->sub_ic) {
+            decoder_abort(&is->subdec, &is->subpq);
+            decoder_destroy(&is->subdec);
+            subtitles_track_close();
+        }
+        SDL_UnlockMutex(is->pipeline_mutex);
+    } else {
+    }
+
+    if (is->read_tid) {
+        SDL_DetachThread(is->read_tid);
+    }
     if (is->audio_read_tid) {
-        SDL_WaitThread(is->audio_read_tid, NULL);
+        SDL_DetachThread(is->audio_read_tid);
     }
     if (is->sub_read_tid) {
-        SDL_WaitThread(is->sub_read_tid, NULL);
-        is->sub_read_tid = NULL;
+        SDL_DetachThread(is->sub_read_tid);
+    }
+    reader_abandoned = 1;
+}
+
+static void stream_close(VideoState *is) {
+    int64_t deadline;
+    int joined;
+
+    is->abort_request = 1;
+    SDL_SignalCondition(is->continue_read_thread);
+
+    deadline = av_gettime_relative() + READER_JOIN_TIMEOUT_US;
+    joined = reader_join(&is->read_tid, &is->read_thread_done, deadline);
+    joined &= reader_join(&is->audio_read_tid, &is->audio_read_thread_done, deadline);
+    joined &= reader_join(&is->sub_read_tid, &is->sub_read_thread_done, deadline);
+    if (!joined) {
+        stream_abandon(is);
+        return;
     }
 
     if (is->audio_stream >= 0) {
@@ -1015,6 +1109,7 @@ static void stream_close(VideoState *is) {
     frame_queue_destroy(&is->sampq);
     frame_queue_destroy(&is->subpq);
     SDL_DestroyCondition(is->continue_read_thread);
+    SDL_DestroyMutex(is->pipeline_mutex);
     sws_freeContext(is->sub_convert_ctx);
     av_free(is->filename);
     av_free(is->archive_path);
@@ -1033,6 +1128,10 @@ av_noreturn void do_exit(VideoState *is) {
     }
     if (window) {
         SDL_DestroyWindow(window);
+    }
+    if (reader_abandoned) {
+        terminal_restore_now();
+        _Exit(0);
     }
     uninit_opts();
     for (int i = 0; i < nb_vfilters; i++) {
@@ -2160,6 +2259,9 @@ static VideoState *stream_open(const char *filename,
     }
 
     if (!(is->continue_read_thread = SDL_CreateCondition())) {
+        goto fail;
+    }
+    if (!(is->pipeline_mutex = SDL_CreateMutex())) {
         goto fail;
     }
 
