@@ -1072,6 +1072,8 @@ int read_thread(void *arg) {
         goto fail;
     }
 
+    SDL_SetAtomicInt(&is->streams_selected, 1);
+
     print_stream_info(is);
 
     if (is->ytdl_audio_url && !audio_disable && is->audio_stream < 0) {

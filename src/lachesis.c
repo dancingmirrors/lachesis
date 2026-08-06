@@ -1171,23 +1171,84 @@ static float window_points_scale(void) {
     return density > 0.0f ? density : 1.0f;
 }
 
-static void init_default_window_size(void) {
-    SDL_Rect rect;
-    int max_width, max_height;
+static void window_size_for_content(int pic_width, int pic_height,
+                                    AVRational sar, int rotate, int *out_w,
+                                    int *out_h) {
+    AVRational aspect_ratio = sar;
+    int64_t width, height;
+    int64_t max_width = INT64_MAX, max_height = INT64_MAX;
     float density = window_points_scale();
     SDL_Rect display_bounds;
 
-    if (SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &display_bounds)) {
-        max_width = (int)(display_bounds.w * density * autofit_larger);
-        max_height = (int)(display_bounds.h * density * autofit_larger);
-    } else {
-        max_width = 1920;
-        max_height = 1080;
+    if (pic_width < 1) {
+        pic_width = 1;
     }
-    calculate_display_rect(&rect, 0, 0, max_width, max_height, 1920, 1080,
-                           (AVRational){1, 1});
-    default_width = (int)lrintf(rect.w / density);
-    default_height = (int)lrintf(rect.h / density);
+    if (pic_height < 1) {
+        pic_height = 1;
+    }
+
+    if (rotate == 90 || rotate == 270) {
+        int tmp = pic_width;
+        pic_width = pic_height;
+        pic_height = tmp;
+        if (aspect_ratio.num > 0 && aspect_ratio.den > 0) {
+            aspect_ratio = av_make_q(aspect_ratio.den, aspect_ratio.num);
+        }
+    }
+
+    if (av_cmp_q(aspect_ratio, av_make_q(0, 1)) <= 0) {
+        aspect_ratio = av_make_q(1, 1);
+    }
+
+    aspect_ratio = av_mul_q(aspect_ratio, av_make_q(pic_width, pic_height));
+
+    height = pic_height;
+    width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
+
+    if (SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &display_bounds)) {
+        max_width = (int64_t)(display_bounds.w * density * autofit_larger);
+        max_height = (int64_t)(display_bounds.h * density * autofit_larger);
+    }
+    if (width > max_width || height > max_height) {
+        height = max_height;
+        width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
+        if (width > max_width) {
+            width = max_width;
+            height = av_rescale(width, aspect_ratio.den, aspect_ratio.num) & ~1;
+        }
+    }
+
+    *out_w = FFMAX((int)lrintf((float)width / density), 1);
+    *out_h = FFMAX((int)lrintf((float)height / density), 1);
+}
+
+static int sized_for_width;
+static int sized_for_height;
+static AVRational sized_for_sar;
+
+static int window_rotate;
+
+static int content_size_is_current(const Frame *vp) {
+    return vp->width == sized_for_width && vp->height == sized_for_height &&
+        vp->sar.num == sized_for_sar.num && vp->sar.den == sized_for_sar.den;
+}
+
+static void note_content_size(const Frame *vp) {
+    sized_for_width = vp->width;
+    sized_for_height = vp->height;
+    sized_for_sar = vp->sar;
+}
+
+static void size_default_for_content(const Frame *vp) {
+    note_content_size(vp);
+    window_rotate = video_rotate;
+    window_size_for_content(vp->width, vp->height, vp->sar, window_rotate,
+                            &default_width, &default_height);
+}
+
+static void init_default_window_size(void) {
+    window_size_for_content(1920, 1080, (AVRational){1, 1}, 0, &default_width,
+                            &default_height);
 }
 
 void update_screen_size(void) {
@@ -1245,11 +1306,76 @@ static char *make_default_window_title(const char *path,
     return title;
 }
 
-static int video_open(VideoState *is) {
-    int w, h;
+/* Tracked so we don't hear 0x0 complaints. */
+static float pinned_aspect;
 
-    w = default_width;
-    h = default_height;
+static void pin_window_aspect(float aspect) {
+    if (pinned_aspect == aspect) {
+        return;
+    }
+    pinned_aspect = aspect;
+    SDL_SetWindowAspectRatio(window, aspect, aspect);
+}
+
+static void apply_window_geometry(int w, int h) {
+    float aspect = (w > 0 && h > 0 && !is_fullscreen &&
+                    video_rotate == window_rotate)
+        ? (float)w / (float)h
+        : 0.0f;
+
+    if (pinned_aspect != aspect) {
+        pin_window_aspect(0.0f);
+    }
+    SDL_SetWindowSize(window, w, h);
+    pin_window_aspect(aspect);
+    if (!SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED,
+                               SDL_WINDOWPOS_CENTERED)) {
+        SDL_ClearError();
+    }
+}
+
+static void video_follow_content_size(VideoState *is) {
+    int turned;
+    int w, h;
+    Frame *vp;
+
+    if (!is->video_st) {
+        return;
+    }
+
+    vp = frame_queue_peek_last(&is->pictq);
+    turned = video_rotate != window_rotate;
+    if (!turned && content_size_is_current(vp)) {
+        return;
+    }
+    note_content_size(vp);
+
+    window_size_for_content(vp->width, vp->height, vp->sar, window_rotate, &w,
+                            &h);
+
+    if (turned) {
+        pin_window_aspect(0.0f);
+    }
+
+    if (w == default_width && h == default_height) {
+        return;
+    }
+    default_width = w;
+    default_height = h;
+    if (is_fullscreen) {
+        return;
+    }
+    apply_window_geometry(default_width, default_height);
+    SDL_SyncWindow(window);
+    update_screen_size();
+    is->width = screen_width;
+    is->height = screen_height;
+    is->force_refresh = 1;
+}
+
+static int window_placed;
+
+static int video_open(VideoState *is) {
 
     if (!window_title && !window_title_auto) {
         const char *path = is->ytdl_source_url ? is->ytdl_source_url
@@ -1258,17 +1384,17 @@ static int video_open(VideoState *is) {
                                                       is->entry_name);
     }
 
-    SDL_SetWindowFullscreen(window, is_fullscreen);
-    SDL_SetWindowSize(window, w, h);
-    if (w > 0 && h > 0) {
-        float aspect = (float)w / (float)h;
-        SDL_SetWindowAspectRatio(window, aspect, aspect);
+    if (!window_placed) {
+        window_placed = 1;
+        if (is->video_st) {
+            size_default_for_content(frame_queue_peek_last(&is->pictq));
+        }
+        SDL_SetWindowFullscreen(window, is_fullscreen);
+        apply_window_geometry(default_width, default_height);
+        SDL_ShowWindow(window);
+    } else {
+        video_follow_content_size(is);
     }
-    if (!SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED,
-                               SDL_WINDOWPOS_CENTERED)) {
-        SDL_ClearError();
-    }
-    SDL_ShowWindow(window);
     SDL_SyncWindow(window);
     present_update_display_mode();
 
@@ -1282,8 +1408,8 @@ static int video_open(VideoState *is) {
         is->width = screen_width;
         is->height = screen_height;
     } else {
-        is->width = w;
-        is->height = h;
+        is->width = default_width;
+        is->height = default_height;
     }
 
     return 0;
@@ -1297,6 +1423,8 @@ static void video_display(VideoState *is) {
     if (!is->window_opened) {
         is->window_opened = 1;
         video_open(is);
+    } else {
+        video_follow_content_size(is);
     }
 
     if (window && (SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED)) {
@@ -1635,7 +1763,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
         check_external_clock_speed(is);
     }
 
-    if (!display_disable && !is->video_st) {
+    if (!display_disable && !is->video_st &&
+        SDL_GetAtomicInt(&is->streams_selected)) {
         double now = av_gettime_relative() / 1000000.0;
         int want = osd_active(is);
 
@@ -2427,6 +2556,8 @@ static void open_renderer(enum RendererApi api) {
     }
     params.opt = dict;
 
+    pinned_aspect = 0.0f;
+    window_placed = 0;
     ret = renderer_open(&params, &window, &renderer, why, sizeof(why));
     av_dict_free(&dict);
     av_free(title);
@@ -2592,13 +2723,12 @@ the_end:
 
 void toggle_fullscreen(VideoState *is) {
     is_fullscreen = !is_fullscreen;
+    if (is_fullscreen) {
+        pin_window_aspect(0.0f);
+    }
     SDL_SetWindowFullscreen(window, is_fullscreen);
     if (!is_fullscreen) {
-        SDL_SetWindowSize(window, default_width, default_height);
-        if (!SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED,
-                                   SDL_WINDOWPOS_CENTERED)) {
-            SDL_ClearError();
-        }
+        apply_window_geometry(default_width, default_height);
         SDL_SyncWindow(window);
         update_screen_size();
         is->width = screen_width;

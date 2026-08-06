@@ -275,6 +275,7 @@ typedef struct VideoState {
     int diag_first_apkt_logged;
     int64_t diag_last_pace_us;
     int is_still_image;
+    SDL_AtomicInt streams_selected;
     double audio_only_last_draw;
     int audio_only_clean;
     int width, height, xleft, ytop;
