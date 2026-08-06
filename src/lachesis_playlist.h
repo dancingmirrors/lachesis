@@ -45,6 +45,8 @@ void playlist_reverse(void);
 
 int playlist_entry_is_reachable(int pos);
 
+void playlist_drop_character_devices(int format_forced);
+
 void playlist_warn_unsafe_disabled(const char *path, int open_failed);
 
 const char *playlist_protocol_whitelist(const char *url);

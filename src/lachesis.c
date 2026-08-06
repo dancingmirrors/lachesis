@@ -2835,6 +2835,8 @@ int main(int argc, char **argv) {
     av_freep(&pending_dirs);
     n_pending_dirs = 0;
 
+    playlist_drop_character_devices(file_iformat != NULL);
+
     if (playlist_size == 0) {
         opt_version(NULL, NULL, NULL);
         playlist_report_filtered();

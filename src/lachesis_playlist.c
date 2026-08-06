@@ -313,6 +313,34 @@ int playlist_entry_is_reachable(int pos) {
     return 0;
 }
 
+void playlist_drop_character_devices(int format_forced) {
+    if (format_forced) {
+        return;
+    }
+
+    for (int i = playlist_size - 1; i >= 0; i--) {
+        const PlaylistEntry *e = &playlist_entries[i];
+        const char *path = e->archive_path ? e->archive_path : e->display_path;
+        const char *proto;
+        struct stat st;
+
+        if (!path) {
+            continue;
+        }
+        proto = avio_find_protocol_name(path);
+        if (!proto || strcmp(proto, "file")) {
+            continue;
+        }
+        if (!strncmp(path, "file:", 5)) {
+            path += 5;
+        }
+        if (stat(path, &st) != 0 || !S_ISCHR(st.st_mode)) {
+            continue;
+        }
+        playlist_remove_at(i);
+    }
+}
+
 typedef struct PlaylistParser PlaylistParser;
 typedef int (*PlaylistSink)(PlaylistParser *p, const char *location);
 
