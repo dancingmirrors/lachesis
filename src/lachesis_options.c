@@ -73,6 +73,7 @@ int64_t start_time = AV_NOPTS_VALUE;
 int64_t play_duration = AV_NOPTS_VALUE;
 int keep_open;
 int allow_unsafe;
+int all_files;
 int shuffle;
 int reverse_playlist;
 int start_paused;
@@ -247,6 +248,7 @@ const OptionDef options[] = {
     {"shader-cache-dir", OPT_TYPE_STRING, 0, {&shader_cache_dir}, "directory for the shader cache", "dir"},
     {"keep-open", OPT_TYPE_BOOL, 0, {&keep_open}, "keep the window open at the end of the playlist", ""},
     {"allow-unsafe", OPT_TYPE_BOOL, OPT_CMDLINE_ONLY, {&allow_unsafe}, "expand unsafe entries into a playlist (command line only)"},
+    {"all-files", OPT_TYPE_BOOL, 0, {&all_files}, "try to play any file in an archive or directory"},
     {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order", ""},
     {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order", ""},
     {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry", ""},
@@ -831,4 +833,23 @@ void parse_allow_unsafe(int argc, char **argv, const OptionDef *defs) {
         return;
     }
     allow_unsafe = 1;
+}
+
+void parse_all_files(int argc, char **argv, const OptionDef *defs) {
+    const char *value;
+    int idx = locate_option(argc, argv, defs, "all-files", &value);
+    if (!idx) {
+        return;
+    }
+    const char *name = argv[idx];
+    while (*name == '-') {
+        name++;
+    }
+    if (!strncmp(name, "no", 2)) {
+        return;
+    }
+    if (value && config_parse_bool(value) == 0) {
+        return;
+    }
+    all_files = 1;
 }

@@ -37,6 +37,7 @@
 #include <unistd.h>
 #endif
 
+#include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 #include <libavutil/avstring.h>
 #include <libavutil/dict.h>
@@ -1142,6 +1143,85 @@ static int is_supported_playlist(const char *path) {
     return playlist_format_for(path) != NULL;
 }
 
+static const char *const media_ext =
+    "3gp2,3gpp,3gpp2,asf,divx,dvr-ms,evo,ivf,m1v,m2p,m2t,m2ts,m2v,m4r,mod,"
+    "mp2v,mpe,mpeg,mpg,mpv,mpv2,mqv,mts,mxf,ogm,ogv,qt,rm,rmvb,swf,tod,tp,"
+    "trp,ts,vob,vro,weba,wmv,wtv,"
+    "3ga,adt,adts,aif,aifc,aiff,alac,amr,ape,au,awb,caf,dff,dsf,dtsma,m1a,"
+    "mp+,mpc,mpp,oga,opus,ra,rf64,shn,snd,sox,spx,tak,truehd,tta,voc,w64,"
+    "wav,wma,wv,"
+    "apng,avif,avifs,bmp,dds,dpx,exr,hdr,heic,heif,hif,ico,j2c,jfif,jls,jp2,"
+    "jpe,jpeg,jpf,jpg,jpm,jpx,jxl,pam,pbm,pcx,pfm,pgm,pgmyuv,phm,png,pnm,"
+    "ppm,psd,qoi,ras,sgi,sun,sunras,tga,tif,tiff,wbmp,webp,xbm,xpm,xwd";
+
+static const char *const non_media_ext =
+    "ans,aqt,art,asc,ass,diz,ice,idx,jss,lrc,mpl2,nfo,pjs,rt,sami,sbg,scc,"
+    "smi,srt,ssa,stl,sub,sup,ttml,txt,vt,vtt,webvtt";
+
+static const char *const partial_ext =
+    "aria2,crdownload,download,opdownload,part,partial,tmp,ytdl";
+
+static int nb_skipped_non_media;
+
+#define MEDIA_EXT_MAX 16
+
+static int is_media_file(const char *path) {
+    const char *name = path;
+    const char *ext;
+    void *opaque = NULL;
+    const AVInputFormat *fmt;
+    char probe[MEDIA_EXT_MAX + 3];
+    size_t len;
+
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            name = p + 1;
+        }
+    }
+    /* No dot is not the same as no extension. */
+    ext = strrchr(name, '.');
+    if (!ext) {
+        return 1;
+    }
+    ext++;
+    len = strlen(ext);
+
+    if (av_match_name(ext, partial_ext)) {
+        const char *end = ext - 1;
+
+        ext = end;
+        while (ext > name && ext[-1] != '.') {
+            ext--;
+        }
+        if (ext == name) {
+            return 0;
+        }
+        len = (size_t)(end - ext);
+    }
+    if (len == 0 || len > MEDIA_EXT_MAX) {
+        return 0;
+    }
+    probe[0] = 'x';
+    probe[1] = '.';
+    memcpy(probe + 2, ext, len);
+    probe[len + 2] = '\0';
+
+    if (av_match_ext(probe, non_media_ext)) {
+        return 0;
+    }
+    if (av_match_ext(probe, media_ext) || is_supported_archive(probe) ||
+        is_supported_playlist(probe)) {
+        return 1;
+    }
+    while ((fmt = av_demuxer_iterate(&opaque))) {
+        if (fmt->extensions && av_match_ext(probe, fmt->extensions)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 void playlist_warn_unsafe_disabled(const char *path, int open_failed) {
     static int warned;
     const PlaylistFormat *fmt = playlist_format_for(path);
@@ -1422,7 +1502,7 @@ static int playlist_add_archive_playlist(const char *archive_path,
     return ret;
 }
 
-static int playlist_add_archive(const char *archive_path) {
+static int playlist_add_archive(const char *archive_path, int filter) {
     char **names = NULL;
     int nb_names = 0;
     int added = 0;
@@ -1447,6 +1527,10 @@ static int playlist_add_archive(const char *archive_path) {
 
     if (!added) {
         for (int i = 0; i < nb_names; i++) {
+            if (filter && !is_media_file(names[i])) {
+                nb_skipped_non_media++;
+                continue;
+            }
             playlist_add_archive_entry(archive_path, names[i]);
         }
     }
@@ -1455,8 +1539,17 @@ static int playlist_add_archive(const char *archive_path) {
     return 0;
 }
 
+void playlist_report_filtered(void) {
+    if (!nb_skipped_non_media) {
+        return;
+    }
+    log_warn("Skipped %d file%s that did not look like media.\n",
+             nb_skipped_non_media, nb_skipped_non_media == 1 ? "" : "s");
+    nb_skipped_non_media = 0;
+}
+
 int playlist_add_input(const char *path) {
-    if (is_supported_archive(path) && playlist_add_archive(path) == 0) {
+    if (is_supported_archive(path) && playlist_add_archive(path, !all_files) == 0) {
         return 0;
     }
     if (allow_unsafe && is_supported_playlist(path) &&
@@ -1525,11 +1618,17 @@ void playlist_add_directory(const char *dir_path) {
         if (!full) {
             continue;
         }
-        if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (stat(full, &st) != 0 || !S_ISREG(st.st_mode)) {
             av_free(full);
             continue;
         }
-        if (!is_supported_archive(full) || playlist_add_archive(full) != 0) {
+        if (!all_files && !is_media_file(names[i])) {
+            nb_skipped_non_media++;
+            av_free(full);
+            continue;
+        }
+        if (!is_supported_archive(full) ||
+            playlist_add_archive(full, !all_files) != 0) {
             playlist_warn_unsafe_disabled(full, 0);
             playlist_add_file(full, 0);
         }

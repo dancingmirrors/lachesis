@@ -2780,6 +2780,7 @@ int main(int argc, char **argv) {
     parse_loglevel(argc, argv, options);
     parse_quiet(argc, argv, options);
     parse_allow_unsafe(argc, argv, options);
+    parse_all_files(argc, argv, options);
 
 #if LACHESIS_HAVE_AVDEVICE
     avdevice_register_all();
@@ -2831,8 +2832,10 @@ int main(int argc, char **argv) {
 
     if (playlist_size == 0) {
         opt_version(NULL, NULL, NULL);
+        playlist_report_filtered();
         fatal_quit("An input file must be specified.\n");
     }
+    playlist_report_filtered();
     if (reverse_playlist) {
         playlist_reverse();
     }

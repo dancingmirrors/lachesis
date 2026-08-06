@@ -37,6 +37,7 @@ const PlaylistEntry *playlist_get(int pos);
 int playlist_add_input(const char *path);
 
 void playlist_add_directory(const char *dir_path);
+void playlist_report_filtered(void);
 void playlist_remove_at(int pos);
 void playlist_clear(void);
 void playlist_shuffle(void);
