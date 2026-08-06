@@ -1694,6 +1694,15 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     vp->pos = pos;
     vp->serial = serial;
 
+    if (serial != is->pictq_last_serial) {
+        if (!isnan(pts)) {
+            is->audio_catchup_startup = is->pictq_last_serial == -1;
+            is->audio_catchup_pts = pts;
+            is->audio_catchup_serial = serial;
+        }
+        is->pictq_last_serial = serial;
+    }
+
     av_frame_move_ref(vp->frame, src_frame);
     frame_queue_push(&is->pictq);
 
@@ -2158,6 +2167,10 @@ static VideoState *stream_open(const char *filename,
     init_clock(&is->audclk, &is->audioq.serial);
     init_clock(&is->extclk, &is->extclk.serial);
     is->audio_clock_serial = -1;
+    is->audio_catchup_pts = NAN;
+    is->audio_catchup_serial = -1;
+    is->audio_catchup_checked_serial = -1;
+    is->pictq_last_serial = -1;
     is->last_av_diff = NAN;
     if (video_background) {
         if (!strcmp(video_background, "none")) {

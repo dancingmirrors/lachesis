@@ -278,6 +278,11 @@ typedef struct VideoState {
     int begin_paused;
     int audio_start_pending;
     int64_t audio_start_pending_since;
+    double audio_catchup_pts;
+    int audio_catchup_serial;
+    int audio_catchup_checked_serial;
+    int audio_catchup_startup;
+    int pictq_last_serial;
 
     int vfilter_idx;
     int oversize_warned_w, oversize_warned_h;

@@ -40,6 +40,7 @@
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/intreadwrite.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
@@ -514,6 +515,132 @@ static int detect_still_image(const AVFormatContext *ic) {
     return 0;
 }
 
+static const uint8_t asf_simple_index_guid[16] = {
+    0x90, 0x08, 0x00, 0x33, 0xB1, 0xE5, 0xCF, 0x11,
+    0x89, 0xF4, 0x00, 0xA0, 0xC9, 0x03, 0x49, 0xCB};
+static const uint8_t asf_file_props_guid[16] = {
+    0xA1, 0xDC, 0xAB, 0x8C, 0x47, 0xA9, 0xCF, 0x11,
+    0x8E, 0xE4, 0x00, 0xC0, 0x0C, 0x20, 0x53, 0x65};
+
+#define ASF_IDX_TAIL_MAX (1 << 20)
+#define ASF_IDX_HEAD_MAX (64 << 10)
+#define ASF_IDX_MAX_ADD 100000
+#define ASF_IDX_COVERAGE 0.93
+
+static int asf_find_guid(const uint8_t *buf, int size, const uint8_t *guid) {
+    for (int i = 0; i + 16 <= size; i++) {
+        if (!memcmp(buf + i, guid, 16)) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static void asf_extend_truncated_index(AVFormatContext *ic) {
+    int64_t preroll_ms = 0;
+    int injected = 0;
+    uint8_t *buf;
+
+    if (strcmp(ic->iformat->name, "asf") ||
+        !ic->pb || !(ic->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        ic->duration <= 0 || ic->packet_size <= 0) {
+        return;
+    }
+
+    int dsi = av_find_default_stream_index(ic);
+    if (dsi < 0) {
+        return;
+    }
+    AVStream *st = ic->streams[dsi];
+
+    if (avformat_seek_file(ic, -1, INT64_MIN, 0, INT64_MAX, 0) < 0) {
+        return;
+    }
+    int64_t data_offset = avio_tell(ic->pb);
+    int64_t fsize = avio_size(ic->pb);
+    if (data_offset <= 0 || fsize <= data_offset) {
+        return;
+    }
+
+    buf = av_malloc(ASF_IDX_TAIL_MAX);
+    if (!buf) {
+        return;
+    }
+
+    int hsize = (int)FFMIN(ASF_IDX_HEAD_MAX, data_offset);
+    if (avio_seek(ic->pb, 0, SEEK_SET) >= 0 &&
+        avio_read(ic->pb, buf, hsize) == hsize) {
+        int off = asf_find_guid(buf, hsize, asf_file_props_guid);
+        if (off >= 0 && off + 88 <= hsize) {
+            preroll_ms = AV_RL64(buf + off + 80);
+        }
+        if (preroll_ms < 0 || preroll_ms > 60000) {
+            preroll_ms = 0;
+        }
+    }
+
+    int tsize = (int)FFMIN(ASF_IDX_TAIL_MAX, fsize - data_offset);
+    if (avio_seek(ic->pb, fsize - tsize, SEEK_SET) < 0 ||
+        avio_read(ic->pb, buf, tsize) != tsize) {
+        goto out;
+    }
+
+    int off = asf_find_guid(buf, tsize, asf_simple_index_guid);
+    if (off < 0 || off + 56 > tsize) {
+        goto out;
+    }
+
+    int64_t itime = AV_RL64(buf + off + 40);
+    uint32_t ict = AV_RL32(buf + off + 52);
+    int64_t itime_ms = itime / 10000;
+    if (itime_ms <= 0 || ict < 8 || off + 56 + (int64_t)ict * 6 > tsize) {
+        goto out;
+    }
+
+    int64_t dur_ms = av_rescale(ic->duration, 1000, AV_TIME_BASE);
+    if ((int64_t)ict * itime_ms >= (int64_t)(dur_ms * ASF_IDX_COVERAGE)) {
+        goto out;
+    }
+
+    const uint8_t *ent = buf + off + 56;
+    uint32_t pkt_first = AV_RL32(ent);
+    uint32_t pkt_last = AV_RL32(ent + (int64_t)(ict - 1) * 6);
+    if (pkt_last <= pkt_first) {
+        goto out;
+    }
+    double pkts_per_entry = (double)(pkt_last - pkt_first) / (ict - 1);
+    for (uint32_t k = ict / 4; k < ict; k += ict / 4) {
+        double expect = pkt_first + pkts_per_entry * k;
+        double got = AV_RL32(ent + (int64_t)k * 6);
+        double tol = FFMAX(pkts_per_entry * 8, (double)(pkt_last - pkt_first) * 0.05);
+        if (got < expect - tol || got > expect + tol) {
+            goto out;
+        }
+    }
+
+    int64_t last_ts_ms = (int64_t)(ict - 1) * itime_ms - preroll_ms;
+    int64_t max_pkt = (fsize - data_offset) / ic->packet_size - 1;
+
+    for (int64_t ts = last_ts_ms + itime_ms;
+         ts <= dur_ms && injected < ASF_IDX_MAX_ADD; ts += itime_ms) {
+        int64_t pkt = pkt_last +
+            (int64_t)((double)(ts - last_ts_ms) / itime_ms * pkts_per_entry);
+        if (pkt > max_pkt) {
+            pkt = max_pkt;
+        }
+        int64_t pos = data_offset + pkt * ic->packet_size;
+        int64_t ts_st = av_rescale_q(ts, (AVRational){1, 1000}, st->time_base);
+        if (av_add_index_entry(st, pos, ts_st, ic->packet_size, 0,
+                               AVINDEX_KEYFRAME) >= 0) {
+            injected++;
+        }
+    }
+out:
+    av_free(buf);
+    avformat_seek_file(ic, -1, INT64_MIN, 0, INT64_MAX, 0);
+}
+
 static const AVInputFormat *guess_archive_entry_format(const char *entry_name) {
     const char *dot = strrchr(entry_name, '.');
     if (!dot) {
@@ -806,6 +933,10 @@ int read_thread(void *arg) {
         } else {
             window_title_auto = av_asprintf("%s - %s", program_name, t->value);
         }
+    }
+
+    if (!is->archive_avio && !is->ytdl_source_url && !is_http_input(is->filename)) {
+        asf_extend_truncated_index(ic);
     }
 
     if (start_time != AV_NOPTS_VALUE) {

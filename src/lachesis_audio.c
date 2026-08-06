@@ -785,6 +785,9 @@ static int synchronize_audio(VideoState *is, int nb_samples) {
     return wanted_nb_samples;
 }
 
+#define AUDIO_CATCHUP_SEEK_GAP 0.25
+#define AUDIO_CATCHUP_START_GAP 2.0
+
 static int audio_decode_frame(VideoState *is) {
     int data_size, resampled_data_size;
     av_unused double audio_clock0;
@@ -795,7 +798,7 @@ static int audio_decode_frame(VideoState *is) {
         return -1;
     }
 
-    do {
+    for (;;) {
 #if defined(_WIN32)
         while (frame_queue_nb_remaining(&is->sampq) == 0) {
             if ((av_gettime_relative() - audio_callback_time) > 1000000LL * is->audio_hw_buf_size / is->audio_tgt.bytes_per_sec / 2) {
@@ -808,7 +811,29 @@ static int audio_decode_frame(VideoState *is) {
             return -1;
         }
         frame_queue_next(&is->sampq);
-    } while (af->serial != is->audioq.serial);
+        if (af->serial != is->audioq.serial) {
+            continue;
+        }
+        if (af->serial == is->audio_catchup_serial &&
+            !isnan(is->audio_catchup_pts) && !isnan(af->pts)) {
+            if (is->audio_catchup_checked_serial != af->serial) {
+                is->audio_catchup_checked_serial = af->serial;
+                double gap = is->audio_catchup_pts - af->pts;
+                double need = is->audio_catchup_startup ? AUDIO_CATCHUP_START_GAP
+                                                        : AUDIO_CATCHUP_SEEK_GAP;
+                if (gap <= need) {
+                    is->audio_catchup_serial = -1;
+                    break;
+                }
+            }
+            if (af->pts + (double)af->frame->nb_samples / af->frame->sample_rate <
+                is->audio_catchup_pts) {
+                continue;
+            }
+            is->audio_catchup_serial = -1;
+        }
+        break;
+    }
 
     data_size = av_samples_get_buffer_size(NULL, af->frame->ch_layout.nb_channels,
                                            af->frame->nb_samples,
