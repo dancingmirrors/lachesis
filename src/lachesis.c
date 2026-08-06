@@ -2409,7 +2409,12 @@ void stream_cycle_channel(VideoState *is, int codec_type) {
     int old_index;
     AVStream *st;
     AVProgram *p = NULL;
-    int nb_streams = is->ic->nb_streams;
+    int nb_streams;
+
+    if (!ic) {
+        return;
+    }
+    nb_streams = ic->nb_streams;
 
     if (codec_type == AVMEDIA_TYPE_VIDEO) {
         start_index = is->last_video_stream;

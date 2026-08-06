@@ -172,6 +172,15 @@ void event_loop(VideoState **pis) {
         }
         switch (event.type) {
         case SDL_EVENT_KEY_DOWN:
+            /* XXX: Finish me. */
+            if (event.key.mod & SDL_KMOD_CTRL) {
+                if (event.key.key == SDLK_C) {
+                    do_exit(cur_stream);
+                }
+                if (event.key.key != SDLK_S) {
+                    break;
+                }
+            }
             if (delete_confirm_pending) {
                 delete_confirm_pending = 0;
                 osd_hide_delete_prompt();
