@@ -235,6 +235,7 @@ void event_loop(VideoState **pis) {
                 do_exit(cur_stream);
                 break;
             }
+            /* XXX */
             if (!cur_stream->width) {
                 continue;
             }

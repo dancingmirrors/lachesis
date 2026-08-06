@@ -1205,7 +1205,9 @@ static void window_size_for_content(int pic_width, int pic_height,
     height = pic_height;
     width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
 
-    if (SDL_GetDisplayBounds(SDL_GetPrimaryDisplay(), &display_bounds)) {
+    if (SDL_GetDisplayBounds(window ? SDL_GetDisplayForWindow(window)
+                                    : SDL_GetPrimaryDisplay(),
+                             &display_bounds)) {
         max_width = (int64_t)(display_bounds.w * density * autofit_larger);
         max_height = (int64_t)(display_bounds.h * density * autofit_larger);
     }
@@ -1227,6 +1229,8 @@ static int sized_for_height;
 static AVRational sized_for_sar;
 
 static int window_rotate;
+
+static int noted_rotate;
 
 static int content_size_is_current(const Frame *vp) {
     return vp->width == sized_for_width && vp->height == sized_for_height &&
@@ -1345,9 +1349,10 @@ static void video_follow_content_size(VideoState *is) {
 
     vp = frame_queue_peek_last(&is->pictq);
     turned = video_rotate != window_rotate;
-    if (!turned && content_size_is_current(vp)) {
+    if (video_rotate == noted_rotate && content_size_is_current(vp)) {
         return;
     }
+    noted_rotate = video_rotate;
     note_content_size(vp);
 
     window_size_for_content(vp->width, vp->height, vp->sar, window_rotate, &w,
@@ -1370,7 +1375,6 @@ static void video_follow_content_size(VideoState *is) {
     update_screen_size();
     is->width = screen_width;
     is->height = screen_height;
-    is->force_refresh = 1;
 }
 
 static int window_placed;
@@ -1386,6 +1390,7 @@ static int video_open(VideoState *is) {
 
     if (!window_placed) {
         window_placed = 1;
+        window_rotate = noted_rotate = video_rotate;
         if (is->video_st) {
             size_default_for_content(frame_queue_peek_last(&is->pictq));
         }
@@ -1763,8 +1768,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
         check_external_clock_speed(is);
     }
 
-    if (!display_disable && !is->video_st &&
-        SDL_GetAtomicInt(&is->streams_selected)) {
+    if (!display_disable && SDL_GetAtomicInt(&is->streams_selected) &&
+        !is->video_st) {
         double now = av_gettime_relative() / 1000000.0;
         int want = osd_active(is);
 
@@ -2347,6 +2352,11 @@ static VideoState *stream_open(const char *filename,
         return NULL;
     }
     is->vfilter_idx = startup_vfilter_idx;
+    /* XXX */
+    if (screen_width > 0 && screen_height > 0) {
+        is->width = screen_width;
+        is->height = screen_height;
+    }
     is->last_render_serial = -1;
     is->last_video_stream = is->video_stream = -1;
     is->last_audio_stream = is->audio_stream = -1;
@@ -2763,7 +2773,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             is->audio_start_pending = 0;
             audio_device_resume();
         }
-        if (!is->paused || is->force_refresh) {
+        if (!is->paused || is->force_refresh || !is->window_opened) {
             video_refresh(is, &remaining_time);
         }
         {
