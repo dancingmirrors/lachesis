@@ -67,6 +67,20 @@ static int seeking_by_bytes(VideoState *is) {
     return SDL_GetAtomicInt(&is->seek_by_bytes) > 0;
 }
 
+static int refuse_without_video(VideoState *is) {
+    if (is->video_st) {
+        return 0;
+    }
+    osd_show_message("No video track");
+    is->force_refresh = 1;
+
+    return 1;
+}
+
+static int sbs360_active(VideoState *is) {
+    return enable_360sbs && !refuse_without_video(is);
+}
+
 static void seek_chapter(VideoState *is, int incr) {
     int64_t pos = effective_playhead(is) * AV_TIME_BASE;
     int i;
@@ -241,6 +255,13 @@ void event_loop(VideoState **pis) {
             }
             if ((event.key.mod & SDL_KMOD_ALT) && (event.key.mod & SDL_KMOD_SHIFT)) {
                 SDL_Scancode sc = event.key.scancode;
+                if ((sc == SDL_SCANCODE_EQUALS || sc == SDL_SCANCODE_MINUS ||
+                     sc == SDL_SCANCODE_LEFT || sc == SDL_SCANCODE_RIGHT ||
+                     sc == SDL_SCANCODE_UP || sc == SDL_SCANCODE_DOWN ||
+                     sc == SDL_SCANCODE_BACKSPACE) &&
+                    refuse_without_video(cur_stream)) {
+                    break;
+                }
                 if (sc == SDL_SCANCODE_EQUALS) {
                     display_scale = FFMIN(display_scale + 0.1f, 4.0f);
                     cur_stream->force_refresh = 1;
@@ -341,6 +362,9 @@ void event_loop(VideoState **pis) {
                     "bob",
                 };
 
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
                 deinterlace = (deinterlace + 1) % DEINTERLACE_MODE_COUNT;
                 osd_show_message("Deinterlace: %s", deint_names[deinterlace]);
                 cur_stream->force_refresh = 1;
@@ -348,6 +372,9 @@ void event_loop(VideoState **pis) {
             }
             case SDLK_R:
             case SDLK_KP_9:
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
                 video_rotate = (video_rotate + 90) % 360;
                 osd_show_message("Rotate: %d\xc2\xb0", video_rotate);
                 cur_stream->force_refresh = 1;
@@ -425,27 +452,36 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_3:
-                equalizer_adjust(EQ_BRIGHTNESS, -1);
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_4:
-                equalizer_adjust(EQ_BRIGHTNESS, 1);
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_5:
-                equalizer_adjust(EQ_GAMMA, -1);
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_6:
-                equalizer_adjust(EQ_GAMMA, 1);
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_7:
-                equalizer_adjust(EQ_CONTRAST, -1);
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_8:
-                equalizer_adjust(EQ_CONTRAST, 1);
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
+                switch (event.key.key) {
+                case SDLK_3:
+                    equalizer_adjust(EQ_BRIGHTNESS, -1);
+                    break;
+                case SDLK_4:
+                    equalizer_adjust(EQ_BRIGHTNESS, 1);
+                    break;
+                case SDLK_5:
+                    equalizer_adjust(EQ_GAMMA, -1);
+                    break;
+                case SDLK_6:
+                    equalizer_adjust(EQ_GAMMA, 1);
+                    break;
+                case SDLK_7:
+                    equalizer_adjust(EQ_CONTRAST, -1);
+                    break;
+                case SDLK_8:
+                    equalizer_adjust(EQ_CONTRAST, 1);
+                    break;
+                default:
+                    break;
+                }
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_I:
@@ -454,17 +490,17 @@ void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                     break;
                 }
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_view_move(cur_stream, 0.0f, 5.0f);
                 }
                 break;
             case SDLK_K:
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_view_move(cur_stream, 0.0f, -5.0f);
                 }
                 break;
             case SDLK_J:
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_view_move(cur_stream, -5.0f, 0.0f);
                 }
                 break;
@@ -472,12 +508,12 @@ void event_loop(VideoState **pis) {
                 if (event.key.mod & SDL_KMOD_SHIFT) {
                     ab_loop_toggle(cur_stream);
                     cur_stream->force_refresh = 1;
-                } else if (enable_360sbs) {
+                } else if (sbs360_active(cur_stream)) {
                     sbs360_view_move(cur_stream, 5.0f, 0.0f);
                 }
                 break;
             case SDLK_U:
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_roll -= 90.0f;
                     if (sbs360_roll <= -180.0f) {
                         sbs360_roll += 360.0f;
@@ -487,7 +523,7 @@ void event_loop(VideoState **pis) {
                 }
                 break;
             case SDLK_O:
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_roll += 90.0f;
                     if (sbs360_roll > 180.0f) {
                         sbs360_roll -= 360.0f;
@@ -506,19 +542,22 @@ void event_loop(VideoState **pis) {
                 break;
             case SDLK_EQUALS:
             case SDLK_KP_PLUS:
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_hfov = FFMAX(sbs360_hfov - 10.0f, 10.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
             case SDLK_MINUS:
             case SDLK_KP_MINUS:
-                if (enable_360sbs) {
+                if (sbs360_active(cur_stream)) {
                     sbs360_hfov = FFMIN(sbs360_hfov + 10.0f, 180.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
             case SDLK_KP_3:
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
                 if (!enable_360sbs) {
                     enable_360sbs = 1;
                     view360_layout = VIEW360_LAYOUT_FULL;
