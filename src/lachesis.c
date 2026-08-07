@@ -1255,6 +1255,16 @@ static void init_default_window_size(void) {
                             &default_height);
 }
 
+int note_window_pixel_size(int w, int h) {
+    if (w <= 0 || h <= 0) {
+        return 0;
+    }
+    screen_width = w;
+    screen_height = h;
+
+    return 1;
+}
+
 void update_screen_size(void) {
     int w = 0, h = 0;
 
@@ -1262,10 +1272,17 @@ void update_screen_size(void) {
         return;
     }
     SDL_GetWindowSizeInPixels(window, &w, &h);
-    if (w > 0 && h > 0) {
-        screen_width = w;
-        screen_height = h;
+    note_window_pixel_size(w, h);
+}
+
+int video_adopt_window_size(VideoState *is) {
+    if (screen_width <= 0 || screen_height <= 0) {
+        return 0;
     }
+    is->width = screen_width;
+    is->height = screen_height;
+
+    return 1;
 }
 
 float window_pixel_density(void) {
@@ -1373,8 +1390,7 @@ static void video_follow_content_size(VideoState *is) {
     apply_window_geometry(default_width, default_height);
     SDL_SyncWindow(window);
     update_screen_size();
-    is->width = screen_width;
-    is->height = screen_height;
+    video_adopt_window_size(is);
 }
 
 static int window_placed;
@@ -1409,12 +1425,11 @@ static int video_open(VideoState *is) {
     }
 
     update_screen_size();
-    if (screen_width > 0 && screen_height > 0) {
-        is->width = screen_width;
-        is->height = screen_height;
-    } else {
-        is->width = default_width;
-        is->height = default_height;
+    if (!video_adopt_window_size(is)) {
+        float scale = window_points_scale();
+
+        is->width = FFMAX((int)lrintf(default_width * scale), 1);
+        is->height = FFMAX((int)lrintf(default_height * scale), 1);
     }
 
     return 0;
@@ -2352,12 +2367,9 @@ static VideoState *stream_open(const char *filename,
         return NULL;
     }
     is->vfilter_idx = startup_vfilter_idx;
-    /* XXX */
-    if (screen_width > 0 && screen_height > 0) {
-        is->width = screen_width;
-        is->height = screen_height;
-    }
+    video_adopt_window_size(is);
     is->last_render_serial = -1;
+    SDL_SetAtomicInt(&is->seek_by_bytes, -1);
     is->last_video_stream = is->video_stream = -1;
     is->last_audio_stream = is->audio_stream = -1;
     is->last_subtitle_stream = is->subtitle_stream = -1;
@@ -2612,7 +2624,7 @@ void render_fault_fallback(VideoState **pis) {
 
     keep_paused = *pis && (*pis)->paused;
     if (*pis) {
-        if (render_ever_ok && seek_by_bytes <= 0) {
+        if (render_ever_ok && SDL_GetAtomicInt(&(*pis)->seek_by_bytes) <= 0) {
             resume_at = effective_playhead(*pis);
         }
         stream_close(*pis);
@@ -2732,6 +2744,9 @@ the_end:
 }
 
 void toggle_fullscreen(VideoState *is) {
+    if (!window) {
+        return;
+    }
     is_fullscreen = !is_fullscreen;
     if (is_fullscreen) {
         pin_window_aspect(0.0f);
@@ -2741,8 +2756,7 @@ void toggle_fullscreen(VideoState *is) {
         apply_window_geometry(default_width, default_height);
         SDL_SyncWindow(window);
         update_screen_size();
-        is->width = screen_width;
-        is->height = screen_height;
+        video_adopt_window_size(is);
         is->force_refresh = 1;
     }
     present_update_display_mode();

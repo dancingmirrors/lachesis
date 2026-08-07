@@ -160,6 +160,7 @@ typedef struct VideoState {
     int seek_flags;
     int64_t seek_pos;
     int64_t seek_rel;
+    SDL_AtomicInt seek_by_bytes;
     int read_pause_return;
     AVFormatContext *ic;
     int realtime;
@@ -330,7 +331,9 @@ void decoder_abort(Decoder *d, FrameQueue *fq);
 int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub);
 int video_thread(void *arg);
 void apply_degraded_decode(AVCodecContext *avctx);
+int note_window_pixel_size(int w, int h);
 void update_screen_size(void);
+int video_adopt_window_size(VideoState *is);
 float window_pixel_density(void);
 
 int display_max_texture_size(void);

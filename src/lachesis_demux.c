@@ -947,11 +947,10 @@ int read_thread(void *arg) {
         }
     }
 
-    if (seek_by_bytes < 0) {
-        seek_by_bytes = !(ic->iformat->flags & AVFMT_NO_BYTE_SEEK) &&
-            !!(ic->iformat->flags & AVFMT_TS_DISCONT) &&
-            strcmp("ogg", ic->iformat->name);
-    }
+    SDL_SetAtomicInt(&is->seek_by_bytes,
+                     !(ic->iformat->flags & AVFMT_NO_BYTE_SEEK) &&
+                         !!(ic->iformat->flags & AVFMT_TS_DISCONT) &&
+                         strcmp("ogg", ic->iformat->name));
 
     is->max_frame_duration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
 

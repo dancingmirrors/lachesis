@@ -63,6 +63,10 @@ static int demuxer_ready(const VideoState *is) {
     return is->ic != NULL;
 }
 
+static int seeking_by_bytes(VideoState *is) {
+    return SDL_GetAtomicInt(&is->seek_by_bytes) > 0;
+}
+
 static void seek_chapter(VideoState *is, int incr) {
     int64_t pos = effective_playhead(is) * AV_TIME_BASE;
     int i;
@@ -235,10 +239,6 @@ void event_loop(VideoState **pis) {
                 do_exit(cur_stream);
                 break;
             }
-            /* XXX */
-            if (!cur_stream->width) {
-                continue;
-            }
             if ((event.key.mod & SDL_KMOD_ALT) && (event.key.mod & SDL_KMOD_SHIFT)) {
                 SDL_Scancode sc = event.key.scancode;
                 if (sc == SDL_SCANCODE_EQUALS) {
@@ -389,7 +389,7 @@ void event_loop(VideoState **pis) {
                     break;
                 }
                 osd_show_seek();
-                if (seek_by_bytes) {
+                if (seeking_by_bytes(cur_stream)) {
                     pos = -1;
                     if (pos < 0 && cur_stream->video_stream >= 0) {
                         pos = frame_queue_last_pos(&cur_stream->pictq);
@@ -618,16 +618,15 @@ void event_loop(VideoState **pis) {
             if (!demuxer_ready(cur_stream) || cur_stream->width <= 0) {
                 break;
             }
-            if (seek_by_bytes || cur_stream->ic->duration <= 0) {
+            frac = av_clipd(x / cur_stream->width, 0.0, 1.0);
+            if (seeking_by_bytes(cur_stream) || cur_stream->ic->duration <= 0) {
                 int64_t size = avio_size(cur_stream->ic->pb);
                 if (size <= 0) {
                     break;
                 }
-                stream_seek(cur_stream, (int64_t)(size * x / cur_stream->width), 0, 1);
+                stream_seek(cur_stream, (int64_t)(size * frac), 0, 1);
             } else {
-                int64_t ts;
-                frac = x / cur_stream->width;
-                ts = frac * cur_stream->ic->duration;
+                int64_t ts = frac * cur_stream->ic->duration;
                 if (cur_stream->ic->start_time != AV_NOPTS_VALUE) {
                     ts += cur_stream->ic->start_time;
                 }
@@ -635,14 +634,13 @@ void event_loop(VideoState **pis) {
             }
             break;
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
-            screen_width = event.window.data1;
-            screen_height = event.window.data2;
-            cur_stream->width = screen_width;
-            cur_stream->height = screen_height;
-            if (renderer) {
-                renderer_resize(renderer, screen_width, screen_height);
+            if (note_window_pixel_size(event.window.data1, event.window.data2)) {
+                video_adopt_window_size(cur_stream);
+                if (renderer) {
+                    renderer_resize(renderer, screen_width, screen_height);
+                }
+                present_reset();
             }
-            present_reset();
             [[fallthrough]];
         case SDL_EVENT_WINDOW_EXPOSED:
         case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:

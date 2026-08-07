@@ -60,7 +60,6 @@ int audio_disable;
 int video_disable;
 int subtitle_disable;
 const char *wanted_stream_spec[AVMEDIA_TYPE_NB] = {0};
-int seek_by_bytes = -1;
 float seek_interval = 5.0;
 int display_disable;
 int benchmark;
