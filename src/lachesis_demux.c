@@ -719,6 +719,8 @@ static int audio_read_thread(void *arg) {
         return AVERROR(ENOMEM);
     }
 
+    log_interrupt_begin(audio_interrupt_cb, is);
+
     for (;;) {
         if (is->abort_request) {
             break;
@@ -775,6 +777,7 @@ static int audio_read_thread(void *arg) {
         }
     }
     av_packet_free(&pkt);
+    log_interrupt_end();
     SDL_SetAtomicInt(&is->audio_read_thread_done, 1);
 
     return 0;
@@ -800,6 +803,8 @@ int read_thread(void *arg) {
     int aud_range_over = 0;
     int64_t still_deadline_us = 0;
     int still_range_done = 0;
+
+    log_interrupt_begin(decode_interrupt_cb, is);
 
     if (!wait_mutex) {
         ret = AVERROR(ENOMEM);
@@ -908,8 +913,12 @@ int read_thread(void *arg) {
         av_dict_set(&fmt_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE);
     }
     if (err < 0) {
-        print_error(is->filename, err);
-        playlist_warn_unsafe_disabled(is->filename, 1);
+        if (!is->abort_request) {
+            print_error(is->filename, err);
+            playlist_warn_unsafe_disabled(is->filename, 1);
+        } else {
+            log_verbose("Open of '%s' aborted: %s\n", is->filename, av_err2str(err));
+        }
         ret = -1;
         goto fail;
     }
@@ -1354,6 +1363,7 @@ fail:
      */
     av_dict_free(&fmt_opts);
     av_packet_free(&pkt);
+    log_interrupt_end();
     if (ret != 0 && !is->abort_request) {
         SDL_Event event;
 

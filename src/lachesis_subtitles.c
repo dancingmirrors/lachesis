@@ -582,6 +582,8 @@ static int sub_read_thread(void *arg) {
         return AVERROR(ENOMEM);
     }
 
+    log_interrupt_begin(sub_interrupt_cb, is);
+
     for (;;) {
         if (is->abort_request || is->sub_abort_request) {
             break;
@@ -627,6 +629,7 @@ static int sub_read_thread(void *arg) {
         }
     }
     av_packet_free(&pkt);
+    log_interrupt_end();
     SDL_SetAtomicInt(&is->sub_read_thread_done, 1);
 
     return 0;
@@ -713,7 +716,9 @@ static int external_subtitle_open(VideoState *is) {
 
     int ret = avformat_open_input(&sic, path, NULL, NULL);
     if (ret < 0) {
-        log_warn("Could not open external subtitle '%s'!\n", path);
+        if (!is->abort_request) {
+            log_warn("Could not open external subtitle '%s'!\n", path);
+        }
         return ret;
     }
     if ((ret = avformat_find_stream_info(sic, NULL)) < 0) {

@@ -3036,6 +3036,7 @@ int main(int argc, char **argv) {
 
     init_dynload();
 
+    log_init();
     av_log_set_flags(AV_LOG_SKIP_REPEATED);
     av_log_set_level(AV_LOG_ERROR);
     parse_loglevel(argc, argv, options);

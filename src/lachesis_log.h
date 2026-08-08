@@ -30,7 +30,10 @@
 
 extern int lachesis_quiet;
 
-/* I disagree with av_log's loglevels so here we are. */
+void log_init(void);
+void log_interrupt_begin(int (*cb)(void *), void *ctx);
+void log_interrupt_end(void);
+
 static av_unused av_printf_format(2, 0) void log_vline(const char *tag, const char *fmt, va_list ap) {
     if (lachesis_quiet) {
         return;
