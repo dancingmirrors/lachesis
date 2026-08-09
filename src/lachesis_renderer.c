@@ -3361,7 +3361,6 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     ret = self_test(renderer, w, h);
     if (ret < 0) {
-        log_warn("The %s renderer initialized but cannot render.\n", what);
         note_failure(why, why_size, what, "initialized but cannot render", ret);
         goto fail;
     }
@@ -3426,8 +3425,8 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
             last = ret;
         }
         if (i + 1 < num) {
-            log_warn("Falling back from the %s renderer to %s.\n",
-                     api_label(api), api_label(order[i + 1]));
+            log_verbose("The %s renderer is unavailable. Trying %s.\n",
+                        api_label(api), api_label(order[i + 1]));
         }
     }
 
