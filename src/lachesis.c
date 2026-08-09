@@ -2268,6 +2268,8 @@ int video_thread(void *arg) {
             const char *vfilters = vfilters_list ? vfilters_list[is->vfilter_idx] : NULL;
             int is_hw = frame->hw_frames_ctx != NULL;
 
+            media_info_note_hw_frame(is_hw);
+
             avfilter_graph_free(&graph);
             graph = avfilter_graph_alloc();
             if (!graph) {

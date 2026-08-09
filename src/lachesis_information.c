@@ -130,7 +130,8 @@ void print_stream_info(const VideoState *is) {
     char line[256];
 
     log_info("Using renderer: %s\n", media_info_renderer());
-    log_info("Using hwaccel: %s\n", media_info_hwaccel());
+    log_info("%s hwaccel: %s\n", active_hwaccel ? "Trying" : "Using",
+             media_info_hwaccel());
 
     if (is->video_st) {
         media_info_video_line(is, line, sizeof(line));
@@ -321,6 +322,15 @@ void media_info_reset(void) {
 
 void media_info_set_hwaccel(const char *name) {
     active_hwaccel = name;
+}
+
+void media_info_note_hw_frame(int is_hw) {
+    if (is_hw || !active_hwaccel) {
+        return;
+    }
+    log_info("Using software decoding\n");
+    active_hwaccel = NULL;
+    osd_invalidate_info();
 }
 
 void media_info_note_audio_driver(const char *driver, int channels, int freq) {
