@@ -12,7 +12,6 @@ NoneType = type(None)
 function = type(lambda: 0)
 
 programs_info = [
-    # env. name     default
     ("CC", "cc"),
     ("PKG_CONFIG", "pkg-config"),
     ("WINDRES", "windres"),
@@ -43,6 +42,7 @@ class _G:
     install_paths = {}
     programs = {}
     exe_format = "elf"
+    console_wrapper = None
     cflags = []
     ldflags = []
     config_h = ""
@@ -166,6 +166,11 @@ def get_root_dir():
 def set_exe_format(fmt):
     assert fmt in ["elf", "pe", "macho"]
     _G.exe_format = fmt
+
+
+def set_console_wrapper(source):
+    assert source.endswith(".c")
+    _G.console_wrapper = source
 
 
 def chain(*a):
@@ -517,15 +522,16 @@ def dedup_ldflags(flags):
     return out
 
 
-def _generate_ninja_file(sources, cflags_str, ldflags_str):
+def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
     cc = _G.programs.get("CC", "cc")
     windres = _G.programs.get("WINDRES", "windres")
     build_dir = os.path.abspath(_G.build_dir)
     root_dir = os.path.abspath(_G.root_dir)
     exesuf = ".exe" if _G.exe_format == "pe" else ""
+    wrapper_src = _G.console_wrapper if _G.exe_format == "pe" else None
 
     # Pre-create object directories.
-    for src in sources:
+    for src in sources + ([wrapper_src] if wrapper_src else []):
         rel = src.replace("$(ROOT)/", "").replace("$(BUILD)/", "")
         if rel.endswith(".c") or rel.endswith(".m") or rel.endswith(".rc"):
             os.makedirs(
@@ -540,7 +546,10 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
     n += "windres = %s\n" % windres
     n += "cflags = %s\n" % cflags_str
     n += "ldflags = %s\n" % ldflags_str
-    n += "exesuf = %s\n\n" % exesuf
+    n += "exesuf = %s\n" % exesuf
+    if wrapper_src:
+        n += "wrapper_ldflags = %s\n" % wrapper_ldflags_str
+    n += "\n"
 
     n += "rule cc\n"
     n += "  command = $cc $cflags -I$root -I$builddir -MMD -MF $out.d $in -c -o $out\n"
@@ -587,7 +596,16 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
 
     target = "$builddir/lachesis$exesuf"
     n += "build %s: link %s\n\n" % (target, " ".join(objects))
-    n += "default %s\n\n" % target
+
+    wrapper = None
+    if wrapper_src:
+        wrapper_obj = "$builddir/%s.o" % wrapper_src[:-2]
+        wrapper = "$builddir/lachesis.com"
+        n += "build %s: cc $root/%s || %s\n" % (wrapper_obj, wrapper_src, version_h)
+        n += "build %s: link %s\n" % (wrapper, wrapper_obj)
+        n += "  ldflags = $wrapper_ldflags\n\n"
+
+    n += "default %s\n\n" % " ".join(t for t in [target, wrapper] if t)
 
     prefix = _G.install_paths.get("PREFIX", "/usr/local")
     install_cmds = [
@@ -595,6 +613,12 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str):
         "install -v -m 0755 %s %s/bin/lachesis%s" % (target, prefix, exesuf),
     ]
     install_deps = [target]
+
+    if wrapper:
+        install_cmds.append(
+            "install -v -m 0755 %s %s/bin/lachesis.com" % (wrapper, prefix)
+        )
+        install_deps.append(wrapper)
 
     if _G.exe_format == "elf":
         desktop_src = os.path.join(root_dir, "share", "lachesis.desktop")
@@ -673,7 +697,10 @@ def finish():
         + os.environ.get("CFLAGS", "")
     ).strip()
     ldflags_str = (" ".join(_G.ldflags) + " " + os.environ.get("LDFLAGS", "")).strip()
+    wrapper_ldflags_str = ("-mconsole " + os.environ.get("LDFLAGS", "")).strip()
     with open(os.path.join(_G.build_dir, "build.ninja"), "w") as f:
-        f.write(_generate_ninja_file(sources, cflags_str, ldflags_str))
+        f.write(
+            _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str)
+        )
 
     print("Done. You can run 'ninja -C %s' now." % _G.build_dir)

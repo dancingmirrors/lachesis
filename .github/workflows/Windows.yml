@@ -89,6 +89,8 @@ jobs:
           lachesis -h
           lachesis --version
 
+          lachesis.com --version
+
       - name: Package portable bundle
         run: |
           set -x
@@ -96,13 +98,13 @@ jobs:
           dist=lachesis-windows-x86_64
           rm -fr "$dist"
           mkdir -p "$dist"
-          cp build/lachesis.exe "$dist/"
+          cp build/lachesis.exe build/lachesis.com "$dist/"
 
           bindir=/mingw64/bin
           changed=1
           while [ "$changed" = 1 ]; do
             changed=0
-            for f in "$dist"/*.exe "$dist"/*.dll; do
+            for f in "$dist"/*.exe "$dist"/*.com "$dist"/*.dll; do
               [ -e "$f" ] || continue
               for dll in $(objdump -p "$f" 2>/dev/null | awk '/DLL Name:/ {print $3}'); do
                 if [ -f "$bindir/$dll" ] && [ ! -e "$dist/$dll" ]; then

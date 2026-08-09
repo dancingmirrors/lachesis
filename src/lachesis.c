@@ -122,13 +122,41 @@ static void init_dynload(void) {
 }
 
 #ifdef _WIN32
+static int win32_handle_valid(HANDLE handle) {
+    return handle && handle != INVALID_HANDLE_VALUE;
+}
+
 static void win32_attach_console(void) {
-    if (GetStdHandle(STD_ERROR_HANDLE) || !AttachConsole(ATTACH_PARENT_PROCESS)) {
+    static const DWORD ids[] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    static const char *const devices[] = {"CONIN$", "CONOUT$", "CONOUT$"};
+    static const char *const modes[] = {"r", "w", "w"};
+    FILE *streams[] = {stdin, stdout, stderr};
+    HANDLE inherited[FF_ARRAY_ELEMS(ids)];
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ids); i++) {
+        inherited[i] = GetStdHandle(ids[i]);
+    }
+
+    if (!AttachConsole(ATTACH_PARENT_PROCESS) &&
+        GetLastError() != ERROR_ACCESS_DENIED) {
         return;
     }
-    freopen("CONOUT$", "w", stdout);
-    freopen("CONOUT$", "w", stderr);
-    freopen("CONIN$", "r", stdin);
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ids); i++) {
+        intptr_t handle;
+
+        if (win32_handle_valid(inherited[i])) {
+            SetStdHandle(ids[i], inherited[i]);
+            continue;
+        }
+        if (!freopen(devices[i], modes[i], streams[i])) {
+            continue;
+        }
+        handle = _get_osfhandle(_fileno(streams[i]));
+        if (handle != -1 && handle != -2) {
+            SetStdHandle(ids[i], (HANDLE)handle);
+        }
+    }
 }
 #endif
 

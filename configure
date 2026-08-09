@@ -81,6 +81,13 @@ check(
 )
 
 check(
+    "-console-wrapper",
+    desc="lachesis.com",
+    deps="Windows",
+    fn=lambda: chain(set_console_wrapper("src/lachesis_console_wrapper.c"), True),
+)
+
+check(
     "-increase-stack-size*",
     desc="whether we can increase stack size via PT_GNU_STACK",
     fn=lambda: check_ldflags("-Wl,-z,stack-size=524288", fatal_warnings=True),
