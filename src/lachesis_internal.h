@@ -393,6 +393,11 @@ extern float display_scale;
 extern float display_pan_x;
 extern float display_pan_y;
 extern enum View360Layout view360_layout;
+
+static inline int view360_enabled(void) {
+    return view360_layout != VIEW360_LAYOUT_OFF;
+}
+
 extern float sbs360_yaw;
 extern float sbs360_pitch;
 extern float sbs360_roll;

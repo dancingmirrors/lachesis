@@ -963,14 +963,6 @@ static void vk_backend_destroy(RendererContext *ctx) {
 
 #if LACHESIS_HAVE_OPENGL
 
-/* XXX */
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
-    defined(__NetBSD__) || defined(__DragonFly__)
-#define LACHESIS_GL_PREFER_EGL 1
-#else
-#define LACHESIS_GL_PREFER_EGL 0
-#endif
-
 static const struct gl_profile {
     const char *name;
     int profile;
@@ -979,45 +971,67 @@ static const struct gl_profile {
     int prefer_egl;
     int angle;
 } gl_profiles[] = {
-
-#if LACHESIS_GL_PREFER_EGL
     {"OpenGL 3.3 core (EGL)", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 1, 0},
-#endif
     {"OpenGL 3.3 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 0, 0},
     {"OpenGL 3.2 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 2, 0, 0},
     {"OpenGL ES 3.0", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 0},
-#ifdef _WIN32
     {"OpenGL ES 3.0 (ANGLE)", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 1},
-#endif
 };
 
 #define GL_NUM_PROFILES ((int)FF_ARRAY_ELEMS(gl_profiles))
 
-static int gl_profile_index(int attempt, const AVDictionary *opt) {
-    const AVDictionaryEntry *entry = av_dict_get(opt, "gles", NULL, 0);
-    int order[GL_NUM_PROFILES];
-    int n = 0;
+static int gl_video_driver_is(const char *name) {
+    const char *driver = SDL_GetCurrentVideoDriver();
 
-    if (!(entry && strtol(entry->value, NULL, 10))) {
-        return attempt;
-    }
-
-    for (int i = 0; i < GL_NUM_PROFILES; i++) {
-        if (gl_profiles[i].profile == SDL_GL_CONTEXT_PROFILE_ES) {
-            order[n++] = i;
-        }
-    }
-    for (int i = 0; i < GL_NUM_PROFILES; i++) {
-        if (gl_profiles[i].profile != SDL_GL_CONTEXT_PROFILE_ES) {
-            order[n++] = i;
-        }
-    }
-
-    return order[attempt];
+    return driver && !strcmp(driver, name);
 }
 
-static const char *gl_apply_profile_hints(int index) {
-    const struct gl_profile *p = &gl_profiles[index];
+static int gl_profile_usable(const struct gl_profile *p) {
+    if (p->angle) {
+        return gl_video_driver_is("windows");
+    }
+    if (p->prefer_egl && p->profile != SDL_GL_CONTEXT_PROFILE_ES) {
+        return gl_video_driver_is("x11");
+    }
+
+    return 1;
+}
+
+static int gl_profile_order(int *order, const AVDictionary *opt) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "gles", NULL, 0);
+    int es_first = entry && entry->value && strtol(entry->value, NULL, 10);
+    int n = 0;
+
+    for (int pass = 0; pass < 2; pass++) {
+        int want_es = pass == (es_first ? 0 : 1);
+
+        for (int i = 0; i < GL_NUM_PROFILES; i++) {
+            const struct gl_profile *p = &gl_profiles[i];
+
+            if ((p->profile == SDL_GL_CONTEXT_PROFILE_ES) != want_es) {
+                continue;
+            }
+            if (gl_profile_usable(p)) {
+                order[n++] = i;
+            }
+        }
+    }
+
+    return n;
+}
+
+static int gl_num_attempts(const AVDictionary *opt) {
+    int order[GL_NUM_PROFILES];
+
+    return gl_profile_order(order, opt);
+}
+
+static const char *gl_apply_profile_hints(int attempt, const AVDictionary *opt) {
+    int order[GL_NUM_PROFILES];
+    const struct gl_profile *p;
+
+    gl_profile_order(order, opt);
+    p = &gl_profiles[order[attempt]];
 
     if (!SDL_getenv(SDL_HINT_VIDEO_FORCE_EGL)) {
         SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, p->prefer_egl ? "1" : "0");
@@ -3080,13 +3094,14 @@ static const char *api_label(enum RendererApi api) {
     }
 }
 
-static int api_num_attempts(enum RendererApi api) {
+static int api_num_attempts(enum RendererApi api, const AVDictionary *opt) {
 #if LACHESIS_HAVE_OPENGL
     if (api == RENDERER_API_OPENGL) {
-        return GL_NUM_PROFILES;
+        return gl_num_attempts(opt);
     }
 #endif
     (void)api;
+    (void)opt;
     return 1;
 }
 
@@ -3094,7 +3109,7 @@ static const char *api_prepare_attempt(enum RendererApi api, int attempt,
                                        const AVDictionary *opt) {
 #if LACHESIS_HAVE_OPENGL
     if (api == RENDERER_API_OPENGL) {
-        return gl_apply_profile_hints(gl_profile_index(attempt, opt));
+        return gl_apply_profile_hints(attempt, opt);
     }
 #endif
     (void)attempt;
@@ -3221,7 +3236,7 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
 
     for (size_t i = 0; i < num; i++) {
         enum RendererApi api = order[i];
-        int attempts = api_num_attempts(api);
+        int attempts = api_num_attempts(api, params->opt);
 
         for (int attempt = 0; attempt < attempts; attempt++) {
             int ret = renderer_try(params, api, attempt, window, out, why,

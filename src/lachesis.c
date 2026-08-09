@@ -218,7 +218,7 @@ int64_t cursor_last_shown;
 int cursor_hidden = 0;
 int deinterlace = 0;
 int fatal_error_pending = 0;
-enum View360Layout view360_layout = VIEW360_LAYOUT_FULL;
+enum View360Layout view360_layout = VIEW360_LAYOUT_OFF;
 float sbs360_yaw = 0.0f;
 float sbs360_pitch = VIEW360_DEFAULT_PITCH;
 float sbs360_roll = 0.0f;
@@ -867,7 +867,7 @@ static void video_image_display(VideoState *is) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
     int ret;
 
-    if (enable_360sbs) {
+    if (view360_enabled()) {
         renderer_update_360(renderer, sbs360_yaw, sbs360_pitch, sbs360_roll, sbs360_hfov);
     }
     is->render_params.still_image = is->is_still_image;
@@ -2592,7 +2592,7 @@ static void open_renderer(enum RendererApi api) {
                    driver ? driver : "none", why);
     }
 
-    if (enable_360sbs && renderer_enable_360(renderer, view360_layout) < 0) {
+    if (view360_enabled() && renderer_enable_360(renderer, view360_layout) < 0) {
         fatal_quit("Failed to enable the 360° shader!\n");
     }
 
@@ -3172,12 +3172,8 @@ int main(int argc, char **argv) {
         if (enable_360sbs && enable_360tb) {
             fatal_quit("-360-sbs and -360-tb are mutually exclusive.\n");
         }
-        if (enable_360tb) {
-            /* XXX */
-            enable_360sbs = 1;
-            view360_layout = VIEW360_LAYOUT_TB;
-        }
-        if (enable_360sbs) {
+        if (enable_360sbs || enable_360tb) {
+            view360_layout = enable_360tb ? VIEW360_LAYOUT_TB : VIEW360_LAYOUT_FULL;
             sbs360_reset_view();
         }
 

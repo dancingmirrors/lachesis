@@ -31,6 +31,28 @@ static inline float view360_default_yaw(enum View360Layout layout) {
     return layout == VIEW360_LAYOUT_FULL ? 90.0f : 0.0f;
 }
 
+static inline enum View360Layout view360_layout_next(enum View360Layout layout) {
+    switch (layout) {
+    case VIEW360_LAYOUT_OFF:
+        return VIEW360_LAYOUT_FULL;
+    case VIEW360_LAYOUT_FULL:
+        return VIEW360_LAYOUT_TB;
+    default:
+        return VIEW360_LAYOUT_OFF;
+    }
+}
+
+static inline const char *view360_layout_name(enum View360Layout layout) {
+    switch (layout) {
+    case VIEW360_LAYOUT_FULL:
+        return "side-by-side";
+    case VIEW360_LAYOUT_TB:
+        return "top-bottom";
+    default:
+        return "off";
+    }
+}
+
 #define VIEW360_DEFAULT_HFOV 140.0f
 #define VIEW360_DEFAULT_PITCH -15.0f
 

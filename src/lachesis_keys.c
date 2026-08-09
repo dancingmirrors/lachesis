@@ -78,7 +78,7 @@ static int refuse_without_video(VideoState *is) {
 }
 
 static int sbs360_active(VideoState *is) {
-    return enable_360sbs && !refuse_without_video(is);
+    return view360_enabled() && !refuse_without_video(is);
 }
 
 static void seek_chapter(VideoState *is, int incr) {
@@ -558,22 +558,13 @@ void event_loop(VideoState **pis) {
                 if (refuse_without_video(cur_stream)) {
                     break;
                 }
-                if (!enable_360sbs) {
-                    enable_360sbs = 1;
-                    view360_layout = VIEW360_LAYOUT_FULL;
-                    osd_show_message("360: side-by-side");
-                } else if (view360_layout == VIEW360_LAYOUT_FULL) {
-                    view360_layout = VIEW360_LAYOUT_TB;
-                    osd_show_message("360: top-bottom");
-                } else {
-                    enable_360sbs = 0;
-                    osd_show_message("360: off");
-                }
-                if (enable_360sbs) {
+                view360_layout = view360_layout_next(view360_layout);
+                osd_show_message("360: %s", view360_layout_name(view360_layout));
+                if (view360_enabled()) {
                     sbs360_reset_view();
                 }
                 if (renderer) {
-                    renderer_enable_360(renderer, enable_360sbs ? view360_layout : VIEW360_LAYOUT_OFF);
+                    renderer_enable_360(renderer, view360_layout);
                 }
                 cur_stream->force_refresh = 1;
                 break;
@@ -582,7 +573,7 @@ void event_loop(VideoState **pis) {
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
-            if (enable_360sbs && event.button.button == SDL_BUTTON_LEFT) {
+            if (view360_enabled() && event.button.button == SDL_BUTTON_LEFT) {
                 sbs360_drag = 0;
             }
             if (event.button.button == SDL_BUTTON_LEFT) {
@@ -590,7 +581,7 @@ void event_loop(VideoState **pis) {
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (enable_360sbs && event.button.button == SDL_BUTTON_LEFT) {
+            if (view360_enabled() && event.button.button == SDL_BUTTON_LEFT) {
                 sbs360_drag = 1;
                 sbs360_drag_last_x = event.button.x;
                 sbs360_drag_last_y = event.button.y;
@@ -620,7 +611,7 @@ void event_loop(VideoState **pis) {
                 cursor_hidden = 0;
             }
             cursor_last_shown = av_gettime_relative();
-            if (enable_360sbs && sbs360_drag && event.type == SDL_EVENT_MOUSE_MOTION) {
+            if (view360_enabled() && sbs360_drag && event.type == SDL_EVENT_MOUSE_MOTION) {
                 int dx = event.motion.x - sbs360_drag_last_x;
                 int dy = event.motion.y - sbs360_drag_last_y;
                 sbs360_drag_last_x = event.motion.x;
