@@ -140,6 +140,10 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
         av_log_set_level(AV_LOG_QUIET);
     }
     for (int i = 0; auto_hwaccels[i]; i++) {
+        if (!strcmp(auto_hwaccels[i], "vulkan") &&
+            !renderer_video_decode_caps(renderer)) {
+            continue;
+        }
         ret = try_hwaccel(device_ctx, auto_hwaccels[i]);
         if (!ret) {
             av_log_set_level(saved_level);

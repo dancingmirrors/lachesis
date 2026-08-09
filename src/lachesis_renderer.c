@@ -530,6 +530,23 @@ static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
                                 const AVDictionary *opt, int present_timing);
 
+static void note_decode_caps(RendererContext *ctx, const char *const *exts,
+                             int num_exts) {
+    ctx->decode_caps = 0;
+
+    for (int i = 0; i < num_exts; i++) {
+        if (!strcmp(exts[i], "VK_KHR_video_decode_h264")) {
+            ctx->decode_caps |= RENDERER_DECODE_CAP_H264;
+        } else if (!strcmp(exts[i], "VK_KHR_video_decode_h265")) {
+            ctx->decode_caps |= RENDERER_DECODE_CAP_HEVC;
+        } else if (!strcmp(exts[i], "VK_KHR_video_decode_av1")) {
+            ctx->decode_caps |= RENDERER_DECODE_CAP_AV1;
+        } else if (!strcmp(exts[i], "VK_KHR_video_decode_vp9")) {
+            ctx->decode_caps |= RENDERER_DECODE_CAP_VP9;
+        }
+    }
+}
+
 static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
                                   const AVDictionary *opt, int present_timing) {
@@ -653,6 +670,7 @@ static int create_vk_by_hwcontext(Renderer *renderer,
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
     }
+    note_decode_caps(ctx, import_exts, num_import_exts);
 
     return 0;
 }
@@ -907,19 +925,8 @@ static int create_vk_by_placebo(Renderer *renderer,
         return ret;
     }
 
-    ctx->decode_caps = 0;
-    for (int i = 0; i < ctx->placebo_vulkan->num_extensions; i++) {
-        const char *ext_name = ctx->placebo_vulkan->extensions[i];
-        if (!strcmp(ext_name, "VK_KHR_video_decode_h264")) {
-            ctx->decode_caps |= RENDERER_DECODE_CAP_H264;
-        } else if (!strcmp(ext_name, "VK_KHR_video_decode_h265")) {
-            ctx->decode_caps |= RENDERER_DECODE_CAP_HEVC;
-        } else if (!strcmp(ext_name, "VK_KHR_video_decode_av1")) {
-            ctx->decode_caps |= RENDERER_DECODE_CAP_AV1;
-        } else if (!strcmp(ext_name, "VK_KHR_video_decode_vp9")) {
-            ctx->decode_caps |= RENDERER_DECODE_CAP_VP9;
-        }
-    }
+    note_decode_caps(ctx, ctx->placebo_vulkan->extensions,
+                     ctx->placebo_vulkan->num_extensions);
 
     return 0;
 }
