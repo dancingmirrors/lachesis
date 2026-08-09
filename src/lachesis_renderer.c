@@ -1348,6 +1348,17 @@ static void gl_backend_destroy(RendererContext *ctx) {
 
 #if LACHESIS_HAVE_D3D11
 
+static int force_software(const AVDictionary *opt) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "software", NULL, 0);
+    int force = 0;
+
+    if (entry && entry->value) {
+        force = strtol(entry->value, NULL, 10) != 0;
+    }
+
+    return force;
+}
+
 static void d3d11_read_device_name(RendererContext *ctx) {
     IDXGIDevice *dxgi_dev = NULL;
     IDXGIAdapter *adapter = NULL;
@@ -1424,6 +1435,7 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                                          pl_d3d11_params(
                                              .debug = enable_debug(opt),
                                              .allow_software = true,
+                                             .force_software = force_software(opt),
                                              .flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                              .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
     /* clang-format on */
