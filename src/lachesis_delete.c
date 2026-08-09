@@ -162,18 +162,20 @@ static wchar_t *delete_wpath(const char *path) {
     return w ? delete_extended_path(w) : NULL;
 }
 
-static void delete_win_error(DWORD err, char *buf, size_t bufsz) {
+static void delete_win_fail(DWORD code, char *err, size_t errsz) {
     char *msg = NULL;
     DWORD len = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                               NULL, err, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                               NULL, code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
                                (LPSTR)&msg, 0, NULL);
+
+    av_strlcpy(err, "Delete failed: ", errsz);
     if (len && msg) {
         while (len > 0 && (msg[len - 1] == '\r' || msg[len - 1] == '\n' || msg[len - 1] == '.' || msg[len - 1] == ' ')) {
             msg[--len] = '\0';
         }
-        av_strlcpy(buf, msg, bufsz);
+        av_strlcat(err, msg, errsz);
     } else {
-        snprintf(buf, bufsz, "error %lu", (unsigned long)err);
+        av_strlcatf(err, errsz, "error %lu", (unsigned long)code);
     }
     if (msg) {
         LocalFree(msg);
@@ -203,9 +205,7 @@ static int delete_check(const char *path, char *err, size_t errsz) {
     int ok = 0;
     DWORD attr = GetFileAttributesW(wpath);
     if (attr == INVALID_FILE_ATTRIBUTES) {
-        char msg[256];
-        delete_win_error(GetLastError(), msg, sizeof(msg));
-        snprintf(err, errsz, "Delete failed: %s", msg);
+        delete_win_fail(GetLastError(), err, errsz);
     } else if (attr & FILE_ATTRIBUTE_DIRECTORY) {
         av_strlcpy(err, "Won't delete: not a regular file", errsz);
     } else if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) && delete_is_symlink(wpath)) {
@@ -227,9 +227,7 @@ static int delete_unlink(const char *path, char *err, size_t errsz) {
 
     int ok = 1;
     if (!DeleteFileW(wpath)) {
-        char msg[256];
-        delete_win_error(GetLastError(), msg, sizeof(msg));
-        snprintf(err, errsz, "Delete failed: %s", msg);
+        delete_win_fail(GetLastError(), err, errsz);
         ok = 0;
     }
     av_free(wpath);
