@@ -87,6 +87,10 @@ const char *delete_current_name(const VideoState *is) {
 
 #if defined(_WIN32)
 
+#if !defined(IsReparseTagNameSurrogate)
+#define IsReparseTagNameSurrogate(tag) (((tag) & 0x20000000) != 0)
+#endif
+
 static wchar_t *delete_utf8_to_wchar(const char *utf8) {
     int n = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8, -1, NULL, 0);
     if (n <= 0) {
@@ -102,6 +106,60 @@ static wchar_t *delete_utf8_to_wchar(const char *utf8) {
     }
 
     return w;
+}
+
+static int delete_path_is_extended(const wchar_t *w) {
+    return w[0] == L'\\' && (w[1] == L'\\' || w[1] == L'?') && w[2] == L'?' &&
+        w[3] == L'\\';
+}
+
+static wchar_t *delete_extended_path(wchar_t *w) {
+    if (delete_path_is_extended(w) ||
+        (w[0] == L'\\' && w[1] == L'\\' && w[2] == L'.' && w[3] == L'\\')) {
+        return w;
+    }
+
+    DWORD n = GetFullPathNameW(w, 0, NULL, NULL);
+    if (n == 0) {
+        return w;
+    }
+    wchar_t *full = av_malloc_array((size_t)n, sizeof(*full));
+    if (!full) {
+        return w;
+    }
+    if (GetFullPathNameW(w, n, full, NULL) == 0) {
+        av_free(full);
+        return w;
+    }
+
+    size_t len = wcslen(full);
+    if (len < MAX_PATH || delete_path_is_extended(full)) {
+        av_free(w);
+        return full;
+    }
+
+    /* UNC paths swap their leading "\\" for the "\\?\UNC\" prefix. */
+    const wchar_t *prefix = (full[0] == L'\\' && full[1] == L'\\')
+        ? L"\\\\?\\UNC\\"
+        : L"\\\\?\\";
+    const wchar_t *tail = (full[0] == L'\\' && full[1] == L'\\') ? full + 2 : full;
+    wchar_t *ext = av_malloc_array(wcslen(prefix) + wcslen(tail) + 1, sizeof(*ext));
+    if (!ext) {
+        av_free(w);
+        return full;
+    }
+    wcscpy(ext, prefix);
+    wcscat(ext, tail);
+    av_free(full);
+    av_free(w);
+
+    return ext;
+}
+
+static wchar_t *delete_wpath(const char *path) {
+    wchar_t *w = delete_utf8_to_wchar(path);
+
+    return w ? delete_extended_path(w) : NULL;
 }
 
 static void delete_win_error(DWORD err, char *buf, size_t bufsz) {
@@ -122,64 +180,87 @@ static void delete_win_error(DWORD err, char *buf, size_t bufsz) {
     }
 }
 
-static int delete_remove(const char *path) {
-    wchar_t *wpath = delete_utf8_to_wchar(path);
+static int delete_is_symlink(const wchar_t *wpath) {
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW(wpath, &fd);
+
+    if (h == INVALID_HANDLE_VALUE) {
+        return 1;
+    }
+    FindClose(h);
+
+    return (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+        IsReparseTagNameSurrogate(fd.dwReserved0);
+}
+
+static int delete_check(const char *path, char *err, size_t errsz) {
+    wchar_t *wpath = delete_wpath(path);
     if (!wpath) {
-        osd_show_message("Delete failed: bad path encoding");
+        av_strlcpy(err, "Delete failed: bad path encoding", errsz);
         return 0;
     }
 
+    int ok = 0;
     DWORD attr = GetFileAttributesW(wpath);
     if (attr == INVALID_FILE_ATTRIBUTES) {
         char msg[256];
         delete_win_error(GetLastError(), msg, sizeof(msg));
-        osd_show_message("Delete failed: %s", msg);
-        av_free(wpath);
-        return 0;
-    }
-    if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-        osd_show_message("Won't delete: not a regular file");
-        av_free(wpath);
-        return 0;
-    }
-    if (attr & FILE_ATTRIBUTE_REPARSE_POINT) {
-        osd_show_message("Refusing to delete symlink");
-        av_free(wpath);
-        return 0;
-    }
-
-    if (!DeleteFileW(wpath)) {
-        char msg[256];
-        delete_win_error(GetLastError(), msg, sizeof(msg));
-        osd_show_message("Delete failed: %s", msg);
-        av_free(wpath);
-        return 0;
+        snprintf(err, errsz, "Delete failed: %s", msg);
+    } else if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+        av_strlcpy(err, "Won't delete: not a regular file", errsz);
+    } else if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) && delete_is_symlink(wpath)) {
+        av_strlcpy(err, "Refusing to delete symlink", errsz);
+    } else {
+        ok = 1;
     }
     av_free(wpath);
 
-    return 1;
+    return ok;
+}
+
+static int delete_unlink(const char *path, char *err, size_t errsz) {
+    wchar_t *wpath = delete_wpath(path);
+    if (!wpath) {
+        av_strlcpy(err, "Delete failed: bad path encoding", errsz);
+        return 0;
+    }
+
+    int ok = 1;
+    if (!DeleteFileW(wpath)) {
+        char msg[256];
+        delete_win_error(GetLastError(), msg, sizeof(msg));
+        snprintf(err, errsz, "Delete failed: %s", msg);
+        ok = 0;
+    }
+    av_free(wpath);
+
+    return ok;
 }
 
 #else /* !_WIN32 */
 
-static int delete_remove(const char *path) {
+static int delete_check(const char *path, char *err, size_t errsz) {
     struct stat st;
     if (stat(path, &st) != 0) {
-        osd_show_message("Delete failed: %s", av_err2str(AVERROR(errno)));
+        snprintf(err, errsz, "Delete failed: %s", av_err2str(AVERROR(errno)));
         return 0;
     }
     if (!S_ISREG(st.st_mode)) {
-        osd_show_message("Won't delete: not a regular file");
+        av_strlcpy(err, "Won't delete: not a regular file", errsz);
         return 0;
     }
     struct stat lst;
     if (lstat(path, &lst) == 0 && S_ISLNK(lst.st_mode)) {
-        osd_show_message("Refusing to delete symlink");
+        av_strlcpy(err, "Refusing to delete symlink", errsz);
         return 0;
     }
 
+    return 1;
+}
+
+static int delete_unlink(const char *path, char *err, size_t errsz) {
     if (remove(path) != 0) {
-        osd_show_message("Delete failed: %s", av_err2str(AVERROR(errno)));
+        snprintf(err, errsz, "Delete failed: %s", av_err2str(AVERROR(errno)));
         return 0;
     }
 
@@ -204,13 +285,29 @@ int delete_current_file(VideoState **pis, int keep_paused) {
     char name[512];
     av_strlcpy(name, delete_basename(path), sizeof(name));
 
-    if (!delete_remove(path)) {
+    char err[256];
+    if (!delete_check(path, err, sizeof(err))) {
+        osd_show_message("%s", err);
+        av_free(path);
+        return 0;
+    }
+
+    double resume_at;
+    int released = playlist_close_current(pis, &resume_at);
+
+    if (!delete_unlink(path, err, sizeof(err))) {
+        playlist_reopen_current(pis, keep_paused, resume_at);
+        if (released) {
+            osd_show_message("%s", err);
+        } else {
+            osd_show_message("Delete failed: still reading %s", name);
+        }
         av_free(path);
         return 0;
     }
     av_free(path);
 
-    playlist_remove_current(pis, keep_paused);
+    playlist_drop_current(pis, keep_paused);
     osd_show_message("Deleted %s", name);
 
     return 1;

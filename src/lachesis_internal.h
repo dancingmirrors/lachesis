@@ -427,7 +427,9 @@ void set_playback_speed(double speed);
 void ab_loop_toggle(VideoState *is);
 void toggle_fullscreen(VideoState *is);
 void playlist_switch(VideoState **pis, int new_pos);
-void playlist_remove_current(VideoState **pis, int keep_paused);
+int playlist_close_current(VideoState **pis, double *resume_at);
+void playlist_reopen_current(VideoState **pis, int keep_paused, double resume_at);
+void playlist_drop_current(VideoState **pis, int keep_paused);
 void render_fault_fallback(VideoState **pis);
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event);
 

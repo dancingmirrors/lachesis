@@ -55,6 +55,7 @@ static int resolve_rc_path(char *buf, size_t size) {
     }
     snprintf(buf, size, "%s/%s", home, LACHESIS_RC_NAME);
 #endif
+
     return 0;
 }
 
@@ -109,6 +110,7 @@ static char *trim(char *s) {
         end--;
     }
     *end = '\0';
+
     return s;
 }
 
@@ -142,6 +144,7 @@ static char *parse_value(char *v) {
         end--;
     }
     *end = '\0';
+
     return v;
 }
 
@@ -206,7 +209,7 @@ int load_config_file(void *optctx, const OptionDef *defs) {
 
         apply_line(optctx, defs, line, path, ++lineno);
     }
-
     av_free(buf);
+
     return 0;
 }

@@ -1081,7 +1081,7 @@ static void stream_abandon(VideoState *is) {
     reader_abandoned = 1;
 }
 
-static void stream_close(VideoState *is) {
+static int stream_close(VideoState *is) {
     int64_t deadline;
     int joined;
 
@@ -1094,7 +1094,7 @@ static void stream_close(VideoState *is) {
     joined &= reader_join(&is->sub_read_tid, &is->sub_read_thread_done, deadline);
     if (!joined) {
         stream_abandon(is);
-        return;
+        return 0;
     }
 
     if (is->audio_stream >= 0) {
@@ -1144,6 +1144,8 @@ static void stream_close(VideoState *is) {
     av_free(is->entry_name);
     av_freep(&is->sub_rgba);
     av_free(is);
+
+    return 1;
 }
 
 av_noreturn void do_exit(VideoState *is) {
@@ -2675,15 +2677,7 @@ void render_fault_fallback(VideoState **pis) {
     render_ever_ok = 0;
     render_fault_event_sent = 0;
 
-    pause_next_stream = keep_paused;
-    *pis = stream_open_playlist_entry(playlist_pos);
-    if (!*pis) {
-        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
-        do_exit(NULL);
-    }
-    if (!isnan(resume_at) && resume_at > 0) {
-        stream_seek(*pis, (int64_t)(resume_at * AV_TIME_BASE), 0, 0);
-    }
+    playlist_reopen_current(pis, keep_paused, resume_at);
 }
 
 void stream_cycle_channel(VideoState *is, int codec_type) {
@@ -2862,10 +2856,35 @@ void playlist_switch(VideoState **pis, int new_pos) {
     *pis = is;
 }
 
-void playlist_remove_current(VideoState **pis, int keep_paused) {
-    stream_close(*pis);
+int playlist_close_current(VideoState **pis, double *resume_at) {
+    VideoState *is = *pis;
+
+    *resume_at = NAN;
+    if (!is) {
+        return 1;
+    }
+    if (SDL_GetAtomicInt(&is->seek_by_bytes) <= 0) {
+        *resume_at = effective_playhead(is);
+    }
     *pis = NULL;
 
+    return stream_close(is);
+}
+
+void playlist_reopen_current(VideoState **pis, int keep_paused, double resume_at) {
+    pause_next_stream = keep_paused;
+    *pis = stream_open_playlist_entry(playlist_pos);
+    if (!*pis) {
+        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
+        do_exit(NULL);
+    }
+    if (!isnan(resume_at) && resume_at > 0) {
+        stream_seek(*pis, (int64_t)(resume_at * AV_TIME_BASE), 0, 0);
+    }
+    (*pis)->force_refresh = 1;
+}
+
+void playlist_drop_current(VideoState **pis, int keep_paused) {
     int removed = playlist_pos;
     playlist_remove_at(removed);
 
