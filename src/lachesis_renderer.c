@@ -1423,7 +1423,7 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
     ctx->placebo_d3d11 = pl_d3d11_create(ctx->log_ctx,
                                          pl_d3d11_params(
                                              .debug = enable_debug(opt),
-                                             .allow_software = false,
+                                             .allow_software = true,
                                              .flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                              .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
     /* clang-format on */
