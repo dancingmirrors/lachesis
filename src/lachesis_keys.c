@@ -190,14 +190,23 @@ void event_loop(VideoState **pis) {
         }
         switch (event.type) {
         case SDL_EVENT_KEY_DOWN:
-            /* XXX: Finish me. */
+#ifdef __APPLE__
+            if (event.key.mod & SDL_KMOD_GUI) {
+                break;
+            }
+#endif
             if (event.key.mod & SDL_KMOD_CTRL) {
-                if (event.key.key == SDLK_C) {
+                switch (event.key.key) {
+                case SDLK_C:
                     do_exit(cur_stream);
-                }
-                if (event.key.key != SDLK_S) {
+                    break;
+                case SDLK_S:
+                    take_screenshot(cur_stream, 1);
+                    break;
+                default:
                     break;
                 }
+                break;
             }
             if (delete_confirm_pending) {
                 delete_confirm_pending = 0;
@@ -323,7 +332,7 @@ void event_loop(VideoState **pis) {
                 step_to_next_frame(cur_stream);
                 break;
             case SDLK_S:
-                take_screenshot(cur_stream, (event.key.mod & SDL_KMOD_CTRL) != 0);
+                take_screenshot(cur_stream, 0);
                 break;
             case SDLK_PERIOD:
             case SDLK_GREATER:
