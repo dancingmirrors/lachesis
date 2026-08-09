@@ -1,0 +1,166 @@
+name: lachesis Linux (minimum versions)
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:trixie
+
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      LD_LIBRARY_PATH: /usr/local/lib
+
+    steps:
+      - name: Bootstrap
+        run: |
+          apt-get update
+          apt-get install -y ca-certificates git
+
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Setup ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-minimum-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-minimum-ccache-
+
+      - name: Install and configure ccache
+        run: |
+          apt-get install -y ccache
+          ccache --version
+          ccache --set-config=cache_dir=$HOME/.ccache
+          ccache --set-config=max_size=999M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          mkdir -p $HOME/.ccache
+          echo "/usr/lib/ccache" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          set -x
+
+          apt-get install -y build-essential cmake meson ninja-build nasm yasm \
+                             pkg-config python3
+          apt-get install -y libavcodec-dev libavdevice-dev libavfilter-dev \
+                             libavformat-dev libavutil-dev libswresample-dev \
+                             libswscale-dev
+          apt-get install -y libplacebo-dev libarchive-dev zlib1g-dev \
+                             libvulkan-dev
+          apt-get install -y ffmpeg mesa-vulkan-drivers libgl1-mesa-dri \
+                             libegl-mesa0 vulkan-tools xauth xvfb
+
+          apt-get install -y libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+                             libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
+                             libxtst-dev libwayland-dev wayland-protocols \
+                             libdecor-0-dev libasound2-dev libpulse-dev \
+                             libdbus-1-dev libudev-dev libgbm-dev libdrm-dev \
+                             libgl-dev libegl-dev libgles-dev
+          apt-get install -y libfontconfig-dev libfreetype-dev libfribidi-dev \
+                             libharfbuzz-dev libunibreak-dev
+
+      - name: Build the minimum version dependencies
+        run: |
+          set -x
+
+          git clone --depth 1 --branch release-3.2.0 \
+              https://github.com/libsdl-org/SDL.git
+          cmake -S SDL -B SDL/build -DCMAKE_INSTALL_PREFIX=/usr/local \
+                -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON
+          cmake --build SDL/build -j$(nproc)
+          cmake --install SDL/build
+
+          git clone --depth 1 --branch 0.17.2 https://github.com/libass/libass.git
+          meson setup --prefix=/usr/local --libdir=lib \
+                -Ddefault_library=shared libass/build libass
+          ninja -v -C libass/build
+          ninja -C libass/build install
+
+          ldconfig
+
+      - name: Verify dependency versions
+        run: |
+          fail=0
+
+          exact() {
+            got=$(pkg-config --modversion "$1")
+            printf '%-14s %-12s exactly %s\n' "$1" "$got" "$2"
+            if [ "$got" != "$2" ]; then
+              echo "!! $1 is $got, expected exactly $2"
+              fail=1
+            fi
+          }
+
+          atleast() {
+            got=$(pkg-config --modversion "$1")
+            if ! pkg-config --atleast-version="$2" "$1"; then
+              printf '%-14s %-12s BELOW floor %s\n' "$1" "$got" "$2"
+              fail=1
+            elif [ "$got" = "$2" ]; then
+              printf '%-14s %-12s on floor %s\n' "$1" "$got" "$2"
+            else
+              printf '%-14s %-12s above floor %s (that floor is untested)\n' \
+                     "$1" "$got" "$2"
+            fi
+          }
+
+          exact   sdl3          3.2.0
+          exact   libass        0.17.2
+
+          atleast libavutil     59.39.100
+          atleast libavcodec    61.19.101
+          atleast libavformat   61.7.103
+          atleast libavfilter   10.5.100
+          atleast libswscale    8.3.100
+          atleast libswresample 5.3.100
+          atleast libavdevice   61.3.100
+          atleast libplacebo    7.349.0
+          atleast libarchive    3.4.0
+
+          printf '%-14s %s\n' zlib   "$(pkg-config --modversion zlib)"
+          printf '%-14s %s\n' vulkan "$(pkg-config --modversion vulkan)"
+
+          exit $fail
+
+      - name: Build, install, run
+        run: |
+          set -x
+
+          CFLAGS="-Werror" ./configure
+
+          ninja -v -C build
+          ninja -C build install
+
+          ldconfig
+          lachesis -h
+
+          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
+          xvfb-run -a env SDL_VIDEO_DRIVER=x11 lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+          # Ubuntu 26.04's Lavapipe breaks here.
+          SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+          SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
+
+          # The verson.py fallback test.
+          apt-get purge -y git
+          rm -fr build
+          CFLAGS="-Werror" ./configure
+          ninja -C build
+          ./build/lachesis --version
+          apt-get install -y git
+
+          rm -fr build
+          CFLAGS="-Werror" ./configure --disable-vulkan
+          ninja -C build
+          ./build/lachesis --version
+
+          rm -fr build
+          CFLAGS="-Werror" ./configure --disable-opengl
+          ninja -C build
+          ./build/lachesis --version
