@@ -91,7 +91,7 @@ jobs:
 
           lachesis.com --version
 
-          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v mpeg4 test.mp4
+          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 test.mp4
           lachesis.com -an -loglevel debug -vn test.mp4
 
       - name: Package portable bundle

@@ -36,6 +36,6 @@ jobs:
             ninja -v -C build
             ./build/lachesis -h
 
-            ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v mpeg4 /tmp/test.mp4
+            ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
             SDL_VIDEO_DRIVER=offscreen ./build/lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
             SDL_VIDEO_DRIVER=offscreen ./build/lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4

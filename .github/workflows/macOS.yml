@@ -46,7 +46,8 @@ jobs:
             glslang \
             molten-vk \
             vulkan-headers \
-            vulkan-loader
+            vulkan-loader \
+            x264
 
           git clone --depth 1 --recursive https://github.com/haasn/libplacebo.git
           cd libplacebo
@@ -58,7 +59,9 @@ jobs:
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git
           cd FFmpeg
           ./configure --prefix=/usr/local \
+                      --enable-gpl \
                       --enable-libplacebo \
+                      --enable-libx264 \
                       --enable-vulkan \
                       --cc="ccache cc"
           make -j$(sysctl -n hw.ncpu)
@@ -86,6 +89,6 @@ jobs:
 
           lachesis -h
 
-          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v mpeg4 /tmp/test.mp4
+          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
           ./build/lachesis -an -gpu-api vulkan -loglevel debug /tmp/test.mp4
           ./build/lachesis -an -gpu-api opengl -loglevel debug /tmp/test.mp4
