@@ -1193,10 +1193,17 @@ static void sigterm_handler(int sig av_unused) {
     _Exit(123);
 }
 
-/* XXX */
 static float window_points_scale(void) {
-    float density = window ? SDL_GetWindowPixelDensity(window)
-                           : SDL_GetDisplayContentScale(SDL_GetPrimaryDisplay());
+    float density = 0.0f;
+
+    if (window) {
+        density = SDL_GetWindowPixelDensity(window);
+    } else {
+        const SDL_DisplayMode *mode =
+            SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+
+        density = mode ? mode->pixel_density : 0.0f;
+    }
 
     return density > 0.0f ? density : 1.0f;
 }
