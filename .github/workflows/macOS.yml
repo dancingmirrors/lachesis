@@ -87,5 +87,5 @@ jobs:
           lachesis -h
 
           ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v mpeg4 /tmp/test.mp4
-          ./build/lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
-          ./build/lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
+          ./build/lachesis -an -gpu-api vulkan -loglevel debug /tmp/test.mp4
+          ./build/lachesis -an -gpu-api opengl -loglevel debug /tmp/test.mp4
