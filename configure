@@ -128,7 +128,7 @@ check(
 check(
     "-libarchive*",
     desc="libarchive",
-    fn=lambda: check_pkg_config("libarchive >= 3.0.0"),
+    fn=lambda: check_pkg_config("libarchive >= 3.4.0"),
     required=True,
 )
 check(
