@@ -106,6 +106,43 @@ static void seek_chapter(VideoState *is, int incr) {
     stream_seek(is, av_rescale_q(is->ic->chapters[i]->start, is->ic->chapters[i]->time_base, AV_TIME_BASE_Q), 0, 0);
 }
 
+static void seek_relative(VideoState *is, double incr) {
+    double pos;
+
+    if (!demuxer_ready(is)) {
+        return;
+    }
+    osd_show_seek();
+    if (seeking_by_bytes(is)) {
+        pos = -1;
+        if (pos < 0 && is->video_stream >= 0) {
+            pos = frame_queue_last_pos(&is->pictq);
+        }
+        if (pos < 0 && is->audio_stream >= 0) {
+            pos = frame_queue_last_pos(&is->sampq);
+        }
+        if (pos < 0) {
+            pos = avio_tell(is->ic->pb);
+        }
+        if (is->ic->bit_rate) {
+            incr *= is->ic->bit_rate / 8.0;
+        } else {
+            incr *= 180000.0;
+        }
+        pos += incr;
+        stream_seek(is, pos, incr, 1);
+    } else {
+        pos = effective_playhead(is);
+        pos += incr;
+        if (is->ic->start_time != AV_NOPTS_VALUE &&
+            pos < is->ic->start_time / (double)AV_TIME_BASE) {
+            pos = is->ic->start_time / (double)AV_TIME_BASE;
+        }
+        stream_seek(is, (int64_t)(pos * AV_TIME_BASE),
+                    (int64_t)(incr * AV_TIME_BASE), 0);
+    }
+}
+
 /* We "roll" as a 90° rotation we can keep the controls sane. */
 static void sbs360_view_move(VideoState *cur_stream, float sx, float sy) {
     int quadrant = (((int)lroundf(sbs360_roll / 90.0f)) % 4 + 4) % 4;
@@ -163,7 +200,7 @@ static void playlist_advance_or_exit(VideoState **pis) {
 void event_loop(VideoState **pis) {
     VideoState *cur_stream;
     SDL_Event event;
-    double incr, pos, frac;
+    double incr, frac;
 
     for (;;) {
         double x;
@@ -421,36 +458,7 @@ void event_loop(VideoState **pis) {
             case SDLK_DOWN:
                 incr = -60.0;
             do_seek:
-                if (!demuxer_ready(cur_stream)) {
-                    break;
-                }
-                osd_show_seek();
-                if (seeking_by_bytes(cur_stream)) {
-                    pos = -1;
-                    if (pos < 0 && cur_stream->video_stream >= 0) {
-                        pos = frame_queue_last_pos(&cur_stream->pictq);
-                    }
-                    if (pos < 0 && cur_stream->audio_stream >= 0) {
-                        pos = frame_queue_last_pos(&cur_stream->sampq);
-                    }
-                    if (pos < 0) {
-                        pos = avio_tell(cur_stream->ic->pb);
-                    }
-                    if (cur_stream->ic->bit_rate) {
-                        incr *= cur_stream->ic->bit_rate / 8.0;
-                    } else {
-                        incr *= 180000.0;
-                    }
-                    pos += incr;
-                    stream_seek(cur_stream, pos, incr, 1);
-                } else {
-                    pos = effective_playhead(cur_stream);
-                    pos += incr;
-                    if (cur_stream->ic->start_time != AV_NOPTS_VALUE && pos < cur_stream->ic->start_time / (double)AV_TIME_BASE) {
-                        pos = cur_stream->ic->start_time / (double)AV_TIME_BASE;
-                    }
-                    stream_seek(cur_stream, (int64_t)(pos * AV_TIME_BASE), (int64_t)(incr * AV_TIME_BASE), 0);
-                }
+                seek_relative(cur_stream, incr);
                 break;
             case SDLK_1:
                 osd_toggle_info_page(1);
@@ -672,6 +680,30 @@ void event_loop(VideoState **pis) {
                 stream_seek(cur_stream, ts, 0, 0);
             }
             break;
+        case SDL_EVENT_MOUSE_WHEEL: {
+            /* Try to account for the precise delta of trackpads. */
+            static float wheel_bank;
+            float dy = event.wheel.y;
+            int notches;
+
+            if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
+                dy = -dy;
+            }
+            if ((dy < 0.0f) != (wheel_bank < 0.0f)) {
+                wheel_bank = 0.0f;
+            }
+            wheel_bank += dy;
+
+            notches = (int)wheel_bank;
+            if (!notches) {
+                break;
+            }
+            wheel_bank -= (float)notches;
+
+            incr = seek_interval ? seek_interval : 5.0;
+            seek_relative(cur_stream, incr * notches);
+            break;
+        }
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             if (note_window_pixel_size(event.window.data1, event.window.data2)) {
                 video_adopt_window_size(cur_stream);
