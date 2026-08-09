@@ -1421,6 +1421,7 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
 static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                                 AVDictionary *opt) {
     HWND hwnd;
+    int software = force_software(opt);
     int w, h;
 
     hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
@@ -1435,8 +1436,8 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                                          pl_d3d11_params(
                                              .debug = enable_debug(opt),
                                              .allow_software = true,
-                                             .force_software = force_software(opt),
-                                             .flags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+                                             .force_software = software,
+                                             .flags = software ? 0 : D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                              .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
     /* clang-format on */
     if (!ctx->placebo_d3d11) {
@@ -1469,7 +1470,8 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
     snprintf(ctx->api_name, sizeof(ctx->api_name), "Direct3D 11");
     d3d11_read_device_name(ctx);
 
-    if (d3d11_create_hw_device(ctx) < 0) {
+    if (!ctx->placebo_d3d11->software) {
+        (void)d3d11_create_hw_device(ctx);
     }
 
     return 0;
@@ -1558,6 +1560,11 @@ static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
                                       .h = AV_CEIL_RSHIFT(full_h, sub_h), ));
             /* clang-format on */
             if (!*slot) {
+                return false;
+            }
+            /* A pool allocated without D3D11_BIND_SHADER_RESOURCE wraps happily but can't be sampled. */
+            if (!(*slot)->params.sampleable) {
+                pl_tex_destroy(ctx->gpu, slot);
                 return false;
             }
         }
