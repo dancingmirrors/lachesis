@@ -120,7 +120,8 @@ jobs:
           LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h
 
           ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v mpeg4 /tmp/test.mp4
-          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBARRY_PATH SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+          #LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBARRY_PATH SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH xvfb-run -a env SDL_VIDEO_DRIVER=x11 lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
           LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBARRY_PATH SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
 
           rm -rf build
