@@ -144,6 +144,7 @@ int main(void) {
     PROCESS_INFORMATION process;
     STARTUPINFOW startup;
     DWORD status = 1;
+    UINT console_cp;
 
     if (!self || !player || !command_line) {
         write_error(L"lachesis: out of memory\r\n");
@@ -162,6 +163,7 @@ int main(void) {
     startup.hStdError = std_handle(STD_ERROR_HANDLE);
 
     SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+    console_cp = GetConsoleOutputCP();
 
     if (!CreateProcessW(player, command_line, NULL, NULL, TRUE, 0, NULL, NULL,
                         &startup, &process)) {
@@ -175,6 +177,10 @@ int main(void) {
         status = 1;
     }
     CloseHandle(process.hProcess);
+
+    if (console_cp) {
+        SetConsoleOutputCP(console_cp);
+    }
 
 done:
     free(self);

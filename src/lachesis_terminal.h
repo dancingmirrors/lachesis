@@ -21,6 +21,7 @@
 #ifndef LACHESIS_TERMINAL_H
 #define LACHESIS_TERMINAL_H
 
+void terminal_output_init(void);
 void terminal_input_init(void);
 void terminal_input_poll(void);
 void terminal_restore_now(void);

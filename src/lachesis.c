@@ -3081,6 +3081,7 @@ int main(int argc, char **argv) {
     win32_argv_to_utf8(&argc, &argv);
 #endif
 
+    terminal_output_init();
     init_dynload();
 
     log_init();

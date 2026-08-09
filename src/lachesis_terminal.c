@@ -26,6 +26,7 @@
 #if defined(_WIN32)
 #include <conio.h>
 #include <io.h>
+#include <windows.h>
 #else
 #include <poll.h>
 #include <signal.h>
@@ -40,17 +41,38 @@
 
 static int terminal_active = 0;
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+static volatile UINT saved_console_cp = 0;
+#else
 static struct termios saved_termios;
 static volatile sig_atomic_t saved_termios_valid = 0;
 #endif
 
 void terminal_restore_now(void) {
-#if !defined(_WIN32)
+#if defined(_WIN32)
+    UINT cp = saved_console_cp;
+
+    if (cp) {
+        saved_console_cp = 0;
+        SetConsoleOutputCP(cp);
+    }
+#else
     if (saved_termios_valid) {
         saved_termios_valid = 0;
         tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
     }
+#endif
+}
+
+void terminal_output_init(void) {
+#if defined(_WIN32)
+    UINT cp = GetConsoleOutputCP();
+
+    if (!cp || cp == CP_UTF8 || !SetConsoleOutputCP(CP_UTF8)) {
+        return;
+    }
+    saved_console_cp = cp;
+    atexit(terminal_restore_now);
 #endif
 }
 
