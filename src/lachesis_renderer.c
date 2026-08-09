@@ -249,6 +249,28 @@ static void hwctx_unlock_queue(void *priv, uint32_t qf, uint32_t qidx) {
 #endif
 }
 
+static int want_host_image_copy(const AVDictionary *opt) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "host_image_copy", NULL, 0);
+    int want = 0;
+
+    if (entry && entry->value) {
+        want = strtol(entry->value, NULL, 10) != 0;
+    }
+
+    return want;
+}
+
+static const char *const placebo_instance_extensions[] = {
+    VK_EXT_SWAPCHAIN_COLOR_SPACE_EXTENSION_NAME,
+    VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME,
+#ifdef VK_KHR_surface_maintenance1
+    VK_KHR_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
+#endif
+#ifdef VK_EXT_surface_maintenance1
+    VK_EXT_SURFACE_MAINTENANCE_1_EXTENSION_NAME,
+#endif
+};
+
 static int add_instance_extension(const char **ext, unsigned num_ext,
                                   const AVDictionary *opt,
                                   AVDictionary **dict) {
@@ -260,16 +282,21 @@ static int add_instance_extension(const char **ext, unsigned num_ext,
 
     av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
     for (unsigned i = 0; i < num_ext; i++) {
-        if (i) {
-            av_bprintf(&buf, "+%s", ext[i]);
-        } else {
-            av_bprintf(&buf, "%s", ext[i]);
+        if (buf.len) {
+            av_bprintf(&buf, "+");
         }
+        av_bprintf(&buf, "%s", ext[i]);
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(placebo_instance_extensions); i++) {
+        if (buf.len) {
+            av_bprintf(&buf, "+");
+        }
+        av_bprintf(&buf, "%s", placebo_instance_extensions[i]);
     }
 
     entry = av_dict_get(opt, inst_ext_key, NULL, 0);
     if (entry && entry->value && entry->value[0]) {
-        if (num_ext) {
+        if (buf.len) {
             av_bprintf(&buf, "+");
         }
         av_bprintf(&buf, "%s", entry->value);
@@ -293,6 +320,11 @@ static int add_device_extension(const AVDictionary *opt,
     av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
     av_bprintf(&buf, "%s", VK_KHR_SWAPCHAIN_EXTENSION_NAME);
     for (int i = 0; i < pl_vulkan_num_recommended_extensions; i++) {
+        if (!want_host_image_copy(opt) &&
+            !strcmp(pl_vulkan_recommended_extensions[i],
+                    VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME)) {
+            continue;
+        }
         av_bprintf(&buf, "+%s", pl_vulkan_recommended_extensions[i]);
     }
     if (present_timing) {
@@ -327,19 +359,134 @@ static const char *select_device(const AVDictionary *opt) {
     return NULL;
 }
 
-static int want_host_image_copy(const AVDictionary *opt) {
-    const AVDictionaryEntry *entry = av_dict_get(opt, "host_image_copy", NULL, 0);
-#ifdef __APPLE__
-    int want = 0;
-#else
-    int want = 1;
-#endif
+static struct {
+    PFN_vkGetInstanceProcAddr real_proc_addr;
+    PFN_vkEnumerateDeviceExtensionProperties real_enumerate;
+    PFN_vkGetPhysicalDeviceFeatures2 real_features2;
+    PFN_vkGetPhysicalDeviceFeatures2KHR real_features2_khr;
+} no_host_copy;
 
-    if (entry && entry->value) {
-        want = strtol(entry->value, NULL, 10) != 0;
+static void scrub_host_image_copy(VkPhysicalDeviceFeatures2 *features) {
+    for (VkBaseOutStructure *s = (VkBaseOutStructure *)features; s;
+         s = s->pNext) {
+        switch (s->sType) {
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT:
+            ((VkPhysicalDeviceHostImageCopyFeaturesEXT *)s)->hostImageCopy =
+                VK_FALSE;
+            break;
+#ifdef VK_VERSION_1_4
+        case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES:
+            ((VkPhysicalDeviceVulkan14Features *)s)->hostImageCopy = VK_FALSE;
+            break;
+#endif
+        default:
+            break;
+        }
+    }
+}
+
+static VKAPI_ATTR VkResult VKAPI_CALL
+hide_host_copy_enumerate(VkPhysicalDevice phys_dev, const char *layer,
+                         uint32_t *count, VkExtensionProperties *props) {
+    VkExtensionProperties *all;
+    uint32_t num_all = 0;
+    uint32_t kept = 0;
+    VkResult ret;
+
+    ret = no_host_copy.real_enumerate(phys_dev, layer, &num_all, NULL);
+    if (ret != VK_SUCCESS || !num_all) {
+        *count = 0;
+        return ret;
     }
 
-    return want;
+    all = av_calloc(num_all, sizeof(*all));
+    if (!all) {
+        return no_host_copy.real_enumerate(phys_dev, layer, count, props);
+    }
+
+    ret = no_host_copy.real_enumerate(phys_dev, layer, &num_all, all);
+    if (ret != VK_SUCCESS && ret != VK_INCOMPLETE) {
+        av_free(all);
+        return ret;
+    }
+
+    for (uint32_t i = 0; i < num_all; i++) {
+        if (!strcmp(all[i].extensionName,
+                    VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME)) {
+            continue;
+        }
+        all[kept++] = all[i];
+    }
+
+    if (!props) {
+        *count = kept;
+        ret = VK_SUCCESS;
+    } else {
+        uint32_t num = FFMIN(*count, kept);
+
+        memcpy(props, all, num * sizeof(*props));
+        ret = num < kept ? VK_INCOMPLETE : VK_SUCCESS;
+        *count = num;
+    }
+    av_free(all);
+
+    return ret;
+}
+
+static VKAPI_ATTR void VKAPI_CALL
+hide_host_copy_features(VkPhysicalDevice phys_dev,
+                        VkPhysicalDeviceFeatures2 *features) {
+    no_host_copy.real_features2(phys_dev, features);
+    scrub_host_image_copy(features);
+}
+
+static VKAPI_ATTR void VKAPI_CALL
+hide_host_copy_features_khr(VkPhysicalDevice phys_dev,
+                            VkPhysicalDeviceFeatures2 *features) {
+    no_host_copy.real_features2_khr(phys_dev, features);
+    scrub_host_image_copy(features);
+}
+
+static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL
+hide_host_copy_proc_addr(VkInstance inst, const char *name) {
+    PFN_vkVoidFunction real;
+
+    if (!no_host_copy.real_proc_addr) {
+        return NULL;
+    }
+    real = no_host_copy.real_proc_addr(inst, name);
+    if (!real || !name) {
+        return real;
+    }
+
+    if (!strcmp(name, "vkEnumerateDeviceExtensionProperties")) {
+        no_host_copy.real_enumerate =
+            (PFN_vkEnumerateDeviceExtensionProperties)real;
+        return (PFN_vkVoidFunction)hide_host_copy_enumerate;
+    }
+    if (!strcmp(name, "vkGetPhysicalDeviceFeatures2")) {
+        no_host_copy.real_features2 = (PFN_vkGetPhysicalDeviceFeatures2)real;
+        return (PFN_vkVoidFunction)hide_host_copy_features;
+    }
+    if (!strcmp(name, "vkGetPhysicalDeviceFeatures2KHR")) {
+        no_host_copy.real_features2_khr =
+            (PFN_vkGetPhysicalDeviceFeatures2KHR)real;
+        return (PFN_vkVoidFunction)hide_host_copy_features_khr;
+    }
+
+    return real;
+}
+
+static PFN_vkGetInstanceProcAddr
+hide_host_image_copy(PFN_vkGetInstanceProcAddr real) {
+    if (!real || real == hide_host_copy_proc_addr) {
+        return real;
+    }
+    no_host_copy.real_proc_addr = real;
+    log_verbose("Hiding %s from the Vulkan device.\n",
+                VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME);
+
+    return hide_host_copy_proc_addr;
 }
 
 static const char *const *drop_host_image_copy(RendererContext *ctx,
@@ -595,6 +742,9 @@ static int create_vk_by_placebo(Renderer *renderer,
     placebo_proc_addr = present_timing
         ? vkpresent_wrap_proc_addr(ctx->get_proc_addr)
         : ctx->get_proc_addr;
+    if (!want_host_image_copy(opt)) {
+        placebo_proc_addr = hide_host_image_copy(placebo_proc_addr);
+    }
 
     /* clang-format off */
     ctx->placebo_instance = pl_vk_inst_create(ctx->log_ctx, pl_vk_inst_params(
@@ -653,7 +803,7 @@ static int create_vk_by_placebo(Renderer *renderer,
                                                .instance = ctx->placebo_instance->instance,
                                                .get_proc_addr = ctx->placebo_instance->get_proc_addr,
                                                .surface = ctx->vk_surface,
-                                               .allow_software = false,
+                                               .allow_software = true,
                                                .opt_extensions = opt_exts,
                                                .num_opt_extensions = num_opt_exts,
                                                .features = present_timing ? vkpresent_device_features() : NULL,
@@ -850,6 +1000,7 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
     unsigned num_ext = 0;
     const char **ext = NULL;
     int present_timing = 1;
+    int by_placebo;
     int ret;
     int w, h;
 
@@ -876,7 +1027,15 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
     }
 
     entry = av_dict_get(opt, "create_by_placebo", NULL, 0);
-    if (entry && strtol(entry->value, NULL, 10)) {
+    if (entry && entry->value) {
+        by_placebo = strtol(entry->value, NULL, 10) != 0;
+        if (!by_placebo && !want_host_image_copy(opt)) {
+        }
+    } else {
+        by_placebo = !want_host_image_copy(opt);
+    }
+
+    if (by_placebo) {
         ret = create_vk_by_placebo(renderer, ext, num_ext, opt, present_timing);
     } else {
         ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt, present_timing);
