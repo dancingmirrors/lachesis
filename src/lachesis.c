@@ -233,7 +233,6 @@ static int pause_next_stream = 0;
 
 static char **pending_dirs = NULL;
 static int n_pending_dirs = 0;
-static int startup_vfilter_idx = 0;
 int default_width = 640;
 int default_height = 480;
 int screen_width = 0;
@@ -2405,7 +2404,6 @@ static VideoState *stream_open(const char *filename,
     if (!is) {
         return NULL;
     }
-    is->vfilter_idx = startup_vfilter_idx;
     video_adopt_window_size(is);
     is->last_render_serial = -1;
     SDL_SetAtomicInt(&is->seek_by_bytes, -1);
@@ -3118,9 +3116,14 @@ int main(int argc, char **argv) {
         exit(ret == AVERROR_EXIT ? 0 : 1);
     }
 
-    /* XXX */
     if (nb_vfilters > nb_config_vfilters) {
-        startup_vfilter_idx = nb_config_vfilters;
+        for (int i = 0; i < nb_config_vfilters; i++) {
+            av_freep(&vfilters_list[i]);
+        }
+        nb_vfilters -= nb_config_vfilters;
+        for (int i = 0; i < nb_vfilters; i++) {
+            vfilters_list[i] = vfilters_list[i + nb_config_vfilters];
+        }
     }
 
     for (int i = 0; i < nb_vfilters; i++) {

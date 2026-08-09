@@ -671,7 +671,7 @@ static int external_subtitle_open(VideoState *is) {
     if (!is->filename || is->subtitle_st || subtitle_disable) {
         return -1;
     }
-    /* XXX */
+    /* Only here to skip the stat calls. */
     if (is->archive_path || strstr(is->filename, "://")) {
         return -1;
     }

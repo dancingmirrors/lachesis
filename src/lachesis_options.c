@@ -121,7 +121,6 @@ int terminal_quit_disable = 0;
 double display_fps_override = 0.0;
 int no_vsync_snap = 0;
 double fps_convert = 0.0;
-/* XXX: Is 260% loud enough to void your warranty? */
 int allow_volume_boost = 1;
 
 static int grow_array(void **array, int elem_size, int *size, int new_size) {
@@ -255,7 +254,7 @@ const OptionDef options[] = {
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
-    {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters", "filter_graph"},
+    {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters (pass more than once to cycle between them with W)", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
     {"audio-spdif", OPT_TYPE_STRING, 0, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ':'", "codecs"},
     {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match", ""},

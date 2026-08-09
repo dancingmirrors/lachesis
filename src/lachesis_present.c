@@ -346,7 +346,17 @@ void present_get_stats(PresentStats *st) {
 #else
 #define HAVE_PRESENT_WAIT 0
 #endif
-#if defined(VK_GOOGLE_display_timing) && defined(CLOCK_MONOTONIC) && !defined(_WIN32)
+
+#if defined(__APPLE__)
+#if defined(CLOCK_UPTIME_RAW)
+#define PRESENT_DRIVER_CLOCK CLOCK_UPTIME_RAW
+#endif
+#elif defined(CLOCK_MONOTONIC)
+#define PRESENT_DRIVER_CLOCK CLOCK_MONOTONIC
+#endif
+
+#if defined(VK_GOOGLE_display_timing) && defined(PRESENT_DRIVER_CLOCK) && \
+    !defined(_WIN32)
 #define HAVE_DISPLAY_TIMING 1
 #else
 #define HAVE_DISPLAY_TIMING 0
@@ -403,7 +413,7 @@ av_unused static int64_t driver_ns_to_relative_us(uint64_t driver_ns) {
 #if HAVE_DISPLAY_TIMING
     struct timespec ts;
 
-    if (driver_ns && !clock_gettime(CLOCK_MONOTONIC, &ts)) {
+    if (driver_ns && !clock_gettime(PRESENT_DRIVER_CLOCK, &ts)) {
         int64_t now_ns = (int64_t)ts.tv_sec * INT64_C(1000000000) + ts.tv_nsec;
         int64_t behind_us = (now_ns - (int64_t)driver_ns) / 1000;
 
@@ -752,8 +762,10 @@ void vkpresent_attach(VkDevice device, const char *const *extensions,
                       VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) {
         vkp.get_past_timing = (PFN_vkGetPastPresentationTimingGOOGLE)
                                   vkp.real_device_proc_addr(device, "vkGetPastPresentationTimingGOOGLE");
+#ifndef __APPLE__
         vkp.get_refresh_cycle = (PFN_vkGetRefreshCycleDurationGOOGLE)
                                     vkp.real_device_proc_addr(device, "vkGetRefreshCycleDurationGOOGLE");
+#endif
         vkp.have_display_timing = vkp.get_past_timing != NULL;
     }
 #endif

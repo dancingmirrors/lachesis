@@ -426,8 +426,14 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_W:
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
                 if (nb_vfilters > 0) {
                     cur_stream->vfilter_idx = (cur_stream->vfilter_idx + 1) % nb_vfilters;
+                    osd_show_message("Video filter: %s",
+                                     vfilters_list[cur_stream->vfilter_idx]);
+                    cur_stream->force_refresh = 1;
                 }
                 break;
             case SDLK_PAGEUP:
@@ -722,6 +728,9 @@ void event_loop(VideoState **pis) {
             if (renderer_refresh_display_info(renderer, window)) {
                 cur_stream->force_refresh = 1;
             }
+            break;
+        case SDL_EVENT_DISPLAY_CURRENT_MODE_CHANGED:
+            present_update_display_mode();
             break;
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
             present_update_display_mode();
