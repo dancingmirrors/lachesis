@@ -522,6 +522,15 @@ def dedup_ldflags(flags):
     return out
 
 
+def _python_command():
+    python = sys.executable or "python3"
+    if sys.platform in ("cygwin", "msys") and python.startswith("/"):
+        native = _run_process(["cygpath", "-m", python])
+        if native:
+            python = native.strip()
+    return python
+
+
 def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
     cc = _G.programs.get("CC", "cc")
     windres = _G.programs.get("WINDRES", "windres")
@@ -544,6 +553,7 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
     n += "root = %s\n" % root_dir
     n += "cc = %s\n" % cc
     n += "windres = %s\n" % windres
+    n += "python = %s\n" % _python_command()
     n += "cflags = %s\n" % cflags_str
     n += "ldflags = %s\n" % ldflags_str
     n += "exesuf = %s\n" % exesuf
@@ -569,7 +579,7 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
 
     version_h = "$builddir/version.h"
     n += "rule genversion\n"
-    n += "  command = sh $root/version.sh --versionh=$out --cwd=$root\n"
+    n += '  command = "$python" $root/version.py --versionh=$out --cwd=$root\n'
     n += "  description = VERSION $out\n"
     n += "  restat = 1\n\n"
     n += "build always_run: phony\n"
