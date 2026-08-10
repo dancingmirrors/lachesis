@@ -23,7 +23,7 @@ jobs:
           release: "10.1"
           usesh: true
           prepare: |
-            set -x
+            set -ex
 
             for s in xbase xcomp; do
                 ftp -o "/tmp/$s.tar.xz" \
@@ -32,13 +32,20 @@ jobs:
                 xz -dc "/tmp/$s.tar.xz" | tar -xpf - -C / || exit 1
             done
 
-            /usr/sbin/pkg_add MesaLib SDL3 ffmpeg8 git-base libarchive libass \
+            /usr/sbin/pkg_add MesaLib cmake ffmpeg8 git-base libarchive libass \
             meson ninja-build pkgconf python313 zlib
 
             ln -sf /usr/pkg/bin/python3.13 /usr/pkg/bin/python3
-
-            set -e
             export PATH="/usr/pkg/bin:$PATH"
+
+            git clone --depth 1 https://github.com/libsdl-org/SDL.git /tmp/SDL
+            cmake -S /tmp/SDL -B /tmp/SDL/build \
+                  -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
+                  -DCMAKE_PREFIX_PATH="/usr/pkg;/usr/X11R7" \
+                  -DSDL_SHARED=ON -DSDL_OPENGL=ON -DSDL_OPENGLES=ON
+            cmake --build /tmp/SDL/build -j"$(sysctl -n hw.ncpu)"
+            cmake --install /tmp/SDL/build
+
             git clone --depth 1 --recursive \
                 https://github.com/haasn/libplacebo.git /tmp/libplacebo
             meson setup --prefix=/usr/local --libdir=lib -Ddemos=false \
