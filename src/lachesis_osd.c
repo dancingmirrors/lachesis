@@ -140,6 +140,10 @@ static const char *osd_ui_family(void) {
     return osd_font_family[0] ? osd_font_family : LASS_UI_FAMILY;
 }
 
+const char *osd_font_name(void) {
+    return osd_ui_family();
+}
+
 static double osd_at_least_px(double units, double px) {
     if (osd_canvas_h > 0) {
         double floor_units = px * OSD_RES_H / osd_canvas_h;

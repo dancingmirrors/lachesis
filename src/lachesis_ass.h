@@ -31,6 +31,12 @@
 #define LASS_SYMBOL_FAMILY "lachesis-osd-symbols"
 #define LASS_EMOJI_FAMILY "Noto Emoji"
 
+#define LASS_SUB_RES_H 720.0
+#define LASS_SUB_FONT_SIZE 60.0
+#define LASS_SUB_OUTLINE 2.4
+#define LASS_SUB_MARGIN_V 30.0
+#define LASS_SUB_MARGIN_X 40.0
+
 ASS_Library *lass_library_new(int extract_fonts);
 void lass_library_free(ASS_Library *lib);
 
@@ -47,6 +53,7 @@ void lass_blend(SDL_Surface *dst, const ASS_Image *img, int x, int y);
 void lass_blit(SDL_Surface *dst, SDL_Surface *src, int x, int y);
 
 char *lass_strdup(const char *s);
+void lass_free(void *p);
 
 size_t lass_escape(char *out, size_t outsz, const char *text);
 

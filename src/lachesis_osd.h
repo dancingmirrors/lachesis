@@ -32,6 +32,8 @@ void osd_init(void);
 void osd_warmup(void);
 void osd_uninit(void);
 
+const char *osd_font_name(void);
+
 void osd_prepare(VideoState *is);
 
 void osd_show_status(void);

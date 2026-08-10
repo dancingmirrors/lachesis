@@ -123,6 +123,14 @@ char *lass_strdup(const char *s) {
     return p;
 }
 
+void lass_free(void *p) {
+#if defined(LIBASS_VERSION) && LIBASS_VERSION >= 0x01703000
+    ass_free(p);
+#else
+    free(p);
+#endif
+}
+
 void lass_renderer_setup(ASS_Renderer *renderer, const char *family) {
     ass_set_shaper(renderer, ASS_SHAPING_COMPLEX);
     ass_set_hinting(renderer, ASS_HINTING_NONE);

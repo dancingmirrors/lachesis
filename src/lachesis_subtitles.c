@@ -41,9 +41,13 @@
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
+#include "lachesis_osd.h"
 #include "lachesis_subtitles.h"
 
 #define ASS_EVENT_MAX 8192
+#define ASS_FIT_MAX_RATIO 0.45
+#define ASS_FIT_MIN_SCALE 0.5
+#define ASS_FIT_PASSES 3
 
 static ASS_Library *ass_library;
 static ASS_Renderer *ass_renderer;
@@ -52,6 +56,9 @@ static SDL_Mutex *ass_lock;
 
 static int ass_frame_w, ass_frame_h;
 static int ass_storage_w, ass_storage_h;
+
+static int ass_track_converted;
+static double ass_style_scale = 1.0;
 
 static int ass_text_readorder;
 
@@ -77,6 +84,8 @@ static void ass_engine_uninit_locked(void) {
     }
     ass_frame_w = ass_frame_h = 0;
     ass_storage_w = ass_storage_h = 0;
+    ass_track_converted = 0;
+    ass_style_scale = 1.0;
 }
 
 static int ass_engine_init_locked(void) {
@@ -110,6 +119,32 @@ void subtitles_init(void) {
 
 static int ass_have_lock(void) {
     return ass_lock != NULL;
+}
+
+static void subtitles_style_locked(double scale) {
+    double unit;
+
+    ass_style_scale = scale;
+    if (!ass_track || ass_track->PlayResY <= 0) {
+        return;
+    }
+    unit = scale * ass_track->PlayResY / LASS_SUB_RES_H;
+
+    for (int i = 0; i < ass_track->n_styles; i++) {
+        ASS_Style *st = &ass_track->styles[i];
+        char *family = lass_strdup(osd_font_name());
+
+        if (family) {
+            lass_free(st->FontName);
+            st->FontName = family;
+        }
+        st->FontSize = LASS_SUB_FONT_SIZE * unit;
+        st->Outline = LASS_SUB_OUTLINE * unit;
+        st->Shadow = 0.0;
+        st->BorderStyle = 1;
+        st->MarginL = st->MarginR = (int)(LASS_SUB_MARGIN_X * unit + 0.5);
+        st->MarginV = (int)(LASS_SUB_MARGIN_V * unit + 0.5);
+    }
 }
 
 static const char *ass_style_font_locked(const char *name, size_t len,
@@ -295,6 +330,16 @@ int subtitles_track_open(AVCodecContext *avctx) {
                                   ? avctx->subtitle_header_size
                                   : 0);
 
+    ass_track_converted = avctx->codec_id != AV_CODEC_ID_ASS &&
+        avctx->codec_id != AV_CODEC_ID_SSA;
+    if (ass_track_converted) {
+        ass_track->Kerning = 1;
+        ass_track_set_feature(ass_track, ASS_FEATURE_WRAP_UNICODE, 1);
+        subtitles_style_locked(1.0);
+        log_verbose("libass: %d converted as %s.\n",
+                    ass_track->n_styles, osd_font_name());
+    }
+
     ass_surface_stale = 1;
     ass_generation++;
 
@@ -312,6 +357,8 @@ void subtitles_track_close(void) {
         ass_free_track(ass_track);
         ass_track = NULL;
     }
+    ass_track_converted = 0;
+    ass_style_scale = 1.0;
     ass_surface_stale = 1;
     ass_generation++;
     SDL_UnlockMutex(ass_lock);
@@ -395,6 +442,43 @@ int subtitles_visible_at(double now) {
     return visible;
 }
 
+static ASS_Image *ass_fit_locked(long long now_ms, int frame_w, int frame_h,
+                                 ASS_Image *img) {
+    double limit_h = frame_h * ASS_FIT_MAX_RATIO;
+    int change;
+
+    if (ass_style_scale != 1.0) {
+        subtitles_style_locked(1.0);
+        img = ass_render_frame(ass_renderer, ass_track, now_ms, &change);
+    }
+
+    for (int pass = 0; pass < ASS_FIT_PASSES; pass++) {
+        double want = 1.0;
+        LassBounds b;
+
+        if (!img || !lass_bounds(img, 0, 0, &b)) {
+            break;
+        }
+        if (b.y1 - b.y0 > limit_h) {
+            want = limit_h / (b.y1 - b.y0);
+        }
+        if (b.x1 - b.x0 > frame_w) {
+            want = FFMIN(want, (double)frame_w / (b.x1 - b.x0));
+        }
+        if (want > 0.995) {
+            break;
+        }
+
+        subtitles_style_locked(FFMAX(ass_style_scale * want, ASS_FIT_MIN_SCALE));
+        img = ass_render_frame(ass_renderer, ass_track, now_ms, &change);
+        if (ass_style_scale <= ASS_FIT_MIN_SCALE) {
+            break;
+        }
+    }
+
+    return img;
+}
+
 static int ass_composite_locked(ASS_Image *img, int frame_w, int frame_h) {
     LassBounds b;
 
@@ -470,6 +554,10 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
         return 0;
     }
 
+    if (ass_track_converted) {
+        storage_w = storage_h = 0;
+    }
+
     if (ass_frame_w != frame_w || ass_frame_h != frame_h) {
         ass_frame_w = frame_w;
         ass_frame_h = frame_h;
@@ -488,6 +576,10 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
     }
 
     img = ass_render_frame(ass_renderer, ass_track, now_ms, &changed);
+    if (ass_track_converted && (changed || geometry_changed)) {
+        img = ass_fit_locked(now_ms, frame_w, frame_h, img);
+        changed = 1;
+    }
     if (!img) {
         if (ass_surface) {
             SDL_DestroySurface(ass_surface);
