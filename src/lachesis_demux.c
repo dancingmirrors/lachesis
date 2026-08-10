@@ -707,6 +707,55 @@ static int packet_in_play_range(AVFormatContext *ic, const AVPacket *pkt) {
         (double)play_duration / 1000000.0;
 }
 
+static void note_packet_extent(VideoState *is, const AVPacket *pkt) {
+    AVStream *st = is->ic->streams[pkt->stream_index];
+    int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+    enum AVMediaType type = st->codecpar->codec_type;
+    double end;
+
+    if (ts == AV_NOPTS_VALUE ||
+        (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO) ||
+        (st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        return;
+    }
+    end = (ts + FFMAX(pkt->duration, 0)) * av_q2d(st->time_base) -
+        playhead_origin(is);
+    if (isnan(is->observed_pos)) {
+        is->observed_pos = end;
+    } else if (end > is->observed_pos + is->max_frame_duration) {
+        return;
+    }
+    if (end > is->observed_pos) {
+        is->observed_pos = end;
+    }
+    if (end > is->observed_length) {
+        is->observed_length = end;
+    }
+}
+
+static int64_t media_end_ts(const VideoState *is) {
+    double length = playhead_length(is);
+
+    if (length <= 0.0) {
+        return AV_NOPTS_VALUE;
+    }
+
+    return (int64_t)((playhead_origin(is) + length) * AV_TIME_BASE);
+}
+
+static void signal_eof(VideoState *is, AVPacket *pkt) {
+    if (is->video_stream >= 0) {
+        packet_queue_put_nullpacket(&is->videoq, pkt, is->video_stream);
+    }
+    if (is->audio_stream >= 0) {
+        packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
+    }
+    if (is->subtitle_stream >= 0) {
+        packet_queue_put_nullpacket(&is->subtitleq, pkt, is->subtitle_stream);
+    }
+    is->eof = 1;
+}
+
 static int play_range_exhausted(const VideoState *is, int vid_over, int aud_over) {
     int gated = 0;
 
@@ -1203,12 +1252,26 @@ int read_thread(void *arg) {
             is->play_range_done = 0;
             is->audio_range_over = 0;
             vid_range_over = aud_range_over = 0;
+            int seek_serial = is->seek_serial;
             int64_t seek_target = is->seek_pos;
-            int64_t seek_min = is->seek_rel > 0 ? seek_target - is->seek_rel + 2 : INT64_MIN;
-            int64_t seek_max = is->seek_rel < 0 ? seek_target - is->seek_rel - 2 : INT64_MAX;
-            ret = avformat_seek_file(is->ic, -1, seek_min, seek_target, seek_max, is->seek_flags);
+            int seek_flags = is->seek_flags;
+            int seek_exact = is->seek_exact;
+            int64_t seek_rel = is->seek_rel;
+            int64_t seek_min = seek_rel > 0 ? seek_target - seek_rel + 2 : INT64_MIN;
+            int64_t seek_max = seek_rel < 0 ? seek_target - seek_rel - 2 : INT64_MAX;
+            int64_t media_end = media_end_ts(is);
+            int past_end = 0;
+
+            ret = avformat_seek_file(is->ic, -1, seek_min, seek_target, seek_max,
+                                     seek_flags);
             if (is->abort_request) {
                 break;
+            }
+            if (ret < 0 && !(seek_flags & AVSEEK_FLAG_BYTE) &&
+                !is->is_still_image && !is->eof &&
+                media_end != AV_NOPTS_VALUE && seek_target >= media_end) {
+                past_end = 1;
+                ret = 0;
             }
             if (ret < 0) {
                 exact_seek_cancel(is);
@@ -1223,37 +1286,51 @@ int read_thread(void *arg) {
                 if (is->video_stream >= 0) {
                     packet_queue_flush(&is->videoq);
                 }
-                if (is->seek_exact && !(is->seek_flags & AVSEEK_FLAG_BYTE)) {
+                if (seek_exact && !past_end && !(seek_flags & AVSEEK_FLAG_BYTE)) {
                     exact_seek_arm(is, seek_target);
                 } else {
                     exact_seek_cancel(is);
                 }
-                if (is->seek_flags & AVSEEK_FLAG_BYTE) {
+                if (seek_flags & AVSEEK_FLAG_BYTE) {
                     set_clock(&is->extclk, NAN, 0);
                 } else {
                     set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
+                    is->observed_pos = seek_target / (double)AV_TIME_BASE -
+                        playhead_origin(is);
                 }
-                if (is->audio_ic) {
+                if (is->audio_ic && !past_end) {
                     is->audio_seek_min = seek_min;
                     is->audio_seek_pos = seek_target;
                     is->audio_seek_max = seek_max;
-                    is->audio_seek_flags = is->seek_flags;
+                    is->audio_seek_flags = seek_flags;
                     is->audio_seek_pending = 1;
                 }
-                if (is->sub_ic) {
+                if (is->sub_ic && !past_end) {
                     packet_queue_flush(&is->subtitleq);
-                    is->sub_seek_min = seek_min;
-                    is->sub_seek_pos = seek_target;
-                    is->sub_seek_max = seek_max;
-                    is->sub_seek_flags = is->seek_flags;
-                    is->sub_seek_pending = 1;
+                    if (!(seek_flags & AVSEEK_FLAG_BYTE)) {
+                        int64_t off = is->sub_ts_offset;
+
+                        is->sub_seek_min =
+                            seek_min == INT64_MIN ? seek_min : seek_min - off;
+                        is->sub_seek_pos = seek_target - off;
+                        is->sub_seek_max =
+                            seek_max == INT64_MAX ? seek_max : seek_max - off;
+                        is->sub_seek_flags = seek_flags;
+                        is->sub_seek_pending = 1;
+                    }
                 }
             }
-            is->seek_req = 0;
+            if (is->seek_serial == seek_serial) {
+                is->seek_req = 0;
+            }
             is->queue_attachments_req = 1;
             is->eof = 0;
             still_deadline_us = 0;
             still_range_done = 0;
+            if (past_end) {
+                signal_eof(is, pkt);
+                is->play_range_done = 1;
+            }
             if (is->paused) {
                 step_to_next_frame(is);
             }
@@ -1334,16 +1411,7 @@ int read_thread(void *arg) {
         ret = av_read_frame(ic, pkt);
         if (ret < 0) {
             if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof) {
-                if (is->video_stream >= 0) {
-                    packet_queue_put_nullpacket(&is->videoq, pkt, is->video_stream);
-                }
-                if (is->audio_stream >= 0) {
-                    packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
-                }
-                if (is->subtitle_stream >= 0) {
-                    packet_queue_put_nullpacket(&is->subtitleq, pkt, is->subtitle_stream);
-                }
-                is->eof = 1;
+                signal_eof(is, pkt);
             }
             if (ic->pb && ic->pb->error) {
                 goto fail;
@@ -1358,6 +1426,8 @@ int read_thread(void *arg) {
 
         ic->event_flags &= ~AVFMT_EVENT_FLAG_METADATA_UPDATED;
         ic->streams[pkt->stream_index]->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
+
+        note_packet_extent(is, pkt);
 
         pkt_in_play_range = packet_in_play_range(ic, pkt);
         if (pkt->stream_index == is->video_stream) {

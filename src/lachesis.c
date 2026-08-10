@@ -1614,7 +1614,23 @@ int video_stream_advances(VideoState *is) {
         !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC);
 }
 
-double playhead_origin(VideoState *is) {
+static int duration_counts_from_zero(const AVFormatContext *ic) {
+    static const char *const formats[] = {"matroska,webm", "asf", "asf_o"};
+
+    if (!ic->iformat || !ic->iformat->name ||
+        ic->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE) {
+        return 0;
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(formats); i++) {
+        if (!strcmp(ic->iformat->name, formats[i])) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+double playhead_origin(const VideoState *is) {
     if (is->ic && is->ic->start_time != AV_NOPTS_VALUE) {
         return is->ic->start_time / (double)AV_TIME_BASE;
     }
@@ -1622,15 +1638,26 @@ double playhead_origin(VideoState *is) {
     return 0.0;
 }
 
-double playhead_length(VideoState *is) {
+double playhead_length(const VideoState *is) {
+    double length = 0.0;
+
     if (is->ic && is->ic->duration != AV_NOPTS_VALUE && is->ic->duration > 0) {
-        return is->ic->duration / (double)AV_TIME_BASE;
+        double origin = playhead_origin(is);
+
+        length = is->ic->duration / (double)AV_TIME_BASE;
+        if (origin > 0.0 && length > origin &&
+            duration_counts_from_zero(is->ic)) {
+            length -= origin;
+        }
+    }
+    if (length > 0.0 && is->observed_length > length) {
+        length = is->observed_length;
     }
 
-    return 0.0;
+    return length;
 }
 
-double playhead_elapsed(VideoState *is, double pos) {
+double playhead_elapsed(const VideoState *is, double pos) {
     double length = playhead_length(is);
 
     if (isnan(pos)) {
@@ -1647,7 +1674,7 @@ double playhead_elapsed(VideoState *is, double pos) {
     return pos;
 }
 
-double playhead_clamp(VideoState *is, double pos) {
+double playhead_clamp(const VideoState *is, double pos) {
     double origin = playhead_origin(is);
     double length = playhead_length(is);
 
@@ -1748,13 +1775,15 @@ void exact_seek_cancel(VideoState *is) {
 }
 
 void exact_seek_arm(VideoState *is, int64_t target) {
+    double length;
+
     exact_seek_cancel(is);
     if (target == AV_NOPTS_VALUE || is->is_still_image) {
         return;
     }
-    if (is->ic && is->ic->duration != AV_NOPTS_VALUE &&
-        target / (double)AV_TIME_BASE >=
-            playhead_origin(is) + is->ic->duration / (double)AV_TIME_BASE) {
+    length = playhead_length(is);
+    if (length > 0.0 &&
+        target / (double)AV_TIME_BASE >= playhead_origin(is) + length) {
         return;
     }
     is->exact_seek_pts = target / (double)AV_TIME_BASE;
@@ -1790,18 +1819,18 @@ int exact_seek_drop_audio(VideoState *is, double pts, double duration) {
     return exact_seek_drop(is, &is->auddec, is->exact_seek_audio_serial, pts, duration);
 }
 
+/* Replace whatever is pending rather than dropping the request. */
 static void stream_seek_to(VideoState *is, int64_t pos, int64_t rel, int by_bytes, int exact) {
-    if (!is->seek_req) {
-        is->seek_pos = pos;
-        is->seek_rel = rel;
-        is->seek_exact = exact;
-        is->seek_flags &= ~AVSEEK_FLAG_BYTE;
-        if (by_bytes) {
-            is->seek_flags |= AVSEEK_FLAG_BYTE;
-        }
-        is->seek_req = 1;
-        SDL_SignalCondition(is->continue_read_thread);
+    is->seek_pos = pos;
+    is->seek_rel = rel;
+    is->seek_exact = exact;
+    is->seek_flags &= ~AVSEEK_FLAG_BYTE;
+    if (by_bytes) {
+        is->seek_flags |= AVSEEK_FLAG_BYTE;
     }
+    is->seek_serial++;
+    is->seek_req = 1;
+    SDL_SignalCondition(is->continue_read_thread);
 }
 
 void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes) {
@@ -2573,6 +2602,7 @@ static VideoState *stream_open(const char *filename,
     }
     video_adopt_window_size(is);
     is->last_render_serial = -1;
+    is->observed_pos = NAN;
     SDL_SetAtomicInt(&is->seek_by_bytes, -1);
     is->last_video_stream = is->video_stream = -1;
     is->last_audio_stream = is->audio_stream = -1;

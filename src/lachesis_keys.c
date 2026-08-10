@@ -151,16 +151,19 @@ static void seek_relative(VideoState *is, double incr) {
         pos += incr;
         stream_seek(is, pos, incr, 1);
     } else {
-        double target, clamped;
+        double target;
 
         pos = effective_playhead(is);
         if (isnan(pos)) {
             pos = playhead_origin(is);
         }
         target = pos + incr;
-        clamped = playhead_clamp(is, target);
-        if ((clamped - pos) * incr >= 0.0 && fabs(clamped - pos) <= fabs(incr)) {
-            target = clamped;
+        if (incr < 0.0) {
+            double clamped = playhead_clamp(is, target);
+
+            if ((clamped - pos) * incr >= 0.0 && fabs(clamped - pos) <= fabs(incr)) {
+                target = clamped;
+            }
         }
         if (fabs(target - pos) < SEEK_MIN_STEP) {
             return;
@@ -227,7 +230,8 @@ static void playlist_advance_or_exit(VideoState **pis) {
 void event_loop(VideoState **pis) {
     VideoState *cur_stream;
     SDL_Event event;
-    double incr, frac;
+
+    double incr, frac, length;
 
     for (;;) {
         double x;
@@ -704,18 +708,17 @@ void event_loop(VideoState **pis) {
                 break;
             }
             frac = av_clipd(x / cur_stream->width, 0.0, 1.0);
-            if (seeking_by_bytes(cur_stream) || cur_stream->ic->duration <= 0) {
+            length = playhead_length(cur_stream);
+            if (seeking_by_bytes(cur_stream) || length <= 0.0) {
                 int64_t size = avio_size(cur_stream->ic->pb);
                 if (size <= 0) {
                     break;
                 }
                 stream_seek(cur_stream, (int64_t)(size * frac), 0, 1);
             } else {
-                int64_t ts = frac * cur_stream->ic->duration;
-                if (cur_stream->ic->start_time != AV_NOPTS_VALUE) {
-                    ts += cur_stream->ic->start_time;
-                }
-                stream_seek(cur_stream, ts, 0, 0);
+                double ts = playhead_origin(cur_stream) + frac * length;
+
+                stream_seek(cur_stream, (int64_t)(ts * AV_TIME_BASE), 0, 0);
             }
             break;
         case SDL_EVENT_MOUSE_WHEEL: {

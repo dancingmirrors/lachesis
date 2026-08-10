@@ -536,6 +536,7 @@ int subtitle_thread(void *arg) {
             if (sp->sub.pts != AV_NOPTS_VALUE) {
                 pts = sp->sub.pts / (double)AV_TIME_BASE;
             }
+            pts += is->sub_ts_offset / (double)AV_TIME_BASE;
 
             if (subtitle_is_text(&sp->sub)) {
                 if (is->subdec.pkt_serial == is->subtitleq.serial &&
@@ -590,14 +591,12 @@ static int sub_read_thread(void *arg) {
         }
 
         if (is->sub_seek_pending) {
-            avformat_seek_file(ic, -1,
-                               is->sub_seek_min,
-                               is->sub_seek_pos,
-                               is->sub_seek_max,
-                               is->sub_seek_flags);
+            if (avformat_seek_file(ic, -1, is->sub_seek_min, is->sub_seek_pos,
+                                   is->sub_seek_max, is->sub_seek_flags) >= 0) {
+                sent_eof = 0;
+                subtitles_track_flush();
+            }
             is->sub_seek_pending = 0;
-            sent_eof = 0;
-            subtitles_track_flush();
             continue;
         }
 
@@ -662,6 +661,88 @@ static int sub_is_regular_file(const char *path) {
 
     return stat(path, &st) == 0 && S_ISREG(st.st_mode);
 #endif
+}
+
+#define SUB_SPAN_MAX_CUES 100000
+
+static int external_subtitle_span(VideoState *is, const char *path, int stream,
+                                  double *first, double *last) {
+    AVFormatContext *sic = avformat_alloc_context();
+    AVPacket *pkt;
+    double lo = 0.0, hi = 0.0;
+    int found = 0;
+
+    if (!sic) {
+        return 0;
+    }
+    sic->interrupt_callback.callback = sub_interrupt_cb;
+    sic->interrupt_callback.opaque = is;
+    if (avformat_open_input(&sic, path, NULL, NULL) < 0) {
+        return 0;
+    }
+    if (!(pkt = av_packet_alloc())) {
+        avformat_close_input(&sic);
+        return 0;
+    }
+
+    while (found < SUB_SPAN_MAX_CUES && !is->abort_request &&
+           av_read_frame(sic, pkt) >= 0) {
+        AVStream *st = sic->streams[pkt->stream_index];
+
+        if (pkt->stream_index == stream && pkt->pts != AV_NOPTS_VALUE) {
+            double start = pkt->pts * av_q2d(st->time_base);
+            double end = start + FFMAX(pkt->duration, 0) * av_q2d(st->time_base);
+
+            if (!found || start < lo) {
+                lo = start;
+            }
+            if (!found || end > hi) {
+                hi = end;
+            }
+            found++;
+        }
+        av_packet_unref(pkt);
+    }
+
+    av_packet_free(&pkt);
+    avformat_close_input(&sic);
+
+    *first = lo;
+    *last = hi;
+
+    return found > 0;
+}
+
+static int64_t external_subtitle_offset(VideoState *is, const AVCodecContext *avctx,
+                                        const char *path, int stream) {
+    const AVCodecDescriptor *desc;
+    int64_t origin_us;
+    double origin, length, first, last;
+
+    if (sub_offset != AV_NOPTS_VALUE) {
+        return sub_offset;
+    }
+
+    origin_us = is->ic && is->ic->start_time != AV_NOPTS_VALUE
+        ? is->ic->start_time
+        : 0;
+    if (origin_us <= 0) {
+        return 0;
+    }
+    desc = avcodec_descriptor_get(avctx->codec_id);
+    if (!desc || !(desc->props & AV_CODEC_PROP_TEXT_SUB)) {
+        return origin_us;
+    }
+    origin = origin_us / (double)AV_TIME_BASE;
+    length = playhead_length(is);
+
+    if (external_subtitle_span(is, path, stream, &first, &last) &&
+        first >= origin &&
+        (length <= 0.0 || (last <= origin + length && last > length))) {
+        return 0;
+    }
+
+    return origin_us;
 }
 
 static int external_subtitle_open(VideoState *is) {
@@ -765,6 +846,7 @@ static int external_subtitle_open(VideoState *is) {
         goto fail;
     }
 
+    is->sub_ts_offset = external_subtitle_offset(is, avctx, path, idx);
     is->sub_ic = sic;
     is->sub_ext_stream = idx;
     is->subtitle_st = st;
@@ -789,10 +871,16 @@ static int external_subtitle_open(VideoState *is) {
         goto fail;
     }
 
-    log_info("Loaded external subtitle: %s\n", path);
+    if (is->sub_ts_offset) {
+        log_info("Loaded external subtitle: %s (shifted by %+.2f)\n",
+                 path, is->sub_ts_offset / (double)AV_TIME_BASE);
+    } else {
+        log_info("Loaded external subtitle: %s\n", path);
+    }
     return 0;
 
 fail:
+    is->sub_ts_offset = 0;
     avformat_close_input(&sic);
     return ret;
 }
@@ -826,6 +914,7 @@ void close_external_subtitle(VideoState *is) {
 
     is->subtitle_st = NULL;
     is->sub_ext_stream = -1;
+    is->sub_ts_offset = 0;
     avformat_close_input(&is->sub_ic);
     is->sub_abort_request = 0;
 }

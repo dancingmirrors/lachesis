@@ -103,8 +103,10 @@ static void media_info_audio_line(const VideoState *is, char *buf, size_t sz) {
 }
 
 static int media_info_duration_line(const VideoState *is, char *buf, size_t sz) {
-    if (is->ic && is->ic->duration != AV_NOPTS_VALUE) {
-        format_time(buf, sz, (double)is->ic->duration / AV_TIME_BASE);
+    double length = is->ic ? playhead_length(is) : 0.0;
+
+    if (length > 0.0) {
+        format_time(buf, sz, length);
         return 1;
     }
     if (sz) {

@@ -70,6 +70,7 @@ int av_sync_type_explicit = 0;
 int skip_to_keyframe = 0;
 int64_t start_time = AV_NOPTS_VALUE;
 int64_t play_duration = AV_NOPTS_VALUE;
+int64_t sub_offset = AV_NOPTS_VALUE;
 int keep_open;
 int allow_unsafe;
 int all_files;
@@ -260,6 +261,7 @@ const OptionDef options[] = {
     {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match", ""},
     {"acodec", OPT_TYPE_STRING, 0, {&audio_codec_name}, "force an audio decoder", "decoder_name"},
     {"scodec", OPT_TYPE_STRING, 0, {&subtitle_codec_name}, "force a subtitle decoder", "decoder_name"},
+    {"sub-offset", OPT_TYPE_TIME, 0, {&sub_offset}, "shift an external subtitle by this many seconds (0 keeps its own timestamps)", "seconds"},
     {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},
     {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation", ""},
     {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees", "degrees"},

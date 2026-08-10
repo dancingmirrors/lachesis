@@ -158,6 +158,8 @@ typedef struct VideoState {
     int last_paused;
     int queue_attachments_req;
     int seek_req;
+    /* Bumped by every request so the demuxer can tell a newer one from the request it's already servicing. */
+    int seek_serial;
     int seek_flags;
     int64_t seek_pos;
     int64_t seek_rel;
@@ -270,12 +272,15 @@ typedef struct VideoState {
     AVFormatContext *sub_ic;
     SDL_Thread *sub_read_tid;
     int sub_ext_stream;
+    int64_t sub_ts_offset;
     volatile int sub_abort_request;
     volatile int sub_seek_pending;
     int64_t sub_seek_pos;
     int64_t sub_seek_min;
     int64_t sub_seek_max;
     int sub_seek_flags;
+    double observed_length;
+    double observed_pos;
     int64_t diag_t0_us;
     int diag_first_vpts_logged;
     int diag_first_apts_logged;
@@ -321,10 +326,10 @@ int ab_loop_defining(void);
 
 double get_master_clock(VideoState *is);
 double effective_playhead(VideoState *is);
-double playhead_origin(VideoState *is);
-double playhead_length(VideoState *is);
-double playhead_elapsed(VideoState *is, double pos);
-double playhead_clamp(VideoState *is, double pos);
+double playhead_origin(const VideoState *is);
+double playhead_length(const VideoState *is);
+double playhead_elapsed(const VideoState *is, double pos);
+double playhead_clamp(const VideoState *is, double pos);
 int video_stream_advances(VideoState *is);
 void exact_seek_arm(VideoState *is, int64_t target);
 void exact_seek_cancel(VideoState *is);

@@ -111,6 +111,7 @@ extern int av_sync_type_explicit;
 extern int skip_to_keyframe;
 extern int64_t start_time;
 extern int64_t play_duration;
+extern int64_t sub_offset;
 extern int keep_open;
 extern int allow_unsafe;
 extern int all_files;
