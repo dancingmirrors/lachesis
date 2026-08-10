@@ -533,7 +533,7 @@ static void osd_emit_rect(double x, double y, double w, double h, unsigned r,
 }
 
 static double osd_display_pos(VideoState *is) {
-    return effective_playhead(is);
+    return playhead_elapsed(is, effective_playhead(is));
 }
 
 static int has_active_subtitle(VideoState *is) {
@@ -594,14 +594,15 @@ static const char *osd_body(const char *text) {
     return escaped;
 }
 
-static void osd_draw_abloop(OsdLayout *L) {
+static void osd_draw_abloop(VideoState *is, OsdLayout *L) {
     char a_str[16], line[64];
     OsdRect b = osd_stack_remaining(L, OSD_RES_H - L->my);
     const char *body;
     OsdMetrics m;
     double fs;
+    double a = playhead_elapsed(is, ab_loop_a);
 
-    format_time(a_str, sizeof(a_str), ab_loop_a < 0 ? 0.0 : ab_loop_a);
+    format_time(a_str, sizeof(a_str), isnan(a) || a < 0 ? 0.0 : a);
     snprintf(line, sizeof(line), "A-B loop  %s -> [set B]", a_str);
     if (!(body = osd_body(line))) {
         return;
@@ -628,9 +629,7 @@ static void osd_draw_message(OsdLayout *L) {
 
 static void osd_draw_status(VideoState *is, OsdLayout *L) {
     double pos = osd_display_pos(is);
-    double dur = (is->ic && is->ic->duration != AV_NOPTS_VALUE)
-        ? (double)is->ic->duration / AV_TIME_BASE
-        : 0.0;
+    double dur = playhead_length(is);
     char pos_str[16], dur_str[16], line[64], body[512];
     const char *sym;
     OsdRect b = osd_stack_remaining(L, OSD_RES_H - L->my);
@@ -638,9 +637,6 @@ static void osd_draw_status(VideoState *is, OsdLayout *L) {
     double fs, consumed;
     int pct;
 
-    if (dur > 0 && !isnan(pos) && pos > dur) {
-        pos = dur;
-    }
     format_time(pos_str, sizeof(pos_str), isnan(pos) || pos < 0 ? 0.0 : pos);
     format_time(dur_str, sizeof(dur_str), dur);
     pct = (dur > 0 && !isnan(pos) && pos >= 0) ? (int)(100.0 * pos / dur + 0.5)
@@ -850,7 +846,7 @@ static void osd_build(VideoState *is, int ch, double subs_top_px) {
     }
 
     if (v.ab_loop) {
-        osd_draw_abloop(&L);
+        osd_draw_abloop(is, &L);
     }
     if (v.message) {
         osd_draw_message(&L);

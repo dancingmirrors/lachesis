@@ -201,7 +201,6 @@ fail:
 #define DECODE_RECOVER_FRAMES 120
 #define CATCHUP_BEHIND_SECS 1.0
 #define CATCHUP_COOLDOWN_US (18 * 1000000)
-#define SEEK_STALL_SLACK 1.0
 #define EXACT_SEEK_SLACK 0.005
 #define EXACT_SEEK_MAX_RUNUP 30.0
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
@@ -1610,27 +1609,118 @@ double get_master_clock(VideoState *is) {
     return val;
 }
 
-/* Fall back to the external clock so we can advance when there's no more audio. */
+int video_stream_advances(VideoState *is) {
+    return is->video_st &&
+        !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC);
+}
+
+double playhead_origin(VideoState *is) {
+    if (is->ic && is->ic->start_time != AV_NOPTS_VALUE) {
+        return is->ic->start_time / (double)AV_TIME_BASE;
+    }
+
+    return 0.0;
+}
+
+double playhead_length(VideoState *is) {
+    if (is->ic && is->ic->duration != AV_NOPTS_VALUE && is->ic->duration > 0) {
+        return is->ic->duration / (double)AV_TIME_BASE;
+    }
+
+    return 0.0;
+}
+
+double playhead_elapsed(VideoState *is, double pos) {
+    double length = playhead_length(is);
+
+    if (isnan(pos)) {
+        return NAN;
+    }
+    pos -= playhead_origin(is);
+    if (pos < 0.0) {
+        pos = 0.0;
+    }
+    if (length > 0.0 && pos > length) {
+        pos = length;
+    }
+
+    return pos;
+}
+
+double playhead_clamp(VideoState *is, double pos) {
+    double origin = playhead_origin(is);
+    double length = playhead_length(is);
+
+    if (isnan(pos) || pos < origin) {
+        return origin;
+    }
+    if (length > 0.0 && pos > origin + length) {
+        pos = origin + length;
+    }
+
+    return pos;
+}
+
+static int decoder_exact_pending(Decoder *d, int armed_serial) {
+    if (armed_serial < 0 || d->exact_done_serial == armed_serial ||
+        d->finished == armed_serial) {
+        return 0;
+    }
+
+    return d->queue->serial == armed_serial;
+}
+
+static int exact_seek_pending(VideoState *is) {
+    int armed = 0;
+
+    if (isnan(is->exact_seek_pts)) {
+        return 0;
+    }
+    if (is->exact_seek_video_serial >= 0) {
+        if (!decoder_exact_pending(&is->viddec, is->exact_seek_video_serial)) {
+            return 0;
+        }
+        armed = 1;
+    }
+    if (is->exact_seek_audio_serial >= 0) {
+        if (!decoder_exact_pending(&is->auddec, is->exact_seek_audio_serial)) {
+            return 0;
+        }
+        armed = 1;
+    }
+
+    return armed;
+}
+
 double effective_playhead(VideoState *is) {
     double pos = get_master_clock(is);
 
-    if (isnan(pos)) {
-        pos = get_clock(&is->vidclk);
+    if (isnan(pos) || get_master_sync_type(is) == AV_SYNC_EXTERNAL_CLOCK) {
+        double decoded = is->audio_st ? get_clock(&is->audclk) : NAN;
+
+        if (isnan(decoded) && video_stream_advances(is)) {
+            decoded = get_clock(&is->vidclk);
+        }
+        if (!isnan(decoded)) {
+            pos = decoded;
+        }
     }
     if (isnan(pos)) {
         pos = get_clock(&is->extclk);
     }
-    if (isnan(pos)) {
-        pos = is->start_playhead;
-    }
 
     if (is->seek_flags & AVSEEK_FLAG_BYTE) {
-        return pos;
+        return isnan(pos) ? is->start_playhead : pos;
     }
 
-    double target = (double)is->seek_pos / AV_TIME_BASE;
-    if (isnan(pos) || pos < target - SEEK_STALL_SLACK) {
-        pos = target;
+    if (is->seek_req) {
+        return is->seek_pos / (double)AV_TIME_BASE;
+    }
+    if (exact_seek_pending(is)) {
+        return is->exact_seek_pts;
+    }
+    if (isnan(pos)) {
+        pos = is->start_playhead;
     }
 
     return pos;
@@ -1662,12 +1752,10 @@ void exact_seek_arm(VideoState *is, int64_t target) {
     if (target == AV_NOPTS_VALUE || is->is_still_image) {
         return;
     }
-    if (is->ic && is->ic->duration != AV_NOPTS_VALUE) {
-        int64_t end = is->ic->duration +
-            (is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0);
-        if (target >= end) {
-            return;
-        }
+    if (is->ic && is->ic->duration != AV_NOPTS_VALUE &&
+        target / (double)AV_TIME_BASE >=
+            playhead_origin(is) + is->ic->duration / (double)AV_TIME_BASE) {
+        return;
     }
     is->exact_seek_pts = target / (double)AV_TIME_BASE;
     if (is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
@@ -1769,8 +1857,9 @@ void ab_loop_toggle(VideoState *is) {
     char a_buf[32], b_buf[32];
     osd_show_position();
     double pos = effective_playhead(is);
-    if (isnan(pos) || pos < 0) {
-        pos = 0;
+
+    if (isnan(pos) || pos < playhead_origin(is)) {
+        pos = playhead_origin(is);
     }
 
     if (isnan(ab_loop_a)) {
@@ -1782,8 +1871,8 @@ void ab_loop_toggle(VideoState *is) {
         } else {
             ab_loop_b = pos;
         }
-        ab_loop_fmt_time(ab_loop_a, a_buf, sizeof(a_buf));
-        ab_loop_fmt_time(ab_loop_b, b_buf, sizeof(b_buf));
+        ab_loop_fmt_time(playhead_elapsed(is, ab_loop_a), a_buf, sizeof(a_buf));
+        ab_loop_fmt_time(playhead_elapsed(is, ab_loop_b), b_buf, sizeof(b_buf));
         osd_show_message("A-B loop: %s - %s", a_buf, b_buf);
         /* Snap back to A. */
         stream_seek(is, (int64_t)(ab_loop_a * AV_TIME_BASE),
@@ -1828,6 +1917,9 @@ static void reset_playback_speed(void) {
 }
 
 void step_to_next_frame(VideoState *is) {
+    if (!video_stream_advances(is)) {
+        return;
+    }
     if (is->paused) {
         stream_toggle_pause(is);
     }

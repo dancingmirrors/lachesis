@@ -692,6 +692,21 @@ static int audio_interrupt_cb(void *ctx) {
     return is->abort_request || is->audio_seek_pending;
 }
 
+static int packet_in_play_range(AVFormatContext *ic, const AVPacket *pkt) {
+    AVStream *st = ic->streams[pkt->stream_index];
+    int64_t ts = pkt->pts == AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
+    int64_t st_start;
+
+    if (play_duration == AV_NOPTS_VALUE || ts == AV_NOPTS_VALUE) {
+        return 1;
+    }
+    st_start = st->start_time != AV_NOPTS_VALUE ? st->start_time : 0;
+
+    return (ts - st_start) * av_q2d(st->time_base) -
+        (double)(start_time != AV_NOPTS_VALUE ? start_time : 0) / 1000000.0 <=
+        (double)play_duration / 1000000.0;
+}
+
 static int play_range_exhausted(const VideoState *is, int vid_over, int aud_over) {
     int gated = 0;
 
@@ -702,8 +717,13 @@ static int play_range_exhausted(const VideoState *is, int vid_over, int aud_over
         }
         gated = 1;
     }
-    if (is->audio_stream >= 0 && !is->audio_ic) {
-        if (!aud_over) {
+    if (is->audio_stream >= 0) {
+        int done = is->audio_ic
+            ? (is->audio_range_over ||
+               is->auddec.finished == is->audioq.serial)
+            : aud_over;
+
+        if (!done) {
             return 0;
         }
         gated = 1;
@@ -738,10 +758,11 @@ static int audio_read_thread(void *arg) {
                                is->audio_seek_flags);
             is->audio_seek_pending = 0;
             sent_eof = 0;
+            is->audio_range_over = 0;
             continue;
         }
 
-        if (is->play_range_done) {
+        if (is->play_range_done || is->audio_range_over) {
             if (!sent_eof) {
                 packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
                 sent_eof = 1;
@@ -774,10 +795,13 @@ static int audio_read_thread(void *arg) {
             sent_eof = 0;
         }
 
-        if (pkt->stream_index == is->audio_stream) {
-            packet_queue_put(&is->audioq, pkt);
-        } else {
+        if (pkt->stream_index != is->audio_stream) {
             av_packet_unref(pkt);
+        } else if (!packet_in_play_range(ic, pkt)) {
+            is->audio_range_over = 1;
+            av_packet_unref(pkt);
+        } else {
+            packet_queue_put(&is->audioq, pkt);
         }
     }
     av_packet_free(&pkt);
@@ -794,14 +818,12 @@ int read_thread(void *arg) {
     int err, i, ret;
     int st_index[AVMEDIA_TYPE_NB];
     AVPacket *pkt = NULL;
-    int64_t stream_start_time;
     int pkt_in_play_range = 0;
     const AVDictionaryEntry *t;
     SDL_Mutex *wait_mutex = SDL_CreateMutex();
     AVDictionary *fmt_opts = NULL;
     int scan_all_pmts_set = 0;
     int extension_picky_set = 0;
-    int64_t pkt_ts;
     int ff_quit_reason = FF_QUIT_REASON_ERROR;
     int vid_range_over = 0;
     int aud_range_over = 0;
@@ -1179,6 +1201,7 @@ int read_thread(void *arg) {
         }
         if (is->seek_req) {
             is->play_range_done = 0;
+            is->audio_range_over = 0;
             vid_range_over = aud_range_over = 0;
             int64_t seek_target = is->seek_pos;
             int64_t seek_min = is->seek_rel > 0 ? seek_target - is->seek_rel + 2 : INT64_MIN;
@@ -1275,7 +1298,13 @@ int read_thread(void *arg) {
                 if (start_pos != AV_NOPTS_VALUE) {
                     stream_seek_exact(is, start_pos);
                 } else {
-                    stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
+                    int64_t restart =
+                        ic->start_time != AV_NOPTS_VALUE ? ic->start_time : 0;
+
+                    if (start_time != AV_NOPTS_VALUE) {
+                        restart += start_time;
+                    }
+                    stream_seek(is, restart, 0, 0);
                 }
             } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0 &&
                        !is->play_range_done) {
@@ -1330,13 +1359,7 @@ int read_thread(void *arg) {
         ic->event_flags &= ~AVFMT_EVENT_FLAG_METADATA_UPDATED;
         ic->streams[pkt->stream_index]->event_flags &= ~AVSTREAM_EVENT_FLAG_METADATA_UPDATED;
 
-        stream_start_time = ic->streams[pkt->stream_index]->start_time;
-        pkt_ts = pkt->pts == AV_NOPTS_VALUE ? pkt->dts : pkt->pts;
-        pkt_in_play_range = play_duration == AV_NOPTS_VALUE ||
-            (pkt_ts - (stream_start_time != AV_NOPTS_VALUE ? stream_start_time : 0)) *
-                        av_q2d(ic->streams[pkt->stream_index]->time_base) -
-                    (double)(start_time != AV_NOPTS_VALUE ? start_time : 0) / 1000000 <=
-                ((double)play_duration / 1000000);
+        pkt_in_play_range = packet_in_play_range(ic, pkt);
         if (pkt->stream_index == is->video_stream) {
             vid_range_over = !pkt_in_play_range;
         } else if (pkt->stream_index == is->audio_stream && !is->audio_ic) {

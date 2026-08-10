@@ -47,6 +47,7 @@
 #include "lachesis_screenshot.h"
 
 #define SDL_VOLUME_STEP (10.0)
+#define SEEK_MIN_STEP (0.001)
 
 static int sbs360_drag = 0;
 static int sbs360_drag_last_x = 0;
@@ -82,28 +83,46 @@ static int sbs360_active(VideoState *is) {
 }
 
 static void seek_chapter(VideoState *is, int incr) {
-    int64_t pos = effective_playhead(is) * AV_TIME_BASE;
-    int i;
+    int64_t pos, target;
+    int i, cur = -1;
+    double now;
 
-    if (!is->ic->nb_chapters) {
+    if (!demuxer_ready(is) || !is->ic->nb_chapters) {
         return;
     }
 
+    now = effective_playhead(is);
+    if (isnan(now)) {
+        return;
+    }
+    pos = (int64_t)(now * AV_TIME_BASE);
     for (i = 0; i < (int)is->ic->nb_chapters; i++) {
         AVChapter *ch = is->ic->chapters[i];
+
         if (av_compare_ts(pos, AV_TIME_BASE_Q, ch->start, ch->time_base) < 0) {
-            i--;
             break;
         }
+        cur = i;
     }
 
-    i += incr;
-    i = FFMAX(i, 0);
+    i = cur + incr;
     if (i >= (int)is->ic->nb_chapters) {
         return;
     }
+    if (i < 0) {
+        if (incr > 0) {
+            return;
+        }
+        target = (int64_t)(playhead_origin(is) * AV_TIME_BASE);
+    } else {
+        target = av_rescale_q(is->ic->chapters[i]->start,
+                              is->ic->chapters[i]->time_base, AV_TIME_BASE_Q);
+    }
 
-    stream_seek(is, av_rescale_q(is->ic->chapters[i]->start, is->ic->chapters[i]->time_base, AV_TIME_BASE_Q), 0, 0);
+    if (incr > 0 ? target <= pos : target >= pos) {
+        return;
+    }
+    stream_seek(is, target, 0, 0);
 }
 
 static void seek_relative(VideoState *is, double incr) {
@@ -132,14 +151,22 @@ static void seek_relative(VideoState *is, double incr) {
         pos += incr;
         stream_seek(is, pos, incr, 1);
     } else {
+        double target, clamped;
+
         pos = effective_playhead(is);
-        pos += incr;
-        if (is->ic->start_time != AV_NOPTS_VALUE &&
-            pos < is->ic->start_time / (double)AV_TIME_BASE) {
-            pos = is->ic->start_time / (double)AV_TIME_BASE;
+        if (isnan(pos)) {
+            pos = playhead_origin(is);
         }
-        stream_seek(is, (int64_t)(pos * AV_TIME_BASE),
-                    (int64_t)(incr * AV_TIME_BASE), 0);
+        target = pos + incr;
+        clamped = playhead_clamp(is, target);
+        if ((clamped - pos) * incr >= 0.0 && fabs(clamped - pos) <= fabs(incr)) {
+            target = clamped;
+        }
+        if (fabs(target - pos) < SEEK_MIN_STEP) {
+            return;
+        }
+        stream_seek(is, (int64_t)(target * AV_TIME_BASE),
+                    (int64_t)((target - pos) * AV_TIME_BASE), 0);
     }
 }
 
@@ -366,6 +393,11 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_N:
+                if (!video_stream_advances(cur_stream)) {
+                    osd_show_message("No frames to step");
+                    cur_stream->force_refresh = 1;
+                    break;
+                }
                 step_to_next_frame(cur_stream);
                 break;
             case SDLK_S:

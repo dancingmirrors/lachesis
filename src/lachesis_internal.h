@@ -260,6 +260,7 @@ typedef struct VideoState {
     struct YtdlChunkedIO *ytdl_aio;
     AVFormatContext *audio_ic;
     SDL_Thread *audio_read_tid;
+    volatile int audio_range_over;
     volatile int audio_seek_pending;
     int64_t audio_seek_pos;
     int64_t audio_seek_min;
@@ -320,6 +321,11 @@ int ab_loop_defining(void);
 
 double get_master_clock(VideoState *is);
 double effective_playhead(VideoState *is);
+double playhead_origin(VideoState *is);
+double playhead_length(VideoState *is);
+double playhead_elapsed(VideoState *is, double pos);
+double playhead_clamp(VideoState *is, double pos);
+int video_stream_advances(VideoState *is);
 void exact_seek_arm(VideoState *is, int64_t target);
 void exact_seek_cancel(VideoState *is);
 int exact_seek_drop_video(VideoState *is, double pts);
