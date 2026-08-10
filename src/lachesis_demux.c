@@ -807,6 +807,7 @@ int read_thread(void *arg) {
     int aud_range_over = 0;
     int64_t still_deadline_us = 0;
     int still_range_done = 0;
+    int64_t start_pos = AV_NOPTS_VALUE;
 
     log_interrupt_begin(decode_interrupt_cb, is);
 
@@ -992,6 +993,9 @@ int read_thread(void *arg) {
         if (ret < 0) {
             av_log(NULL, AV_LOG_WARNING, "%s: could not seek to position %0.3f\n",
                    is->filename, (double)timestamp / AV_TIME_BASE);
+        } else if (!is->is_still_image) {
+            start_pos = timestamp;
+            is->start_playhead = start_pos / (double)AV_TIME_BASE;
         }
     }
 
@@ -1109,6 +1113,13 @@ int read_thread(void *arg) {
                 avformat_find_stream_info(aic, NULL) >= 0) {
                 int aidx = av_find_best_stream(aic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
                 if (aidx >= 0) {
+                    if (start_time != AV_NOPTS_VALUE) {
+                        int64_t ats = start_time;
+                        if (aic->start_time != AV_NOPTS_VALUE) {
+                            ats += aic->start_time;
+                        }
+                        avformat_seek_file(aic, -1, INT64_MIN, ats, INT64_MAX, 0);
+                    }
                     is->audio_ic = aic;
                     AVFormatContext *save_ic = is->ic;
                     int aret;
@@ -1144,6 +1155,8 @@ int read_thread(void *arg) {
         audio_device_resume();
     }
 
+    exact_seek_arm(is, start_pos);
+
     if ((start_paused || is->begin_paused) && !is->is_still_image) {
         if (is->video_stream >= 0) {
             is->step = 1;
@@ -1175,6 +1188,7 @@ int read_thread(void *arg) {
                 break;
             }
             if (ret < 0) {
+                exact_seek_cancel(is);
             } else {
                 if (is->audio_stream >= 0) {
                     packet_queue_flush(&is->audioq);
@@ -1185,6 +1199,11 @@ int read_thread(void *arg) {
                 subtitles_track_flush();
                 if (is->video_stream >= 0) {
                     packet_queue_flush(&is->videoq);
+                }
+                if (is->seek_exact && !(is->seek_flags & AVSEEK_FLAG_BYTE)) {
+                    exact_seek_arm(is, seek_target);
+                } else {
+                    exact_seek_cancel(is);
                 }
                 if (is->seek_flags & AVSEEK_FLAG_BYTE) {
                     set_clock(&is->extclk, NAN, 0);
@@ -1253,7 +1272,11 @@ int read_thread(void *arg) {
                 is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
             } else if (is->loop_remaining != 1 &&
                        (!is->loop_remaining || --is->loop_remaining)) {
-                stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
+                if (start_pos != AV_NOPTS_VALUE) {
+                    stream_seek_exact(is, start_pos);
+                } else {
+                    stream_seek(is, start_time != AV_NOPTS_VALUE ? start_time : 0, 0, 0);
+                }
             } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0 &&
                        !is->play_range_done) {
                 /* An unknown size might be a live stream. */

@@ -202,6 +202,8 @@ fail:
 #define CATCHUP_BEHIND_SECS 1.0
 #define CATCHUP_COOLDOWN_US (18 * 1000000)
 #define SEEK_STALL_SLACK 1.0
+#define EXACT_SEEK_SLACK 0.005
+#define EXACT_SEEK_MAX_RUNUP 30.0
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
 #define EXTERNAL_CLOCK_MAX_FRAMES 10
 
@@ -434,6 +436,7 @@ int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_Cond
     d->empty_queue_cond = empty_queue_cond;
     d->start_pts = AV_NOPTS_VALUE;
     d->pkt_serial = -1;
+    d->exact_done_serial = -1;
 
     return 0;
 }
@@ -1611,6 +1614,16 @@ double get_master_clock(VideoState *is) {
 double effective_playhead(VideoState *is) {
     double pos = get_master_clock(is);
 
+    if (isnan(pos)) {
+        pos = get_clock(&is->vidclk);
+    }
+    if (isnan(pos)) {
+        pos = get_clock(&is->extclk);
+    }
+    if (isnan(pos)) {
+        pos = is->start_playhead;
+    }
+
     if (is->seek_flags & AVSEEK_FLAG_BYTE) {
         return pos;
     }
@@ -1638,10 +1651,62 @@ static void check_external_clock_speed(VideoState *is) {
     }
 }
 
-void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes) {
+void exact_seek_cancel(VideoState *is) {
+    is->exact_seek_pts = NAN;
+    is->exact_seek_video_serial = -1;
+    is->exact_seek_audio_serial = -1;
+}
+
+void exact_seek_arm(VideoState *is, int64_t target) {
+    exact_seek_cancel(is);
+    if (target == AV_NOPTS_VALUE || is->is_still_image) {
+        return;
+    }
+    if (is->ic && is->ic->duration != AV_NOPTS_VALUE) {
+        int64_t end = is->ic->duration +
+            (is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0);
+        if (target >= end) {
+            return;
+        }
+    }
+    is->exact_seek_pts = target / (double)AV_TIME_BASE;
+    if (is->video_st && !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+        is->exact_seek_video_serial = is->videoq.serial;
+    }
+    if (is->audio_st && !audio_spdif_active()) {
+        is->exact_seek_audio_serial = is->audioq.serial;
+    }
+}
+
+static int exact_seek_drop(VideoState *is, Decoder *d, int armed_serial,
+                           double pts, double duration) {
+    if (armed_serial < 0 || armed_serial != d->pkt_serial ||
+        d->exact_done_serial == d->pkt_serial) {
+        return 0;
+    }
+    if (isnan(pts) || isnan(is->exact_seek_pts) ||
+        pts + duration >= is->exact_seek_pts - EXACT_SEEK_SLACK ||
+        pts < is->exact_seek_pts - EXACT_SEEK_MAX_RUNUP) {
+        d->exact_done_serial = d->pkt_serial;
+        return 0;
+    }
+
+    return 1;
+}
+
+int exact_seek_drop_video(VideoState *is, double pts) {
+    return exact_seek_drop(is, &is->viddec, is->exact_seek_video_serial, pts, 0);
+}
+
+int exact_seek_drop_audio(VideoState *is, double pts, double duration) {
+    return exact_seek_drop(is, &is->auddec, is->exact_seek_audio_serial, pts, duration);
+}
+
+static void stream_seek_to(VideoState *is, int64_t pos, int64_t rel, int by_bytes, int exact) {
     if (!is->seek_req) {
         is->seek_pos = pos;
         is->seek_rel = rel;
+        is->seek_exact = exact;
         is->seek_flags &= ~AVSEEK_FLAG_BYTE;
         if (by_bytes) {
             is->seek_flags |= AVSEEK_FLAG_BYTE;
@@ -1649,6 +1714,14 @@ void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes) {
         is->seek_req = 1;
         SDL_SignalCondition(is->continue_read_thread);
     }
+}
+
+void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes) {
+    stream_seek_to(is, pos, rel, by_bytes, 0);
+}
+
+void stream_seek_exact(VideoState *is, int64_t pos) {
+    stream_seek_to(is, pos, 0, 0, 1);
 }
 
 static void stream_toggle_pause(VideoState *is) {
@@ -1695,10 +1768,7 @@ static void ab_loop_reset(void) {
 void ab_loop_toggle(VideoState *is) {
     char a_buf[32], b_buf[32];
     osd_show_position();
-    double pos = get_master_clock(is);
-    if (isnan(pos)) {
-        pos = (double)is->seek_pos / AV_TIME_BASE;
-    }
+    double pos = effective_playhead(is);
     if (isnan(pos) || pos < 0) {
         pos = 0;
     }
@@ -2089,6 +2159,11 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
             dpts = av_q2d(is->video_st->time_base) * frame->pts;
         }
 
+        if (exact_seek_drop_video(is, dpts)) {
+            av_frame_unref(frame);
+            return 0;
+        }
+
         frame->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
 
         AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
@@ -2462,6 +2537,8 @@ static VideoState *stream_open(const char *filename,
     is->audio_catchup_checked_serial = -1;
     is->pictq_last_serial = -1;
     is->last_av_diff = NAN;
+    is->start_playhead = NAN;
+    exact_seek_cancel(is);
     if (video_background) {
         if (!strcmp(video_background, "none")) {
             is->render_params.video_background_type = VIDEO_BACKGROUND_NONE;

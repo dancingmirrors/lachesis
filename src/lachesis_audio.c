@@ -677,6 +677,16 @@ int audio_thread(void *arg) {
             goto the_end;
         }
 
+        if (got_frame && frame->sample_rate > 0 &&
+            exact_seek_drop_audio(is,
+                                  frame->pts == AV_NOPTS_VALUE
+                                      ? NAN
+                                      : frame->pts / (double)frame->sample_rate,
+                                  frame->nb_samples / (double)frame->sample_rate)) {
+            av_frame_unref(frame);
+            got_frame = 0;
+        }
+
         if (got_frame) {
             reconfigure =
                 cmp_audio_fmts(is->audio_filter_src.fmt, is->audio_filter_src.ch_layout.nb_channels,

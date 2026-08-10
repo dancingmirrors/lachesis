@@ -140,6 +140,7 @@ typedef struct Decoder {
     AVRational next_pts_tb;
     SDL_Thread *decoder_tid;
     int64_t wait_us;
+    int exact_done_serial;
 } Decoder;
 
 typedef struct VideoState {
@@ -160,6 +161,11 @@ typedef struct VideoState {
     int seek_flags;
     int64_t seek_pos;
     int64_t seek_rel;
+    int seek_exact;
+    double exact_seek_pts;
+    int exact_seek_video_serial;
+    int exact_seek_audio_serial;
+    double start_playhead;
     SDL_AtomicInt seek_by_bytes;
     int read_pause_return;
     AVFormatContext *ic;
@@ -314,6 +320,10 @@ int ab_loop_defining(void);
 
 double get_master_clock(VideoState *is);
 double effective_playhead(VideoState *is);
+void exact_seek_arm(VideoState *is, int64_t target);
+void exact_seek_cancel(VideoState *is);
+int exact_seek_drop_video(VideoState *is, double pts);
+int exact_seek_drop_audio(VideoState *is, double pts, double duration);
 Frame *frame_queue_peek(FrameQueue *f);
 Frame *frame_queue_peek_last(FrameQueue *f);
 int frame_queue_nb_remaining(FrameQueue *f);
@@ -422,6 +432,7 @@ void toggle_mute(VideoState *is);
 void update_volume(VideoState *is, int sign, double step);
 void step_to_next_frame(VideoState *is);
 void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
+void stream_seek_exact(VideoState *is, int64_t pos);
 void stream_cycle_channel(VideoState *is, int codec_type);
 void set_playback_speed(double speed);
 void ab_loop_toggle(VideoState *is);

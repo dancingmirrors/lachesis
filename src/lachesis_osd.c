@@ -540,7 +540,7 @@ static int has_active_subtitle(VideoState *is) {
     if (!is->subtitle_st) {
         return 0;
     }
-    return subtitles_visible_at(get_master_clock(is));
+    return subtitles_visible_at(effective_playhead(is));
 }
 
 static void osd_layout_init(OsdLayout *L) {
@@ -1026,7 +1026,7 @@ static int osd_subtitle_overlay(VideoState *is, int cw, int ch,
         return 0;
     }
 
-    return subtitles_render(is, cw, ch, &vr, get_master_clock(is), ov) &&
+    return subtitles_render(is, cw, ch, &vr, effective_playhead(is), ov) &&
         ov->surf;
 }
 
