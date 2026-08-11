@@ -118,6 +118,8 @@ jobs:
           ninja -v -C build
           sudo ninja -C build install
 
+          export LACHESIS_LEAK_REPORT=full
+
           # ?
           sudo ldconfig
           LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h

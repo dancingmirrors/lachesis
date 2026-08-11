@@ -133,6 +133,7 @@ jobs:
         run: |
           set -x
 
+          export LACHESIS_LEAK_REPORT=full
           CFLAGS="-Werror" ./configure
 
           ninja -v -C build

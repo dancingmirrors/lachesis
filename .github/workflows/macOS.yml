@@ -81,6 +81,7 @@ jobs:
         run: |
           set -ex
 
+          export LACHESIS_LEAK_REPORT=full
           export PKG_CONFIG_PATH="$(brew --prefix libarchive)/lib/pkgconfig:$PKG_CONFIG_PATH"
           CFLAGS="-Werror" ./configure
 
