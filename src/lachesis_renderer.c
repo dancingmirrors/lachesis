@@ -21,6 +21,7 @@
 
 /* clang-format off */
 #include "lachesis_config.h"
+#include "lachesis_deinterlace.h"
 #include "lachesis_equalizer.h"
 #include "lachesis_icon.h"
 #include "lachesis_log.h"
@@ -2469,28 +2470,6 @@ reject:
     return NULL;
 }
 
-static void apply_deinterlace(struct pl_frame *pl_frame,
-                              struct pl_render_params *pl_params,
-                              const AVFrame *frame, const RenderParams *params) {
-    static const struct pl_deinterlace_params deint = {
-        .algo = PL_DEINTERLACE_YADIF,
-    };
-    /* See libplacebo's validate_structs() if there are mysterious failures. */
-    enum pl_field first = PL_FIELD_TOP;
-
-    if (!params->deinterlace) {
-        return;
-    }
-    if ((frame->flags & AV_FRAME_FLAG_INTERLACED) &&
-        !(frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST)) {
-        first = PL_FIELD_BOTTOM;
-    }
-
-    pl_frame->first_field = first;
-    pl_frame->field = params->second_field ? pl_field_other(first) : first;
-    pl_params->deinterlace_params = &deint;
-}
-
 static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target,
                                  pl_rotation rotation) {
     pl_tex tex = target->num_planes > 0 ? target->planes[0].texture : NULL;
@@ -2969,7 +2948,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
 
     setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
-    apply_deinterlace(&pl_frame, &pl_params, frame, params);
+    deinterlace_apply(&pl_frame, &pl_params, frame, params);
 
     if (pl_params.deinterlace_params &&
         pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
@@ -3167,7 +3146,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
     struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
     setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
-    apply_deinterlace(&pl_frame, &pl_params, frame, params);
+    deinterlace_apply(&pl_frame, &pl_params, frame, params);
 
     if (pl_params.deinterlace_params &&
         pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {

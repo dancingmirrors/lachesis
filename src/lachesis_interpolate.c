@@ -24,6 +24,7 @@
 #include <libavutil/common.h>
 #include <libavutil/time.h>
 
+#include "lachesis_deinterlace.h"
 #include "lachesis_interpolate.h"
 #include "lachesis_options.h"
 #include "lachesis_present.h"
@@ -56,7 +57,7 @@ static struct {
 static int interpolation_wanted(const VideoState *is) {
     return frame_interpolation && !benchmark && !display_disable && !is->paused &&
         !is->step && !is->is_still_image && is->video_st &&
-        !is->deint_active && present_vsync_sec() > 0;
+        !deinterlace_active(is) && present_vsync_sec() > 0;
 }
 
 static int inactive(int state) {
@@ -76,7 +77,8 @@ int interpolate_frames(VideoState *is, Frame *vp, RenderMixFrame *mix,
         if (!frame_interpolation) {
             return inactive(INTERP_OFF);
         }
-        return inactive(is->deint_active ? INTERP_DEINTERLACING : INTERP_IDLE);
+        return inactive(deinterlace_active(is) ? INTERP_DEINTERLACING
+                                               : INTERP_IDLE);
     }
 
     if (vp->serial != interp.serial) {

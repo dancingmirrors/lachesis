@@ -404,8 +404,6 @@ int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                           AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
 
 void video_prepare_overlays(VideoState *is);
-void video_prepare_deinterlace(VideoState *is, Frame *vp);
-int frame_is_interlaced(const Frame *vp);
 
 void calculate_display_rect(SDL_Rect *rect,
                             int scr_xleft, int scr_ytop, int scr_width, int scr_height,

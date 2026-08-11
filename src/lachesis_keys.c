@@ -442,12 +442,7 @@ void event_loop(VideoState **pis) {
                     break;
                 }
                 deinterlace = !deinterlace;
-                if (deinterlace &&
-                    !frame_is_interlaced(frame_queue_peek_last(&cur_stream->pictq))) {
-                    osd_show_message("Deinterlace: on (not flagged interlaced)");
-                } else {
-                    osd_show_message("Deinterlace: %s", deinterlace ? "on" : "off");
-                }
+                osd_show_message("Deinterlace: %s", deinterlace ? "on" : "off");
                 cur_stream->force_refresh = 1;
                 break;
             }

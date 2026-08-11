@@ -42,6 +42,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_deinterlace.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -279,7 +280,7 @@ static int screenshot_window(VideoState *is, const char *path) {
     video_prepare_overlays(is);
     is->render_params.rotate = video_rotate;
     is->render_params.still_image = is->is_still_image;
-    video_prepare_deinterlace(is, vp);
+    deinterlace_prepare(is, vp);
     ret = renderer_capture(renderer, vp->frame, &is->render_params,
                            w, h, rgba->data[0], rgba->linesize[0]);
     if (ret >= 0) {
