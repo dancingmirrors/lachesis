@@ -37,6 +37,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_ass.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"

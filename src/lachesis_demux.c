@@ -49,6 +49,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
 #include "lachesis_demux.h"

@@ -33,6 +33,7 @@
 #include <libavutil/error.h>
 #include <libavutil/mem.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_options.h"
 #include "lachesis_renderer.h"
 
@@ -245,6 +246,7 @@ struct YtdlChunkedIO *ytdl_chunked_create(const char *url, VideoState *is) {
         av_free(c);
         return NULL;
     }
+    alloc_track_disown(buffer);
     c->pb->seekable = c->size > 0 ? AVIO_SEEKABLE_NORMAL : 0;
 
     return c;

@@ -48,6 +48,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_audio.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -259,6 +260,7 @@ static int spdif_muxer_open(void) {
         ret = AVERROR(ENOMEM);
         goto fail;
     }
+    alloc_track_disown(buffer);
     s->pb->direct = 1;
 
     st = avformat_new_stream(s, NULL);

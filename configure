@@ -180,6 +180,7 @@ check(
 
 add_sources(
     "src/lachesis.c",
+    "src/lachesis_alloc.c",
     "src/lachesis_archive.c",
     "src/lachesis_ass.c",
     "src/lachesis_audio.c",

@@ -87,6 +87,7 @@
 #define PATH_SEPARATOR '/'
 #endif
 
+#include "lachesis_alloc.h"
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
 #include "lachesis_deinterlace.h"
@@ -2394,11 +2395,13 @@ int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
         }
 
         outputs->name = av_strdup("in");
+        alloc_track_disown(outputs->name);
         outputs->filter_ctx = source_ctx;
         outputs->pad_idx = 0;
         outputs->next = NULL;
 
         inputs->name = av_strdup("out");
+        alloc_track_disown(inputs->name);
         inputs->filter_ctx = sink_ctx;
         inputs->pad_idx = 0;
         inputs->next = NULL;
@@ -3308,6 +3311,8 @@ int main(int argc, char **argv) {
     win32_attach_console();
     win32_argv_to_utf8(&argc, &argv);
 #endif
+
+    alloc_track_init();
 
     terminal_output_init();
     init_dynload();

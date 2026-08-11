@@ -28,6 +28,7 @@
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_ass.h"
 #include "lachesis_log.h"
 #include "lachesis_osd_emoji_font.h"

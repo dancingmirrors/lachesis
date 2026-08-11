@@ -42,6 +42,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -100,6 +101,7 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     }
 
     graph->scale_sws_opts = av_strdup("flags=fast_bilinear");
+    alloc_track_disown(graph->scale_sws_opts);
 
     filt_src = avfilter_graph_alloc_filter(graph, avfilter_get_by_name("buffer"),
                                            "lachesis_buffer");

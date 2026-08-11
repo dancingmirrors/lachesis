@@ -49,6 +49,7 @@
 #include <libswresample/swresample.h>
 #include <libswscale/swscale.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"

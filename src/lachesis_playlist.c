@@ -49,6 +49,7 @@
 #include <libavutil/mem.h>
 #include <libavutil/random_seed.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_archive.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"

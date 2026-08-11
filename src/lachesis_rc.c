@@ -27,6 +27,7 @@
 #include <libavutil/error.h>
 #include <libavutil/mem.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_rc.h"

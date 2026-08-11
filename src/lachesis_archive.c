@@ -32,6 +32,8 @@
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
 
+#include "lachesis_alloc.h"
+
 static int cmp_str(const void *a, const void *b) {
     return strcmp(*(const char **)a, *(const char **)b);
 }
@@ -305,6 +307,7 @@ AVIOContext *archive_entry_open_avio(const char *archive_path,
         archive_io_free_cb(io);
         return NULL;
     }
+    alloc_track_disown(buf);
 
     return avio;
 }

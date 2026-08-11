@@ -20,6 +20,7 @@
  */
 
 /* clang-format off */
+#include "lachesis_alloc.h"
 #include "lachesis_config.h"
 #include "lachesis_deinterlace.h"
 #include "lachesis_equalizer.h"
@@ -354,6 +355,7 @@ static int add_device_extension(const AVDictionary *opt,
     if (ret < 0) {
         return ret;
     }
+
     return av_dict_set(dict, dev_ext_key, ext_list, AV_DICT_DONT_STRDUP_VAL);
 }
 

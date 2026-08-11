@@ -36,6 +36,7 @@
 #include <libavutil/error.h>
 #include <libavutil/mem.h>
 
+#include "lachesis_alloc.h"
 #include "lachesis_delete.h"
 #include "lachesis_internal.h"
 #include "lachesis_osd.h"
