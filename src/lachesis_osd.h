@@ -52,10 +52,7 @@ void osd_invalidate_textures(void);
 void osd_show_delete_prompt(const char *name);
 void osd_hide_delete_prompt(void);
 
-int osd_active(VideoState *is);
-
-int64_t osd_visible_until(void);
-void osd_reset_timers(void);
+unsigned osd_state(VideoState *is);
 
 void format_time(char *buf, int bufsz, double secs);
 

@@ -296,9 +296,8 @@ typedef struct VideoState {
     int64_t diag_last_pace_us;
     int is_still_image;
     SDL_AtomicInt streams_selected;
-    double audio_only_last_draw;
     double last_draw_time;
-    int audio_only_clean;
+    unsigned osd_state;
     int width, height, xleft, ytop;
     int window_opened;
     int step;
@@ -453,6 +452,7 @@ void toggle_pause(VideoState *is);
 void toggle_mute(VideoState *is);
 void update_volume(VideoState *is, int sign, double step);
 void step_to_next_frame(VideoState *is);
+void frame_step(VideoState *is);
 void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
 void stream_seek_exact(VideoState *is, int64_t pos);
 void stream_cycle_channel(VideoState *is, int codec_type);

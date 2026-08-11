@@ -48,6 +48,7 @@
 
 #define SDL_VOLUME_STEP (10.0)
 #define SEEK_MIN_STEP (0.001)
+#define SEEK_EXACT_STEP (1.0)
 
 static int sbs360_drag = 0;
 static int sbs360_drag_last_x = 0;
@@ -125,7 +126,7 @@ static void seek_chapter(VideoState *is, int incr) {
     stream_seek(is, target, 0, 0);
 }
 
-static void seek_relative(VideoState *is, double incr) {
+static void seek_relative_exact(VideoState *is, double incr, int exact) {
     double pos;
 
     if (!demuxer_ready(is)) {
@@ -168,9 +169,17 @@ static void seek_relative(VideoState *is, double incr) {
         if (fabs(target - pos) < SEEK_MIN_STEP) {
             return;
         }
-        stream_seek(is, (int64_t)(target * AV_TIME_BASE),
-                    (int64_t)((target - pos) * AV_TIME_BASE), 0);
+        if (exact) {
+            stream_seek_exact(is, (int64_t)(target * AV_TIME_BASE));
+        } else {
+            stream_seek(is, (int64_t)(target * AV_TIME_BASE),
+                        (int64_t)((target - pos) * AV_TIME_BASE), 0);
+        }
     }
+}
+
+static void seek_relative(VideoState *is, double incr) {
+    seek_relative_exact(is, incr, 0);
 }
 
 /* We "roll" as a 90° rotation we can keep the controls sane. */
@@ -396,16 +405,8 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_N:
-                if (!video_stream_advances(cur_stream)) {
-                    osd_show_message("No frames to step");
-                    cur_stream->force_refresh = 1;
-                    break;
-                }
-                if (!cur_stream->paused) {
-                    cur_stream->step_from_play = 1;
-                }
-                cur_stream->step_key_held = 1;
-                step_to_next_frame(cur_stream);
+                frame_step(cur_stream);
+                cur_stream->force_refresh = 1;
                 break;
             case SDLK_S:
                 take_screenshot(cur_stream, 0);
@@ -495,9 +496,17 @@ void event_loop(VideoState **pis) {
                 seek_chapter(cur_stream, -1);
                 break;
             case SDLK_LEFT:
+                if (event.key.mod & SDL_KMOD_SHIFT) {
+                    seek_relative_exact(cur_stream, -SEEK_EXACT_STEP, 1);
+                    break;
+                }
                 incr = seek_interval ? -seek_interval : -5.0;
                 goto do_seek;
             case SDLK_RIGHT:
+                if (event.key.mod & SDL_KMOD_SHIFT) {
+                    seek_relative_exact(cur_stream, SEEK_EXACT_STEP, 1);
+                    break;
+                }
                 incr = seek_interval ? seek_interval : 5.0;
                 goto do_seek;
             case SDLK_UP:

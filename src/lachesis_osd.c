@@ -1036,6 +1036,8 @@ void osd_prepare(VideoState *is) {
     int have_ov;
     int cw, ch;
 
+    is->osd_state = 0;
+
     if (!renderer || !osd_should_show(is) || !osd_engine_ensure()) {
         return;
     }
@@ -1054,6 +1056,7 @@ void osd_prepare(VideoState *is) {
     is->render_params.osd_width = osd_surface->w;
     is->render_params.osd_height = osd_surface->h;
     is->render_params.osd_stride = osd_surface->pitch;
+    is->osd_state = osd_state(is);
 }
 
 static void osd_dismiss_info(void) {
@@ -1127,19 +1130,12 @@ void osd_show_volume(void) {
     osd_dismiss_info();
 }
 
-int osd_active(VideoState *is) {
-    return osd_should_show(is);
-}
+unsigned osd_state(VideoState *is) {
+    OsdVis v = osd_resolve(is);
 
-int64_t osd_visible_until(void) {
-    return FFMAX(FFMAX(osd_status_show_until, osd_message_show_until),
-                 osd_volume_show_until);
-}
-
-void osd_reset_timers(void) {
-    osd_status_show_until = 0;
-    osd_volume_show_until = 0;
-    osd_message_show_until = 0;
+    return (unsigned)(!!v.subtitle << 0 | !!v.del << 1 | !!v.info << 2 |
+                      !!v.ab_loop << 3 | !!v.message << 4 | !!v.status << 5 |
+                      !!v.volume << 6);
 }
 
 void osd_init(void) {

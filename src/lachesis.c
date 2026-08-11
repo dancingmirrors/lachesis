@@ -1495,9 +1495,14 @@ static int video_open(VideoState *is) {
     return 0;
 }
 
-static void video_display(VideoState *is) {
+static int window_occluded(void) {
+    return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED);
+}
+
+/* Returns whether the window could be painted at all. */
+static int video_display(VideoState *is) {
     if (!renderer) {
-        return;
+        return 0;
     }
 
     if (!is->window_opened) {
@@ -1507,8 +1512,8 @@ static void video_display(VideoState *is) {
         video_follow_content_size(is);
     }
 
-    if (window && (SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED)) {
-        return;
+    if (window_occluded()) {
+        return 0;
     }
 
     is->render_params.present_done_us = 0;
@@ -1549,6 +1554,8 @@ static void video_display(VideoState *is) {
         is->audio_start_pending = 0;
         audio_device_resume();
     }
+
+    return 1;
 }
 
 static double clock_rate(const Clock *c) {
@@ -1997,6 +2004,63 @@ void step_to_next_frame(VideoState *is) {
     is->step = 1;
 }
 
+static int step_needs_seek(VideoState *is, double *from, double *to) {
+    Frame *lastvp, *vp;
+    double wait;
+
+    if (!is->pictq.rindex_shown || frame_queue_nb_remaining(&is->pictq) <= 0 ||
+        SDL_GetAtomicInt(&is->seek_by_bytes) > 0 || is->seek_req) {
+        return 0;
+    }
+
+    lastvp = frame_queue_peek_last(&is->pictq);
+    vp = frame_queue_peek(&is->pictq);
+    if (vp->serial != is->videoq.serial || vp->serial != lastvp->serial ||
+        isnan(lastvp->pts) || isnan(vp->pts)) {
+        return 0;
+    }
+
+    wait = vp->pts - lastvp->pts;
+    if (wait <= 0.0 || wait > is->max_frame_duration) {
+        return 0;
+    }
+
+    if (wait / playback_speed <= AV_NOSYNC_THRESHOLD) {
+        return 0;
+    }
+
+    *from = lastvp->pts;
+    *to = vp->pts;
+
+    return 1;
+}
+
+void frame_step(VideoState *is) {
+    double from, to;
+
+    if (!video_stream_advances(is)) {
+        osd_show_message("No frames to step");
+        return;
+    }
+
+    is->step_key_held = 1;
+
+    if (step_needs_seek(is, &from, &to)) {
+        if (!is->paused) {
+            is->step_from_play = 0;
+        }
+        stream_seek(is, (int64_t)(to * AV_TIME_BASE),
+                    (int64_t)((to - from) * AV_TIME_BASE), 0);
+        osd_show_seek();
+        return;
+    }
+
+    if (!is->paused) {
+        is->step_from_play = 1;
+    }
+    step_to_next_frame(is);
+}
+
 static double compute_target_delay(double delay, VideoState *is) {
     double diff = 0;
 
@@ -2041,9 +2105,27 @@ static void update_video_pts(VideoState *is, double pts, int serial) {
     sync_clock_to_slave(&is->extclk, &is->vidclk);
 }
 
+/* The OSD runs on wall clock time so it has to be painted even when the video is not. */
+static int osd_wants_repaint(VideoState *is, double now) {
+    unsigned state;
+
+    if (display_disable || window_occluded()) {
+        return 0;
+    }
+
+    state = osd_state(is);
+    if (state != is->osd_state) {
+        return 1;
+    }
+    if (!state || is->paused) {
+        return 0;
+    }
+
+    return now - is->last_draw_time >= OSD_ONLY_REFRESH_RATE;
+}
+
 static void osd_keep_alive(VideoState *is, double now) {
-    if (!display_disable && osd_active(is) &&
-        now - is->last_draw_time >= OSD_ONLY_REFRESH_RATE) {
+    if (osd_wants_repaint(is, now)) {
         is->force_refresh = 1;
     }
 }
@@ -2051,7 +2133,6 @@ static void osd_keep_alive(VideoState *is, double now) {
 static void video_refresh(void *opaque, double *remaining_time) {
     VideoState *is = opaque;
     double time;
-    int keep_refreshing = 0;
     int interp_painted = 0;
     int painted = 0;
 
@@ -2064,23 +2145,11 @@ static void video_refresh(void *opaque, double *remaining_time) {
     if (!display_disable && SDL_GetAtomicInt(&is->streams_selected) &&
         !is->video_st) {
         double now = av_gettime_relative() / 1000000.0;
-        int want = osd_active(is);
 
-        if (is->force_refresh) {
-            is->audio_only_clean = 0;
-        }
-
-        if (want || !is->audio_only_clean) {
-            double next = is->audio_only_last_draw + OSD_ONLY_REFRESH_RATE;
-            if (now >= next) {
-                video_display(is);
-                is->audio_only_last_draw = now;
-                is->audio_only_clean = !want;
-                next = now + OSD_ONLY_REFRESH_RATE;
-            } else {
-                keep_refreshing = 1;
-            }
-            *remaining_time = FFMIN(*remaining_time, FFMAX(next - now, 0.0));
+        if ((is->force_refresh || !is->window_opened ||
+             osd_wants_repaint(is, now)) &&
+            video_display(is)) {
+            is->last_draw_time = now;
         }
     }
 
@@ -2116,6 +2185,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
             }
 
             if (is->paused) {
+                osd_keep_alive(is, av_gettime_relative() / 1000000.0);
                 goto display;
             }
 
@@ -2216,14 +2286,13 @@ static void video_refresh(void *opaque, double *remaining_time) {
     display:
         if (!display_disable && is->force_refresh && !interp_painted &&
             is->pictq.rindex_shown) {
-            video_display(is);
-            painted = 1;
+            painted |= video_display(is);
         }
         if (painted) {
             is->last_draw_time = av_gettime_relative() / 1000000.0;
         }
     }
-    is->force_refresh = keep_refreshing;
+    is->force_refresh = 0;
 }
 
 static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial) {
@@ -3101,26 +3170,9 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             is->audio_start_pending = 0;
             audio_device_resume();
         }
-        if (!is->paused || is->force_refresh || !is->window_opened) {
+        if (!is->paused || is->force_refresh || !is->window_opened ||
+            osd_wants_repaint(is, av_gettime_relative() / 1000000.0)) {
             video_refresh(is, &remaining_time);
-        }
-        {
-            int64_t now_ms = (int64_t)SDL_GetTicks();
-            int64_t osd_until = osd_visible_until();
-            if (osd_until > now_ms) {
-                double osd_remaining = (osd_until - now_ms) / 1000.0;
-                if (osd_remaining < remaining_time) {
-                    remaining_time = osd_remaining;
-                }
-                if (is->paused) {
-                    is->force_refresh = 1;
-                }
-            } else if (osd_until > 0) {
-                if (is->paused) {
-                    is->force_refresh = 1;
-                }
-                osd_reset_timers();
-            }
         }
         SDL_PumpEvents();
         terminal_input_poll();
