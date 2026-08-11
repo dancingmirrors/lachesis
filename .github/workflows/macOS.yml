@@ -92,3 +92,10 @@ jobs:
           ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
           ./build/lachesis -an -gpu-api vulkan -loglevel debug /tmp/test.mp4
           ./build/lachesis -an -gpu-api opengl -loglevel debug /tmp/test.mp4
+
+          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=50:duration=1 \
+            -vf tinterlace=mode=interleave_top -c:v libx264 \
+            -flags +ilme+ildct -x264opts interlaced=1:tff=1 \
+            -pix_fmt yuv420p /tmp/interlaced.mp4
+          ./build/lachesis -an -deinterlace -gpu-api vulkan -loglevel debug /tmp/interlaced.mp4
+          ./build/lachesis -an -deinterlace -gpu-api opengl -loglevel debug /tmp/interlaced.mp4
