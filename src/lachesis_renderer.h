@@ -53,6 +53,14 @@ enum DeinterlaceMode {
     DEINTERLACE_MODE_COUNT,
 };
 
+#define LACHESIS_MAX_MIX_FRAMES 2
+
+typedef struct RenderMixFrame {
+    AVFrame *frame;
+    uint64_t signature;
+    float ts;
+} RenderMixFrame;
+
 typedef struct RenderParams {
     SDL_Rect target_rect;
     uint8_t video_background_color[4];
@@ -72,6 +80,9 @@ typedef struct RenderParams {
     int deinterlace;
     int reset_history;
     AVFrame *next_frame;
+    const RenderMixFrame *mix_frames;
+    int mix_num_frames;
+    float mix_vsync_duration;
     int rotate;
     int eq_brightness;
     int eq_gamma;

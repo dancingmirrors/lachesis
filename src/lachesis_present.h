@@ -57,6 +57,7 @@ double present_vsync_sec(void);
 
 int64_t present_last_done_us(void);
 
+double present_next_vsync(double now_sec, int *phase_locked);
 double present_snap(double ideal_sec, double now_sec);
 
 void present_get_stats(PresentStats *st);

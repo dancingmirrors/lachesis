@@ -452,6 +452,15 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             }
+            case SDLK_B:
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
+                frame_interpolation = !frame_interpolation;
+                osd_show_message("Interpolation: %s",
+                                 frame_interpolation ? "on" : "off");
+                cur_stream->force_refresh = 1;
+                break;
             case SDLK_R:
             case SDLK_KP_9:
                 if (refuse_without_video(cur_stream)) {

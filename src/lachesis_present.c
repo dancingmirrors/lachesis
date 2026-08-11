@@ -297,6 +297,30 @@ int64_t present_last_done_us(void) {
     return pres.last_present_us;
 }
 
+double present_next_vsync(double now_sec, int *phase_locked) {
+    double vsync = present_vsync_sec();
+
+    if (phase_locked) {
+        *phase_locked = 0;
+    }
+    if (vsync <= 0) {
+        return NAN;
+    }
+
+    if (!pres.snap_disabled && pres.last_blocked_done_us > 0) {
+        double anchor = pres.last_blocked_done_us / 1e6;
+
+        if (now_sec - anchor <= PRESENT_ANCHOR_STALE_US / 1e6) {
+            if (phase_locked) {
+                *phase_locked = 1;
+            }
+            return anchor + (floor((now_sec - anchor) / vsync) + 1) * vsync;
+        }
+    }
+
+    return now_sec + vsync;
+}
+
 double present_snap(double ideal_sec, double now_sec) {
     double vsync = present_vsync_sec();
 

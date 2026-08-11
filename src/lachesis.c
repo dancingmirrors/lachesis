@@ -94,6 +94,7 @@
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
+#include "lachesis_interpolate.h"
 #include "lachesis_keys.h"
 #include "lachesis_log.h"
 #include "lachesis_network.h"
@@ -245,6 +246,7 @@ int lachesis_quiet;
 int64_t cursor_last_shown;
 int cursor_hidden = 0;
 int deinterlace = 0;
+int frame_interpolation = 0;
 int fatal_error_pending = 0;
 enum View360Layout view360_layout = VIEW360_LAYOUT_OFF;
 float sbs360_yaw = 0.0f;
@@ -894,6 +896,8 @@ void video_prepare_overlays(VideoState *is) {
 
 static void video_image_display(VideoState *is) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
+    RenderMixFrame mix[LACHESIS_MAX_MIX_FRAMES];
+    float mix_vsync = 0.0f;
     int ret;
 
     if (view360_enabled()) {
@@ -919,7 +923,16 @@ static void video_image_display(VideoState *is) {
         }
     }
 
+    is->render_params.mix_num_frames =
+        interpolate_frames(is, vp, mix, &mix_vsync);
+    is->render_params.mix_frames = is->render_params.mix_num_frames ? mix : NULL;
+    is->render_params.mix_vsync_duration = mix_vsync;
+
     ret = renderer_display(renderer, vp->frame, &is->render_params);
+
+    is->render_params.mix_frames = NULL;
+    is->render_params.mix_num_frames = 0;
+
     if (ret == AVERROR(ERANGE)) {
         /* Doesn't imply the renderer doesn't work. */
     } else if (ret < 0) {
@@ -2003,6 +2016,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
     VideoState *is = opaque;
     double time;
     int keep_refreshing = 0;
+    int interp_painted = 0;
 
     Frame *sp, *sp2;
 
@@ -2063,6 +2077,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
             delay = compute_target_delay(last_duration, is) / playback_speed;
 
             time = av_gettime_relative() / 1000000.0;
+            interp_painted = interpolate_pace(is, time, remaining_time);
+
             if (!benchmark) {
                 double ideal = is->frame_timer + delay;
                 double target = present_snap(ideal, time);
@@ -2140,7 +2156,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
             }
         }
     display:
-        if (!display_disable && is->force_refresh && is->pictq.rindex_shown) {
+        if (!display_disable && is->force_refresh && !interp_painted &&
+            is->pictq.rindex_shown) {
             video_display(is);
         }
     }
@@ -2148,6 +2165,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
 }
 
 static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial) {
+    static uint64_t next_frame_id = 1;
     Frame *vp;
 
 #if defined(DEBUG_SYNC)
@@ -2168,6 +2186,7 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     vp->duration = duration;
     vp->pos = pos;
     vp->serial = serial;
+    vp->id = next_frame_id++;
 
     if (serial != is->pictq_last_serial) {
         if (!isnan(pts)) {

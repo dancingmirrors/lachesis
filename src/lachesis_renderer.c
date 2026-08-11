@@ -132,6 +132,14 @@ typedef struct RendererContext {
     AVFrame *deint_prev;
     AVFrame *sw_frame;
 
+    struct MixSlot {
+        uint64_t signature;
+        int mapped;
+        int used;
+        pl_tex tex[4];
+        struct pl_frame frame;
+    } mix_slots[LACHESIS_MAX_MIX_FRAMES];
+
     AVBufferRef *hw_device_ref;
 
 #if LACHESIS_HAVE_VULKAN
@@ -2354,7 +2362,7 @@ static int convert_frame(Renderer *renderer, AVFrame *frame) {
     return convert_frame_readback(ctx, frame);
 }
 
-static bool map_video_frame(RendererContext *ctx, AVFrame *frame,
+static bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
                             struct pl_frame *out) {
 #if LACHESIS_HAVE_D3D11
     if (ctx->api.backend == RENDERER_API_D3D11 &&
@@ -2375,7 +2383,7 @@ static bool map_video_frame(RendererContext *ctx, AVFrame *frame,
 #endif
 
     if (pl_map_avframe_ex(ctx->gpu, out,
-                          pl_avframe_params(.frame = frame, .tex = ctx->tex))) {
+                          pl_avframe_params(.frame = frame, .tex = tex))) {
         return true;
     }
 
@@ -2393,7 +2401,12 @@ static bool map_video_frame(RendererContext *ctx, AVFrame *frame,
     }
 
     return pl_map_avframe_ex(ctx->gpu, out,
-                             pl_avframe_params(.frame = frame, .tex = ctx->tex));
+                             pl_avframe_params(.frame = frame, .tex = tex));
+}
+
+static bool map_video_frame(RendererContext *ctx, AVFrame *frame,
+                            struct pl_frame *out) {
+    return map_avframe_tex(ctx, frame, ctx->tex, out);
 }
 
 static bool frames_alias(const AVFrame *a, const AVFrame *b) {
@@ -2741,6 +2754,104 @@ static void collect_present_timing(RendererContext *ctx, RenderParams *params) {
 #endif
 }
 
+static void unmap_mix_slot(RendererContext *ctx, struct MixSlot *slot) {
+    if (slot->mapped) {
+        pl_unmap_avframe(ctx->gpu, &slot->frame);
+        slot->mapped = 0;
+    }
+    slot->signature = 0;
+    slot->used = 0;
+}
+
+static void release_mix_slots(RendererContext *ctx) {
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
+        unmap_mix_slot(ctx, &ctx->mix_slots[i]);
+    }
+}
+
+static void destroy_mix_slots(RendererContext *ctx) {
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
+        struct MixSlot *slot = &ctx->mix_slots[i];
+
+        unmap_mix_slot(ctx, slot);
+        for (size_t j = 0; j < FF_ARRAY_ELEMS(slot->tex); j++) {
+            pl_tex_destroy(ctx->gpu, &slot->tex[j]);
+        }
+    }
+}
+
+static const struct pl_frame *map_mix_frame(RendererContext *ctx,
+                                            const RenderMixFrame *mix) {
+    struct MixSlot *slot = NULL;
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
+        if (ctx->mix_slots[i].mapped &&
+            ctx->mix_slots[i].signature == mix->signature) {
+            ctx->mix_slots[i].used = 1;
+            return &ctx->mix_slots[i].frame;
+        }
+    }
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
+        if (!ctx->mix_slots[i].used) {
+            slot = &ctx->mix_slots[i];
+            unmap_mix_slot(ctx, slot);
+            break;
+        }
+    }
+    if (!slot) {
+        return NULL;
+    }
+
+    if (convert_frame(&ctx->api, mix->frame) < 0 ||
+        !map_avframe_tex(ctx, mix->frame, slot->tex, &slot->frame)) {
+        return NULL;
+    }
+
+    slot->signature = mix->signature;
+    slot->mapped = 1;
+    slot->used = 1;
+
+    return &slot->frame;
+}
+
+static int map_frame_mix(RendererContext *ctx, const AVFrame *frame,
+                         const RenderParams *params, struct pl_frame *images,
+                         const struct pl_frame **refs, float *timestamps,
+                         uint64_t *signatures) {
+    int num = 0;
+
+    if (!params->mix_frames || params->mix_num_frames < 1 ||
+        params->mix_num_frames > LACHESIS_MAX_MIX_FRAMES ||
+        params->mix_vsync_duration <= 0.0f ||
+        params->deinterlace != DEINTERLACE_OFF) {
+        return 0;
+    }
+    if (params->mix_frames[0].frame != frame) {
+        return 0;
+    }
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
+        ctx->mix_slots[i].used = 0;
+    }
+
+    for (int i = 0; i < params->mix_num_frames; i++) {
+        const struct pl_frame *mapped =
+            map_mix_frame(ctx, &params->mix_frames[i]);
+
+        if (!mapped) {
+            break;
+        }
+        images[num] = *mapped;
+        refs[num] = &images[num];
+        timestamps[num] = params->mix_frames[i].ts;
+        signatures[num] = params->mix_frames[i].signature;
+        num++;
+    }
+
+    return num;
+}
+
 static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx,
                                                       const RenderParams *params) {
     if (ctx->benchmark || params->disable_linear_scaling || !params->still_image) {
@@ -2779,9 +2890,15 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     };
     int ret = 0;
     bool frame_started = false;
+    bool mapped_image = false;
     struct pl_color_space hint = {0};
     int64_t _ts1, _ts2, _ts3 = 0, prs_us = 0;
     uint32_t max_dim;
+    const struct pl_frame *mix_refs[LACHESIS_MAX_MIX_FRAMES];
+    struct pl_frame mix_images[LACHESIS_MAX_MIX_FRAMES];
+    float mix_ts[LACHESIS_MAX_MIX_FRAMES];
+    uint64_t mix_sigs[LACHESIS_MAX_MIX_FRAMES];
+    int num_mix;
 
     if (params->reset_history) {
         av_frame_free(&ctx->deint_prev);
@@ -2807,9 +2924,17 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
         goto done;
     }
 
-    if (!map_video_frame(ctx, frame, &pl_frame)) {
-        ret = AVERROR_EXTERNAL;
-        goto done;
+    num_mix = map_frame_mix(ctx, frame, params, mix_images, mix_refs, mix_ts,
+                            mix_sigs);
+    if (num_mix > 0) {
+        pl_frame = mix_images[0];
+    } else {
+        release_mix_slots(ctx);
+        if (!map_video_frame(ctx, frame, &pl_frame)) {
+            ret = AVERROR_EXTERNAL;
+            goto done;
+        }
+        mapped_image = true;
     }
 
     pl_color_space_from_avframe(&hint, frame);
@@ -2863,7 +2988,33 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     }
 
     _ts2 = av_gettime_relative();
-    if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
+    if (num_mix > 0) {
+        struct pl_frame_mix mix = {
+            .num_frames = num_mix,
+            .frames = mix_refs,
+            .signatures = mix_sigs,
+            .timestamps = mix_ts,
+            .vsync_duration = params->mix_vsync_duration,
+        };
+
+        mix_images[0] = pl_frame;
+        for (int i = 1; i < num_mix; i++) {
+            mix_images[i].crop = pl_frame.crop;
+            mix_images[i].rotation = pl_frame.rotation;
+            mix_images[i].repr.alpha = pl_frame.repr.alpha;
+        }
+        pl_params.frame_mixer = &pl_filter_oversample;
+
+        if (!pl_render_image_mix(ctx->renderer, &mix, &target, &pl_params)) {
+            static bool warned_mix;
+            if (!warned_mix) {
+                warned_mix = true;
+                log_warn("pl_render_image_mix failed! Skipping the frame.\n");
+            }
+            ret = AVERROR_EXTERNAL;
+            goto out;
+        }
+    } else if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
         static bool warned;
         if (!warned) {
             warned = true;
@@ -2926,7 +3077,15 @@ out:
     if (mapped_next) {
         pl_unmap_avframe(ctx->gpu, &pl_next);
     }
-    pl_unmap_avframe(ctx->gpu, &pl_frame);
+    if (mapped_image) {
+        pl_unmap_avframe(ctx->gpu, &pl_frame);
+    } else {
+        for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
+            if (!ctx->mix_slots[i].used) {
+                unmap_mix_slot(ctx, &ctx->mix_slots[i]);
+            }
+        }
+    }
 
 done:
     if (params->deinterlace == DEINTERLACE_YADIF) {
@@ -3198,6 +3357,7 @@ static void destroy(Renderer *renderer) {
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
             pl_tex_destroy(ctx->gpu, &ctx->tex[i]);
         }
+        destroy_mix_slots(ctx);
         pl_renderer_destroy(&ctx->renderer);
     }
 

@@ -29,6 +29,7 @@
 
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
+#include "lachesis_interpolate.h"
 #include "lachesis_log.h"
 #include "lachesis_osd.h"
 #include "lachesis_present.h"
@@ -40,7 +41,7 @@ static char audio_device_format_line[96] = "";
 static char audio_passthrough_line[96] = "";
 static char media_info_vout_line[128] = "";
 
-static char playback_stats_cached[512] = "";
+static char playback_stats_cached[640] = "";
 static int64_t playback_stats_next_refresh_us = 0;
 
 static const char *media_info_renderer(void) {
@@ -86,7 +87,7 @@ static void media_info_video_line(const VideoState *is, char *buf, size_t sz) {
     char fps_buf[32];
     fps_buf[0] = '\0';
     if (fr.num && fr.den) {
-        snprintf(fps_buf, sizeof(fps_buf), ", %.4g fps", av_q2d(fr));
+        snprintf(fps_buf, sizeof(fps_buf), ", %.4g FPS", av_q2d(fr));
     }
     snprintf(buf, sz, "%s, %dx%d, SAR %d:%d DAR %s%s",
              avcodec_get_name(par->codec_id), par->width, par->height,
@@ -302,8 +303,10 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
         }
 
         snprintf(cached, cached_size,
-                 "Dropped frames: %d (early %d, late %d)\n%s\n%s\n%s",
-                 early + late, early, late, sync_line, disp_line, timing);
+                 "Dropped frames: %d (early %d, late %d)\n%s\n%s\n%s\n"
+                 "Interpolation: %s",
+                 early + late, early, late, sync_line, disp_line, timing,
+                 interpolate_status());
     }
 
     playback_stats_next_refresh_us = now + 500000;
@@ -378,7 +381,7 @@ void media_info_note_video_output(int width, int height, AVRational sar,
 
     fps_buf[0] = '\0';
     if (frame_rate.num > 0 && frame_rate.den > 0) {
-        snprintf(fps_buf, sizeof(fps_buf), ", %.4g fps", av_q2d(frame_rate));
+        snprintf(fps_buf, sizeof(fps_buf), ", %.4g FPS", av_q2d(frame_rate));
     }
 
     snprintf(media_info_vout_line, sizeof(media_info_vout_line),

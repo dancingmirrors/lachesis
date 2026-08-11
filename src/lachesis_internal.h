@@ -96,6 +96,8 @@ typedef struct FrameData {
 typedef struct Frame {
     AVFrame *frame;
     AVSubtitle sub;
+    /* Identifies the frame to libplacebo's mix cache. */
+    uint64_t id;
     int serial;
     double pts;
     double duration;
@@ -425,6 +427,7 @@ extern float sbs360_roll;
 extern float sbs360_hfov;
 void sbs360_reset_view(void);
 extern int deinterlace;
+extern int frame_interpolation;
 extern double playback_speed;
 extern int screen_width;
 extern int screen_height;
