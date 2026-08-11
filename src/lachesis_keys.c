@@ -438,17 +438,16 @@ void event_loop(VideoState **pis) {
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_SUBTITLE);
                 break;
             case SDLK_D: {
-                static const char *const deint_names[DEINTERLACE_MODE_COUNT] = {
-                    "off",
-                    "yadif",
-                    "bob",
-                };
-
                 if (refuse_without_video(cur_stream)) {
                     break;
                 }
-                deinterlace = (deinterlace + 1) % DEINTERLACE_MODE_COUNT;
-                osd_show_message("Deinterlace: %s", deint_names[deinterlace]);
+                deinterlace = !deinterlace;
+                if (deinterlace &&
+                    !frame_is_interlaced(frame_queue_peek_last(&cur_stream->pictq))) {
+                    osd_show_message("Deinterlace: on (not flagged interlaced)");
+                } else {
+                    osd_show_message("Deinterlace: %s", deinterlace ? "on" : "off");
+                }
                 cur_stream->force_refresh = 1;
                 break;
             }

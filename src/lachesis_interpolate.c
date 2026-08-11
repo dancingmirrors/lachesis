@@ -36,6 +36,7 @@
 enum {
     INTERP_OFF,
     INTERP_IDLE,
+    INTERP_DEINTERLACING,
     INTERP_RATE_MATCH,
     INTERP_STARVED,
     INTERP_NO_REFRESH,
@@ -55,7 +56,7 @@ static struct {
 static int interpolation_wanted(const VideoState *is) {
     return frame_interpolation && !benchmark && !display_disable && !is->paused &&
         !is->step && !is->is_still_image && is->video_st &&
-        deinterlace == DEINTERLACE_OFF && present_vsync_sec() > 0;
+        !is->deint_active && present_vsync_sec() > 0;
 }
 
 static int inactive(int state) {
@@ -72,7 +73,10 @@ int interpolate_frames(VideoState *is, Frame *vp, RenderMixFrame *mix,
     Frame *next;
 
     if (!interpolation_wanted(is)) {
-        return inactive(frame_interpolation ? INTERP_IDLE : INTERP_OFF);
+        if (!frame_interpolation) {
+            return inactive(INTERP_OFF);
+        }
+        return inactive(is->deint_active ? INTERP_DEINTERLACING : INTERP_IDLE);
     }
 
     if (vp->serial != interp.serial) {
@@ -186,6 +190,8 @@ const char *interpolate_status(void) {
         snprintf(status, sizeof(status), "%.3g FPS matches the display",
                  interp.rate);
         return status;
+    case INTERP_DEINTERLACING:
+        return "off, deinterlacing already paints every field";
     case INTERP_STARVED:
         return "waiting for frames";
     case INTERP_NO_REFRESH:

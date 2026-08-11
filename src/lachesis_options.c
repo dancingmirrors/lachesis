@@ -289,6 +289,7 @@ const OptionDef options[] = {
     {"display-fps", OPT_TYPE_DOUBLE, 0, {&display_fps_override}, "override the detected display refresh rate", "fps"},
     {"no-vsync-snap", OPT_TYPE_BOOL, 0, {&no_vsync_snap}, "disable snapping frame deadlines to the display refresh grid", ""},
     {"interpolate", OPT_TYPE_BOOL, 0, {&frame_interpolation}, "oversample interpolation", ""},
+    {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF", ""},
     {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,

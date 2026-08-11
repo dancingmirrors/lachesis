@@ -229,6 +229,11 @@ typedef struct VideoState {
 
     RenderParams render_params;
     int last_render_serial;
+    int deint_active;
+    int deint_second_field;
+    uint64_t deint_frame_id;
+    AVFrame *deint_prev;
+    int deint_prev_serial;
     int render_storage_w;
     int render_storage_h;
     uint8_t *sub_rgba;
@@ -399,6 +404,8 @@ int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                           AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
 
 void video_prepare_overlays(VideoState *is);
+void video_prepare_deinterlace(VideoState *is, Frame *vp);
+int frame_is_interlaced(const Frame *vp);
 
 void calculate_display_rect(SDL_Rect *rect,
                             int scr_xleft, int scr_ytop, int scr_width, int scr_height,

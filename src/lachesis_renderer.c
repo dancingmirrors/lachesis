@@ -129,7 +129,6 @@ typedef struct RendererContext {
     pl_tex tex[4];
     pl_tex prev_tex[4];
     pl_tex next_tex[4];
-    AVFrame *deint_prev;
     AVFrame *sw_frame;
 
     struct MixSlot {
@@ -2421,6 +2420,9 @@ static bool frames_alias(const AVFrame *a, const AVFrame *b) {
             return true;
         }
     }
+    if (a->buf[0] && b->buf[0]) {
+        return false;
+    }
     return a->data[0] && a->data[0] == b->data[0];
 }
 
@@ -2428,13 +2430,14 @@ static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
                                             struct pl_frame *out,
                                             const struct pl_frame *cur,
                                             AVFrame *frame, const AVFrame *self) {
-    if (!frame || frames_alias(frame, self)) {
+    if (!frame || frame->width <= 0 || frames_alias(frame, self)) {
         return NULL;
     }
 #if LACHESIS_HAVE_D3D11
     if (ctx->api.backend == RENDERER_API_D3D11 &&
         frame->format == AV_PIX_FMT_D3D11) {
-        if (!map_d3d11_frame(ctx, frame, out)) {
+        if ((ID3D11Texture2D *)frame->data[0] != ctx->d3d11_pool ||
+            !map_d3d11_frame(ctx, frame, out)) {
             return NULL;
         }
     } else
@@ -2469,34 +2472,23 @@ reject:
 static void apply_deinterlace(struct pl_frame *pl_frame,
                               struct pl_render_params *pl_params,
                               const AVFrame *frame, const RenderParams *params) {
-    static const struct pl_deinterlace_params yadif = {
+    static const struct pl_deinterlace_params deint = {
         .algo = PL_DEINTERLACE_YADIF,
     };
-    static const struct pl_deinterlace_params bob = {
-        .algo = PL_DEINTERLACE_BOB,
-    };
+    /* See libplacebo's validate_structs() if there are mysterious failures. */
+    enum pl_field first = PL_FIELD_TOP;
 
-    switch (params->deinterlace) {
-    case DEINTERLACE_YADIF:
-        pl_params->deinterlace_params = &yadif;
-        break;
-    case DEINTERLACE_BOB:
-        pl_params->deinterlace_params = &bob;
-        break;
-    default:
+    if (!params->deinterlace) {
         return;
     }
-
-    enum pl_field first;
-    if (!(frame->flags & AV_FRAME_FLAG_INTERLACED)) {
-        first = PL_FIELD_TOP;
-    } else {
-        /* See libplacebo's validate_structs() if there are mysterious failures. */
-        first = (frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST) ? PL_FIELD_TOP : PL_FIELD_BOTTOM;
+    if ((frame->flags & AV_FRAME_FLAG_INTERLACED) &&
+        !(frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST)) {
+        first = PL_FIELD_BOTTOM;
     }
 
-    pl_frame->field = first;
     pl_frame->first_field = first;
+    pl_frame->field = params->second_field ? pl_field_other(first) : first;
+    pl_params->deinterlace_params = &deint;
 }
 
 static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target,
@@ -2824,7 +2816,7 @@ static int map_frame_mix(RendererContext *ctx, const AVFrame *frame,
     if (!params->mix_frames || params->mix_num_frames < 1 ||
         params->mix_num_frames > LACHESIS_MAX_MIX_FRAMES ||
         params->mix_vsync_duration <= 0.0f ||
-        params->deinterlace != DEINTERLACE_OFF) {
+        params->deinterlace) {
         return 0;
     }
     if (params->mix_frames[0].frame != frame) {
@@ -2899,18 +2891,20 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     float mix_ts[LACHESIS_MAX_MIX_FRAMES];
     uint64_t mix_sigs[LACHESIS_MAX_MIX_FRAMES];
     int num_mix;
-
-    if (params->reset_history) {
-        av_frame_free(&ctx->deint_prev);
-    }
+    bool deint = params->deinterlace != 0;
+    AVFrame *prev_ref = deint ? params->prev_frame : NULL;
+    AVFrame *next_ref = deint ? params->next_frame : NULL;
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
         return ret;
     }
 
-    if (params->next_frame && params->deinterlace == DEINTERLACE_YADIF) {
-        convert_frame(renderer, params->next_frame);
+    if (prev_ref && convert_frame(renderer, prev_ref) < 0) {
+        prev_ref = NULL;
+    }
+    if (next_ref && convert_frame(renderer, next_ref) < 0) {
+        next_ref = NULL;
     }
 
     if (frame->width <= 0 || frame->height <= 0) {
@@ -2980,9 +2974,9 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     if (pl_params.deinterlace_params &&
         pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
         pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
-                                      ctx->deint_prev, frame);
+                                      prev_ref, frame);
         pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
-                                      params->next_frame, frame);
+                                      next_ref, frame);
         mapped_prev = pl_frame.prev != NULL;
         mapped_next = pl_frame.next != NULL;
     }
@@ -3088,18 +3082,6 @@ out:
     }
 
 done:
-    if (params->deinterlace == DEINTERLACE_YADIF) {
-        if (!ctx->deint_prev) {
-            ctx->deint_prev = av_frame_alloc();
-        }
-        if (ctx->deint_prev && ret == 0) {
-            av_frame_unref(ctx->deint_prev);
-            av_frame_ref(ctx->deint_prev, frame);
-        }
-    } else if (ctx->deint_prev) {
-        av_frame_free(&ctx->deint_prev);
-    }
-
     return ret;
 }
 
@@ -3126,14 +3108,20 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     struct pl_frame pl_prev = {0}, pl_next = {0};
     bool mapped_prev = false, mapped_next = false;
     int ret = 0;
+    bool deint = params->deinterlace != 0;
+    AVFrame *prev_ref = deint ? params->prev_frame : NULL;
+    AVFrame *next_ref = deint ? params->next_frame : NULL;
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
         return ret;
     }
 
-    if (params->next_frame && params->deinterlace == DEINTERLACE_YADIF) {
-        convert_frame(renderer, params->next_frame);
+    if (prev_ref && convert_frame(renderer, prev_ref) < 0) {
+        prev_ref = NULL;
+    }
+    if (next_ref && convert_frame(renderer, next_ref) < 0) {
+        next_ref = NULL;
     }
 
     if (!map_video_frame(ctx, frame, &pl_frame)) {
@@ -3184,9 +3172,9 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     if (pl_params.deinterlace_params &&
         pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
         pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
-                                      ctx->deint_prev, frame);
+                                      prev_ref, frame);
         pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
-                                      params->next_frame, frame);
+                                      next_ref, frame);
         mapped_prev = pl_frame.prev != NULL;
         mapped_next = pl_frame.next != NULL;
     }
@@ -3349,7 +3337,6 @@ static void destroy(Renderer *renderer) {
 #endif
         pl_tex_destroy(ctx->gpu, &ctx->osd_tex);
         pl_tex_destroy(ctx->gpu, &ctx->sub_tex);
-        av_frame_free(&ctx->deint_prev);
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->prev_tex); i++) {
             pl_tex_destroy(ctx->gpu, &ctx->prev_tex[i]);
             pl_tex_destroy(ctx->gpu, &ctx->next_tex[i]);

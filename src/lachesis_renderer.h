@@ -46,13 +46,6 @@ enum VideoBackgroundType {
     VIDEO_BACKGROUND_NONE,
 };
 
-enum DeinterlaceMode {
-    DEINTERLACE_OFF = 0,
-    DEINTERLACE_YADIF,
-    DEINTERLACE_BOB,
-    DEINTERLACE_MODE_COUNT,
-};
-
 #define LACHESIS_MAX_MIX_FRAMES 2
 
 typedef struct RenderMixFrame {
@@ -78,7 +71,8 @@ typedef struct RenderParams {
     int disable_linear_scaling;
     int skip_anti_aliasing;
     int deinterlace;
-    int reset_history;
+    int second_field;
+    AVFrame *prev_frame;
     AVFrame *next_frame;
     const RenderMixFrame *mix_frames;
     int mix_num_frames;

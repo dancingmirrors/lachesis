@@ -894,6 +894,53 @@ void video_prepare_overlays(VideoState *is) {
     }
 }
 
+int frame_is_interlaced(const Frame *vp) {
+    return vp && vp->frame && (vp->frame->flags & AV_FRAME_FLAG_INTERLACED);
+}
+
+static void video_retire_frame(VideoState *is) {
+    Frame *vp;
+
+    if (!is->pictq.rindex_shown) {
+        return;
+    }
+    vp = frame_queue_peek_last(&is->pictq);
+    if (!deinterlace || !vp->frame || !vp->frame->buf[0]) {
+        av_frame_unref(is->deint_prev);
+        return;
+    }
+    if (!is->deint_prev) {
+        is->deint_prev = av_frame_alloc();
+    }
+    if (is->deint_prev && av_frame_replace(is->deint_prev, vp->frame) == 0) {
+        is->deint_prev_serial = vp->serial;
+    }
+}
+
+void video_prepare_deinterlace(VideoState *is, Frame *vp) {
+    is->render_params.deinterlace = deinterlace;
+    is->render_params.prev_frame = NULL;
+    is->render_params.next_frame = NULL;
+    is->render_params.second_field = is->deint_second_field;
+    is->deint_active = deinterlace;
+
+    if (!is->deint_active) {
+        return;
+    }
+
+    if (is->deint_prev && is->deint_prev->width > 0 &&
+        is->deint_prev_serial == vp->serial) {
+        is->render_params.prev_frame = is->deint_prev;
+    }
+    if (frame_queue_nb_remaining(&is->pictq) > 0) {
+        Frame *nextvp = frame_queue_peek(&is->pictq);
+
+        if (nextvp != vp && nextvp->serial == vp->serial) {
+            is->render_params.next_frame = nextvp->frame;
+        }
+    }
+}
+
 static void video_image_display(VideoState *is) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
     RenderMixFrame mix[LACHESIS_MAX_MIX_FRAMES];
@@ -906,22 +953,19 @@ static void video_image_display(VideoState *is) {
     is->render_params.still_image = is->is_still_image;
     is->render_params.disable_linear_scaling = is->render_low_quality;
     is->render_params.skip_anti_aliasing = is->render_low_quality;
-    is->render_params.deinterlace = deinterlace;
     is->render_params.rotate = video_rotate;
-    is->render_params.next_frame = NULL;
-    is->render_params.reset_history = vp->serial != is->last_render_serial;
     is->last_render_serial = vp->serial;
+
+    /* A new picture always starts over from its first field. */
+    if (vp->id != is->deint_frame_id) {
+        is->deint_frame_id = vp->id;
+        is->deint_second_field = 0;
+    }
     EqualizerValues eq = equalizer_get();
     is->render_params.eq_brightness = eq.brightness;
     is->render_params.eq_gamma = eq.gamma;
     is->render_params.eq_contrast = eq.contrast;
-    if (deinterlace == DEINTERLACE_YADIF &&
-        frame_queue_nb_remaining(&is->pictq) > 0) {
-        Frame *nextvp = frame_queue_peek(&is->pictq);
-        if (nextvp != vp) {
-            is->render_params.next_frame = nextvp->frame;
-        }
-    }
+    video_prepare_deinterlace(is, vp);
 
     is->render_params.mix_num_frames =
         interpolate_frames(is, vp, mix, &mix_vsync);
@@ -1150,6 +1194,7 @@ static int stream_close(VideoState *is) {
     frame_queue_destroy(&is->pictq);
     frame_queue_destroy(&is->sampq);
     frame_queue_destroy(&is->subpq);
+    av_frame_free(&is->deint_prev);
     SDL_DestroyCondition(is->continue_read_thread);
     SDL_DestroyMutex(is->pipeline_mutex);
     sws_freeContext(is->sub_convert_ctx);
@@ -1516,7 +1561,8 @@ static void video_display(VideoState *is) {
         is->render_params.eq_brightness = 0;
         is->render_params.eq_gamma = 0;
         is->render_params.eq_contrast = 0;
-        is->render_params.deinterlace = DEINTERLACE_OFF;
+        is->render_params.deinterlace = 0;
+        is->deint_active = 0;
         renderer_display_blank(renderer, &is->render_params);
     }
 
@@ -2012,6 +2058,28 @@ static void update_video_pts(VideoState *is, double pts, int serial) {
     sync_clock_to_slave(&is->extclk, &is->vidclk);
 }
 
+static void deinterlace_pace(VideoState *is, double delay, double time,
+                             double *remaining_time) {
+    double ideal, target, lead = 0;
+
+    if (benchmark || is->paused || !is->deint_active || is->deint_second_field) {
+        return;
+    }
+
+    ideal = is->frame_timer + delay / 2.0;
+    target = present_snap(ideal, time);
+    if (target != ideal) {
+        lead = FFMIN(PRESENT_LEAD_MAX, present_vsync_sec() * 0.25);
+    }
+    if (time < target - lead) {
+        *remaining_time = FFMIN(target - lead - time, *remaining_time);
+        return;
+    }
+
+    is->deint_second_field = 1;
+    is->force_refresh = 1;
+}
+
 static void video_refresh(void *opaque, double *remaining_time) {
     VideoState *is = opaque;
     double time;
@@ -2053,6 +2121,13 @@ static void video_refresh(void *opaque, double *remaining_time) {
             if (is->videoq.nb_packets > 0) {
                 *remaining_time = FFMIN(*remaining_time, 0.002);
             }
+            if (is->pictq.rindex_shown) {
+                Frame *lastvp = frame_queue_peek_last(&is->pictq);
+
+                deinterlace_pace(is, lastvp->duration / playback_speed,
+                                 av_gettime_relative() / 1000000.0,
+                                 remaining_time);
+            }
         } else {
             double last_duration, duration, delay;
             Frame *vp, *lastvp;
@@ -2061,6 +2136,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
             vp = frame_queue_peek(&is->pictq);
 
             if (vp->serial != is->videoq.serial) {
+                video_retire_frame(is);
                 frame_queue_next(&is->pictq);
                 goto retry;
             }
@@ -2078,6 +2154,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
 
             time = av_gettime_relative() / 1000000.0;
             interp_painted = interpolate_pace(is, time, remaining_time);
+            deinterlace_pace(is, delay, time, remaining_time);
 
             if (!benchmark) {
                 double ideal = is->frame_timer + delay;
@@ -2117,6 +2194,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
                     time > is->frame_timer + duration) {
                     /* clang-format on */
                     is->frame_drops_late++;
+                    video_retire_frame(is);
                     frame_queue_next(&is->pictq);
                     goto retry;
                 }
@@ -2148,6 +2226,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
                 }
             }
 
+            video_retire_frame(is);
             frame_queue_next(&is->pictq);
             is->force_refresh = 1;
 
