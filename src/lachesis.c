@@ -3119,7 +3119,6 @@ void playlist_drop_current(VideoState **pis, int keep_paused) {
 
     if (playlist_size == 0) {
         do_exit(NULL);
-        return;
     }
 
     int next = removed < playlist_size ? removed : playlist_size - 1;

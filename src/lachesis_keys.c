@@ -267,7 +267,6 @@ void event_loop(VideoState **pis) {
                 switch (event.key.key) {
                 case SDLK_C:
                     do_exit(cur_stream);
-                    break;
                 case SDLK_S:
                     take_screenshot(cur_stream, 1);
                     break;
@@ -328,7 +327,6 @@ void event_loop(VideoState **pis) {
             }
             if (event.key.key == SDLK_ESCAPE || event.key.key == SDLK_Q) {
                 do_exit(cur_stream);
-                break;
             }
             if ((event.key.mod & SDL_KMOD_ALT) && (event.key.mod & SDL_KMOD_SHIFT)) {
                 SDL_Scancode sc = event.key.scancode;
@@ -778,7 +776,6 @@ void event_loop(VideoState **pis) {
             break;
         case SDL_EVENT_QUIT:
             do_exit(*pis);
-            break;
         case FF_QUIT_EVENT: {
             VideoState *old = event.user.data1;
             if (old && old != *pis) {
@@ -786,7 +783,6 @@ void event_loop(VideoState **pis) {
             }
             if (fatal_error_pending) {
                 do_exit(*pis);
-                break;
             }
             if (delete_confirm_pending) {
                 delete_advance_deferred = 1;
