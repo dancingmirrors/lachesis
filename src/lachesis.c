@@ -113,10 +113,6 @@
 const char program_name[] = "lachesis";
 const int program_birth_year = 2003;
 
-static void uninit_opts(void) {
-    av_dict_free(&format_opts);
-}
-
 static void init_dynload(void) {
 #ifdef _WIN32
     /* Remove the current working directory from the DLL search path as a security precaution. */
@@ -1156,6 +1152,41 @@ static int stream_close(VideoState *is) {
     return 1;
 }
 
+static void uninit_opts(void) {
+    av_dict_free(&format_opts);
+    for (int i = 0; i < nb_vfilters; i++) {
+        av_freep(&vfilters_list[i]);
+    }
+    av_freep(&vfilters_list);
+    nb_vfilters = 0;
+    av_freep(&video_codec_name);
+    av_freep(&audio_codec_name);
+    av_freep(&subtitle_codec_name);
+    av_freep(&hwaccel);
+    av_freep(&afilters_opt);
+    av_freep(&audio_spdif_opt);
+    av_freep(&gpu_api_name);
+    av_freep(&gpu_params);
+    av_freep(&vulkan_swap_mode);
+    av_freep(&shader_cache_dir);
+    av_freep(&icc_profile);
+    av_freep(&video_background);
+    av_freep(&ytdl_path);
+    av_freep(&ytdl_format);
+    for (int i = 0; i < AVMEDIA_TYPE_NB; i++) {
+        av_freep(&wanted_stream_spec[i]);
+    }
+    av_freep(&window_title);
+    av_freep(&window_title_auto);
+    av_freep(&input_filename);
+    playlist_clear();
+    for (int i = 0; i < n_pending_dirs; i++) {
+        av_freep(&pending_dirs[i]);
+    }
+    av_freep(&pending_dirs);
+    n_pending_dirs = 0;
+}
+
 av_noreturn void do_exit(VideoState *is) {
     if (is) {
         stream_close(is);
@@ -1172,23 +1203,6 @@ av_noreturn void do_exit(VideoState *is) {
         _Exit(0);
     }
     uninit_opts();
-    for (int i = 0; i < nb_vfilters; i++) {
-        av_freep(&vfilters_list[i]);
-    }
-    av_freep(&vfilters_list);
-    av_freep(&video_codec_name);
-    av_freep(&audio_codec_name);
-    av_freep(&subtitle_codec_name);
-    av_freep(&hwaccel);
-    av_freep(&window_title);
-    av_freep(&window_title_auto);
-    av_freep(&input_filename);
-    playlist_clear();
-    for (int i = 0; i < n_pending_dirs; i++) {
-        av_free(pending_dirs[i]);
-    }
-    av_freep(&pending_dirs);
-    n_pending_dirs = 0;
     avformat_network_deinit();
     subtitles_uninit();
     osd_uninit();
@@ -3339,6 +3353,7 @@ int main(int argc, char **argv) {
 
     ret = parse_options(NULL, argc, argv, options, opt_input_file);
     if (ret < 0) {
+        uninit_opts();
         exit(ret == AVERROR_EXIT ? 0 : 1);
     }
 
