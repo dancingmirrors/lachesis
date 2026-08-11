@@ -410,19 +410,25 @@ static inline int cmp_audio_fmts(enum AVSampleFormat fmt1, int64_t channel_count
     }
 }
 
+#define ATEMPO_MIN 0.5
+#define ATEMPO_MAX 100.0
+#define ATEMPO_MAX_STAGES 8
+
 static void append_atempo_chain(AVBPrint *bp, double speed) {
-    int first = 1;
-    while (speed > 2.0 + 1e-9) {
-        av_bprintf(bp, "%satempo=2.0", first ? "" : ",");
-        speed /= 2.0;
-        first = 0;
+    double reach_min = ATEMPO_MIN, reach_max = ATEMPO_MAX, step;
+    int stages = 1, i;
+
+    while (stages < ATEMPO_MAX_STAGES &&
+           (speed < reach_min - 1e-9 || speed > reach_max + 1e-9)) {
+        reach_min *= ATEMPO_MIN;
+        reach_max *= ATEMPO_MAX;
+        stages++;
     }
-    while (speed < 0.5 - 1e-9) {
-        av_bprintf(bp, "%satempo=0.5", first ? "" : ",");
-        speed *= 2.0;
-        first = 0;
+
+    step = pow(speed, 1.0 / stages);
+    for (i = 0; i < stages; i++) {
+        av_bprintf(bp, "%satempo=%.6g", i ? "," : "", step);
     }
-    av_bprintf(bp, "%satempo=%.6g", first ? "" : ",", speed);
 }
 
 static const char *build_audio_filters(const char *afilters, AVBPrint *scratch) {
@@ -660,6 +666,7 @@ int audio_thread(void *arg) {
     int last_serial = -1;
     int last_speed_serial = audio_speed_serial;
     double atempo_base_pts = NAN;
+    double graph_speed = playback_speed;
     int reconfigure;
     int got_frame = 0;
     AVRational tb;
@@ -711,6 +718,7 @@ int audio_thread(void *arg) {
                 last_serial = is->auddec.pkt_serial;
                 last_speed_serial = audio_speed_serial;
                 atempo_base_pts = NAN;
+                graph_speed = playback_speed;
 
                 if ((ret = configure_audio_filters(is, afilters_opt, 1)) < 0) {
                     goto the_end;
@@ -734,12 +742,12 @@ int audio_thread(void *arg) {
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
 
                 /* Convert atempo's compressed output timeline back to the real source timeline. */
-                if (playback_speed != 1.0 && !isnan(af->pts)) {
+                if (graph_speed != 1.0 && !isnan(af->pts)) {
                     if (isnan(atempo_base_pts)) {
                         atempo_base_pts = af->pts;
                     }
-                    af->pts = atempo_base_pts + playback_speed * (af->pts - atempo_base_pts);
-                    af->duration *= playback_speed;
+                    af->pts = atempo_base_pts + graph_speed * (af->pts - atempo_base_pts);
+                    af->duration *= graph_speed;
                 }
 
                 av_frame_move_ref(af->frame, frame);
@@ -781,8 +789,9 @@ static int synchronize_audio(VideoState *is, int nb_samples) {
             } else {
                 avg_diff = is->audio_diff_cum * (1.0 - is->audio_diff_avg_coef);
 
-                if (fabs(avg_diff) >= is->audio_diff_threshold) {
-                    wanted_nb_samples = nb_samples + (int)(diff * is->audio_src.freq);
+                if (fabs(avg_diff) >= is->audio_diff_threshold * playback_speed) {
+                    wanted_nb_samples = nb_samples +
+                        (int)(diff * is->audio_src.freq / playback_speed);
                     min_nb_samples = ((nb_samples * (100 - SAMPLE_CORRECTION_PERCENT_MAX) / 100));
                     max_nb_samples = ((nb_samples * (100 + SAMPLE_CORRECTION_PERCENT_MAX) / 100));
                     wanted_nb_samples = av_clip(wanted_nb_samples, min_nb_samples, max_nb_samples);
@@ -839,8 +848,7 @@ static int audio_decode_frame(VideoState *is) {
                     break;
                 }
             }
-            if (af->pts + (double)af->frame->nb_samples / af->frame->sample_rate <
-                is->audio_catchup_pts) {
+            if (af->pts + af->duration < is->audio_catchup_pts) {
                 continue;
             }
             is->audio_catchup_serial = -1;
@@ -918,7 +926,7 @@ static int audio_decode_frame(VideoState *is) {
 
     audio_clock0 = is->audio_clock;
     if (!isnan(af->pts)) {
-        is->audio_clock = af->pts + (double)af->frame->nb_samples / af->frame->sample_rate;
+        is->audio_clock = af->pts + af->duration;
     } else {
         is->audio_clock = NAN;
     }
@@ -1005,7 +1013,8 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     if (!isnan(is->audio_clock) && is->audio_buf && !is->paused) {
         double cb_time = audio_callback_time / 1000000.0;
         double raw_pts = is->audio_clock -
-            (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) /
+            playback_speed *
+                (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) /
                 is->audio_tgt.bytes_per_sec;
         double raw_drift = raw_pts - cb_time;
         double dt = cb_time - is->audclk_drift_time;
@@ -1211,6 +1220,7 @@ int audio_spdif_open(VideoState *is, AVStream *st, int *hw_buf_size) {
     audio_update_gain(is);
 
     if (playback_speed != 1.0) {
+        reanchor_clocks(is);
         playback_speed = 1.0;
         audio_speed_serial++;
     }

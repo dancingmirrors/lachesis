@@ -211,6 +211,7 @@ fail:
 #define AV_SYNC_SLEW_GAIN 0.1
 #define AV_SYNC_SLEW_FACTOR 0.1
 #define AV_SYNC_RESYNC_THRESHOLD 0.2
+#define AV_SYNC_MAX_HOLD 0.5
 
 #define EXTERNAL_CLOCK_SPEED_MIN 0.900
 #define EXTERNAL_CLOCK_SPEED_MAX 1.010
@@ -1550,6 +1551,10 @@ static void video_display(VideoState *is) {
     }
 }
 
+static double clock_rate(const Clock *c) {
+    return c->speed * playback_speed;
+}
+
 double get_clock(Clock *c) {
     if (*c->queue_serial != c->serial) {
         return NAN;
@@ -1558,7 +1563,7 @@ double get_clock(Clock *c) {
         return c->pts;
     } else {
         double time = av_gettime_relative() / 1000000.0;
-        return c->pts_drift + time - (time - c->last_updated) * (1.0 - c->speed);
+        return c->pts_drift + time - (time - c->last_updated) * (1.0 - clock_rate(c));
     }
 }
 
@@ -1865,7 +1870,12 @@ void stream_seek_exact(VideoState *is, int64_t pos) {
 static void stream_toggle_pause(VideoState *is) {
     is->start_pause_pending = 0;
     if (is->paused) {
-        is->frame_timer += av_gettime_relative() / 1000000.0 - is->vidclk.last_updated;
+        double now = av_gettime_relative() / 1000000.0;
+
+        is->frame_timer += now - is->vidclk.last_updated;
+        if (is->frame_timer > now) {
+            is->frame_timer = now;
+        }
         if (is->read_pause_return != AVERROR(ENOSYS)) {
             is->vidclk.paused = 0;
         }
@@ -1880,6 +1890,7 @@ static void stream_toggle_pause(VideoState *is) {
 void toggle_pause(VideoState *is) {
     stream_toggle_pause(is);
     is->step = 0;
+    is->step_from_play = 0;
     osd_show_status();
 }
 
@@ -1945,7 +1956,16 @@ static void ab_loop_check(VideoState *is) {
                 (int64_t)((ab_loop_a - pos) * AV_TIME_BASE), 0);
 }
 
-void set_playback_speed(double speed) {
+void reanchor_clocks(VideoState *is) {
+    if (!is) {
+        return;
+    }
+    set_clock(&is->vidclk, get_clock(&is->vidclk), is->vidclk.serial);
+    set_clock(&is->audclk, get_clock(&is->audclk), is->audclk.serial);
+    set_clock(&is->extclk, get_clock(&is->extclk), is->extclk.serial);
+}
+
+void set_playback_speed(VideoState *is, double speed) {
     if (audio_spdif_active()) {
         return;
     }
@@ -1956,6 +1976,7 @@ void set_playback_speed(double speed) {
         osd_show_message("Speed: %d%%", (int)lrint(playback_speed * 100.0));
         return;
     }
+    reanchor_clocks(is);
     playback_speed = speed;
     audio_speed_serial++;
     osd_show_message("Speed: %d%%", (int)lrint(playback_speed * 100.0));
@@ -1992,7 +2013,7 @@ static double compute_target_delay(double delay, VideoState *is) {
             } else if (diff < 0) {
                 delay = FFMAX(0, delay + diff);
             } else {
-                delay = delay + diff;
+                delay = delay + FFMIN(diff, AV_SYNC_MAX_HOLD * playback_speed);
             }
         }
     } else {
@@ -2020,11 +2041,19 @@ static void update_video_pts(VideoState *is, double pts, int serial) {
     sync_clock_to_slave(&is->extclk, &is->vidclk);
 }
 
+static void osd_keep_alive(VideoState *is, double now) {
+    if (!display_disable && osd_active(is) &&
+        now - is->last_draw_time >= OSD_ONLY_REFRESH_RATE) {
+        is->force_refresh = 1;
+    }
+}
+
 static void video_refresh(void *opaque, double *remaining_time) {
     VideoState *is = opaque;
     double time;
     int keep_refreshing = 0;
     int interp_painted = 0;
+    int painted = 0;
 
     Frame *sp, *sp2;
 
@@ -2068,6 +2097,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
                                  av_gettime_relative() / 1000000.0,
                                  remaining_time);
             }
+            osd_keep_alive(is, av_gettime_relative() / 1000000.0);
         } else {
             double last_duration, duration, delay;
             Frame *vp, *lastvp;
@@ -2094,6 +2124,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
 
             time = av_gettime_relative() / 1000000.0;
             interp_painted = interpolate_pace(is, time, remaining_time);
+            painted |= interp_painted;
             deinterlace_pace(is, delay, time, remaining_time);
 
             if (!benchmark) {
@@ -2105,6 +2136,9 @@ static void video_refresh(void *opaque, double *remaining_time) {
                 }
                 if (time < target - lead) {
                     *remaining_time = FFMIN(target - lead - time, *remaining_time);
+                    if (target - lead - time >= OSD_ONLY_REFRESH_RATE) {
+                        osd_keep_alive(is, time);
+                    }
                     goto display;
                 }
             }
@@ -2171,13 +2205,22 @@ static void video_refresh(void *opaque, double *remaining_time) {
             is->force_refresh = 1;
 
             if (is->step && !is->paused) {
-                stream_toggle_pause(is);
+                if (is->step_from_play && !is->step_key_held) {
+                    is->step = 0;
+                    is->step_from_play = 0;
+                } else {
+                    stream_toggle_pause(is);
+                }
             }
         }
     display:
         if (!display_disable && is->force_refresh && !interp_painted &&
             is->pictq.rindex_shown) {
             video_display(is);
+            painted = 1;
+        }
+        if (painted) {
+            is->last_draw_time = av_gettime_relative() / 1000000.0;
         }
     }
     is->force_refresh = keep_refreshing;
@@ -2328,9 +2371,12 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
         AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
         int64_t interval_us =
             (fr.num > 0 && fr.den > 0) ? (int64_t)(1000000.0 * fr.den / fr.num) : 0;
+        int64_t budget_us = playback_speed > 0.0
+            ? (int64_t)(interval_us / playback_speed)
+            : interval_us;
 
         if (had_packets) {
-            if (interval_us > 0 && decode_us > interval_us) {
+            if (budget_us > 0 && decode_us > budget_us) {
                 if (is->decode_behind_streak < DECODE_BEHIND_LATCH_FRAMES) {
                     is->decode_behind_streak++;
                 }
@@ -2342,7 +2388,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
             } else if (is->decode_degraded) {
                 double m = get_master_clock(is);
                 double v = get_clock(&is->vidclk);
-                int have_headroom = interval_us > 0 && decode_us * 3 < interval_us;
+                int have_headroom = budget_us > 0 && decode_us * 3 < budget_us;
                 int in_sync = isnan(m) || isnan(v) ||
                     fabs(m - v) < AV_SYNC_THRESHOLD_MAX;
                 if (have_headroom && in_sync) {
@@ -2365,7 +2411,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
                     log_warn(
                         "Video decoder can't keep up (%.1f ms/frame versus %.1f ms "
                         "real time). Taking evasive maneuvers.\n",
-                        decode_us / 1000.0, interval_us / 1000.0);
+                        decode_us / 1000.0, budget_us / 1000.0);
                     stream_seek(is, (int64_t)(m * AV_TIME_BASE),
                                 (int64_t)((m - v) * AV_TIME_BASE), 0);
                 }
@@ -2378,7 +2424,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
                 double slack = interval_us > 0 ? interval_us / 1000000.0
                                                : AV_SYNC_THRESHOLD_MIN;
                 if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
-                    diff - is->frame_last_filter_delay < -slack &&
+                    diff - is->frame_last_filter_delay * playback_speed < -slack &&
                     is->viddec.pkt_serial == is->vidclk.serial &&
                     is->videoq.nb_packets &&
                     frame_queue_nb_remaining(&is->pictq) > 0) {

@@ -316,6 +316,7 @@ void event_loop(VideoState **pis) {
                     delete_confirm_pending = 1;
                     delete_prearm_paused = cur_stream->paused;
                     delete_paused_by_prompt = 0;
+                    cur_stream->step_from_play = 0;
                     if (!cur_stream->paused) {
                         toggle_pause(cur_stream);
                         delete_paused_by_prompt = 1;
@@ -400,6 +401,10 @@ void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                     break;
                 }
+                if (!cur_stream->paused) {
+                    cur_stream->step_from_play = 1;
+                }
+                cur_stream->step_key_held = 1;
                 step_to_next_frame(cur_stream);
                 break;
             case SDLK_S:
@@ -593,11 +598,11 @@ void event_loop(VideoState **pis) {
                 }
                 break;
             case SDLK_LEFTBRACKET:
-                set_playback_speed(playback_speed - PLAYBACK_SPEED_STEP);
+                set_playback_speed(cur_stream, playback_speed - PLAYBACK_SPEED_STEP);
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_RIGHTBRACKET:
-                set_playback_speed(playback_speed + PLAYBACK_SPEED_STEP);
+                set_playback_speed(cur_stream, playback_speed + PLAYBACK_SPEED_STEP);
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_EQUALS:
@@ -630,6 +635,14 @@ void event_loop(VideoState **pis) {
                 break;
             default:
                 break;
+            }
+            break;
+        case SDL_EVENT_KEY_UP:
+            if (event.key.key == SDLK_N) {
+                cur_stream->step_key_held = 0;
+                if (cur_stream->step_from_play && cur_stream->paused) {
+                    toggle_pause(cur_stream);
+                }
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:

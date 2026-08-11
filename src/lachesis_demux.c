@@ -1038,7 +1038,10 @@ int read_thread(void *arg) {
                          !!(ic->iformat->flags & AVFMT_TS_DISCONT) &&
                          strcmp("ogg", ic->iformat->name));
 
-    is->max_frame_duration = (ic->iformat->flags & AVFMT_TS_DISCONT) ? 10.0 : 3600.0;
+    /* XXX */
+    is->max_frame_duration =
+        (ic->iformat->flags & (AVFMT_TS_DISCONT | AVFMT_NOTIMESTAMPS)) ? 10.0
+                                                                       : 3600.0;
 
     if (!window_title && !window_title_auto &&
         (t = av_dict_get(ic->metadata, "title", NULL, 0))) {
