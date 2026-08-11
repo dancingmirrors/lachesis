@@ -182,6 +182,21 @@ static int opt_rotate(void *optctx av_unused, const char *opt av_unused,
     return 0;
 }
 
+static int opt_supersample(void *optctx av_unused, const char *opt av_unused,
+                           const char *arg) {
+    enum SupersampleLevel level = supersample_level_parse(arg);
+
+    if (level == SUPERSAMPLE_OFF && strcmp(arg, "off")) {
+        av_log(NULL, AV_LOG_FATAL,
+               "-supersample must be off, light, medium, or strong.\n");
+        return AVERROR(EINVAL);
+    }
+
+    supersample_level = level;
+
+    return 0;
+}
+
 static int opt_autofit(void *optctx av_unused, const char *opt, const char *arg) {
     double num;
     int ret = parse_number(opt, arg, OPT_TYPE_FLOAT,
@@ -291,6 +306,7 @@ const OptionDef options[] = {
     {"no-vsync-snap", OPT_TYPE_BOOL, 0, {&no_vsync_snap}, "disable snapping frame deadlines to the display refresh grid", ""},
     {"interpolate", OPT_TYPE_BOOL, 0, {&frame_interpolation}, "oversample interpolation", ""},
     {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF", ""},
+    {"supersample", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_supersample}, "sharpen and deband video (off, light, medium, strong)", "level"},
     {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,

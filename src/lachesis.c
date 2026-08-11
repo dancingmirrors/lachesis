@@ -2987,6 +2987,11 @@ static void open_renderer(enum RendererApi api) {
         fatal_quit("Failed to enable the 360° shader!\n");
     }
 
+    if (supersample_level != SUPERSAMPLE_OFF &&
+        renderer_set_supersample(renderer, supersample_level) < 0) {
+        fatal_quit("Failed to enable the supersample shader!\n");
+    }
+
     present_update_display_mode();
     update_screen_size();
     if (no_vsync_snap || benchmark || !renderer_is_vsync_blocked(renderer)) {

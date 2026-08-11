@@ -434,6 +434,7 @@ extern float sbs360_roll;
 extern float sbs360_hfov;
 void sbs360_reset_view(void);
 extern int deinterlace;
+extern enum SupersampleLevel supersample_level;
 extern int frame_interpolation;
 extern double playback_speed;
 extern int screen_width;

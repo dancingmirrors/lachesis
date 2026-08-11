@@ -628,6 +628,23 @@ void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                 }
                 break;
+            case SDLK_KP_1: {
+                enum SupersampleLevel next;
+
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
+                next = supersample_level_next(supersample_level);
+                if (renderer && renderer_set_supersample(renderer, next) < 0) {
+                    osd_show_message("Supersample: unavailable");
+                    break;
+                }
+                supersample_level = next;
+                osd_show_message("Supersample: %s",
+                                 supersample_level_name(supersample_level));
+                cur_stream->force_refresh = 1;
+                break;
+            }
             case SDLK_KP_3:
                 if (refuse_without_video(cur_stream)) {
                     break;

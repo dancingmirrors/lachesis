@@ -27,6 +27,7 @@
 #include <libavutil/dict.h>
 #include <libavutil/frame.h>
 
+#include "lachesis_supersample.h"
 #include "lachesis_view360.h"
 
 typedef struct Renderer Renderer;
@@ -142,5 +143,7 @@ void renderer_destroy(Renderer *renderer);
 
 int renderer_enable_360(Renderer *renderer, enum View360Layout layout);
 void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll, float hfov);
+
+int renderer_set_supersample(Renderer *renderer, enum SupersampleLevel level);
 
 #endif /* LACHESIS_RENDERER_H */

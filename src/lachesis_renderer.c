@@ -27,6 +27,7 @@
 #include "lachesis_icon.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
+#include "lachesis_supersample.h"
 #include "lachesis_view360.h"
 /* clang-format on */
 
@@ -104,6 +105,7 @@
 #define LACHESIS_SHADER_CACHE_LIMIT (64u << 20)
 
 #define LACHESIS_MAX_OVERLAYS 2
+#define LACHESIS_MAX_HOOKS 2
 
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
@@ -197,6 +199,9 @@ typedef struct RendererContext {
     float sbs360_roll;
     float sbs360_hfov;
     enum View360Layout sbs360_layout;
+
+    const struct pl_hook *supersample_hook;
+    enum SupersampleLevel supersample_level;
 
     int benchmark;
 
@@ -2573,10 +2578,16 @@ static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
     return *slot;
 }
 
+static int supersample_active(const RendererContext *ctx,
+                              const RenderParams *params) {
+    return ctx->supersample_level != SUPERSAMPLE_OFF && !ctx->benchmark && !params->disable_linear_scaling;
+}
+
 static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                          struct pl_frame *target, struct pl_render_params *pl_params,
                          RenderParams *params, struct pl_overlay *overlays,
-                         struct pl_overlay_part *parts) {
+                         struct pl_overlay_part *parts,
+                         const struct pl_hook **hooks) {
     SDL_Rect *rect = &params->target_rect;
     target->crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
 
@@ -2620,13 +2631,26 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         break;
     }
 
+    int num_hooks = 0;
+
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
                                ctx->sbs360_pitch, ctx->sbs360_roll,
                                ctx->sbs360_hfov, ctx->sbs360_layout,
                                (int)rotation * 90);
-        pl_params->hooks = &ctx->sbs360_hook;
-        pl_params->num_hooks = 1;
+        hooks[num_hooks++] = ctx->sbs360_hook;
+    }
+
+    if (supersample_active(ctx, params) && ctx->supersample_hook) {
+        supersample_pl_hook_update(ctx->supersample_hook, ctx->supersample_level);
+        hooks[num_hooks++] = ctx->supersample_hook;
+        pl_params->deband_params =
+            supersample_deband_params(ctx->supersample_level);
+    }
+
+    if (num_hooks > 0) {
+        pl_params->hooks = hooks;
+        pl_params->num_hooks = num_hooks;
     }
 
     int num_overlays = 0;
@@ -2834,6 +2858,17 @@ static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx
     return &pl_filter_catmull_rom;
 }
 
+static const struct pl_filter_config *pick_upscaler(const RendererContext *ctx,
+                                                    const RenderParams *params) {
+    const struct pl_filter_config *config = NULL;
+
+    if (supersample_active(ctx, params)) {
+        config = supersample_upscaler(ctx->supersample_level);
+    }
+
+    return config ? config : &pl_filter_bilinear;
+}
+
 static struct pl_color_adjustment equalizer_adjustment(const RenderParams *params) {
     struct pl_color_adjustment adj = {PL_COLOR_ADJUSTMENT_NEUTRAL};
 
@@ -2851,7 +2886,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     RendererContext *ctx = (RendererContext *)renderer;
     struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
     struct pl_render_params pl_params = {
-        .upscaler = &pl_filter_bilinear,
+        .upscaler = pick_upscaler(ctx, params),
         .downscaler = pick_downscaler(ctx, params),
         .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
         .color_adjustment = &color_adjustment,
@@ -2948,8 +2983,10 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
 
     struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
     struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
+    const struct pl_hook *hooks[LACHESIS_MAX_HOOKS];
 
-    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
+    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts,
+                 hooks);
     deinterlace_apply(&pl_frame, &pl_params, frame, params);
 
     if (pl_params.deinterlace_params &&
@@ -3073,7 +3110,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     struct pl_frame target = {0};
     struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
     struct pl_render_params pl_params = {
-        .upscaler = &pl_filter_bilinear,
+        .upscaler = pick_upscaler(ctx, params),
         .downscaler = pick_downscaler(ctx, params),
         .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
         .color_adjustment = &color_adjustment,
@@ -3147,7 +3184,10 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
 
     struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
     struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
-    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts);
+    const struct pl_hook *hooks[LACHESIS_MAX_HOOKS];
+
+    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts,
+                 hooks);
     deinterlace_apply(&pl_frame, &pl_params, frame, params);
 
     if (pl_params.deinterlace_params &&
@@ -3305,6 +3345,9 @@ static void destroy(Renderer *renderer) {
 
     if (ctx->sbs360_hook) {
         view360_pl_hook_destroy(&ctx->sbs360_hook);
+    }
+    if (ctx->supersample_hook) {
+        supersample_pl_hook_destroy(&ctx->supersample_hook);
     }
 
     av_freep(&ctx->icc_data);
@@ -3627,6 +3670,23 @@ int renderer_enable_360(Renderer *renderer, enum View360Layout layout) {
     }
     ctx->sbs360_enabled = enable;
     ctx->sbs360_layout = layout;
+
+    return 0;
+}
+
+int renderer_set_supersample(Renderer *renderer, enum SupersampleLevel level) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx) {
+        return AVERROR(EINVAL);
+    }
+    if (level != SUPERSAMPLE_OFF && !ctx->supersample_hook) {
+        ctx->supersample_hook = supersample_pl_hook_create(ctx->gpu);
+        if (!ctx->supersample_hook) {
+            return AVERROR_EXTERNAL;
+        }
+    }
+    ctx->supersample_level = level;
 
     return 0;
 }

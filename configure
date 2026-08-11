@@ -203,6 +203,7 @@ add_sources(
     "src/lachesis_renderer.c",
     "src/lachesis_screenshot.c",
     "src/lachesis_subtitles.c",
+    "src/lachesis_supersample.c",
     "src/lachesis_terminal.c",
     "src/lachesis_view360.c",
 )
