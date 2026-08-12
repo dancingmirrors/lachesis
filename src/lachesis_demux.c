@@ -1272,6 +1272,7 @@ int read_thread(void *arg) {
             int64_t seek_target = is->seek_pos;
             int seek_flags = is->seek_flags;
             int seek_exact = is->seek_exact;
+            int64_t seek_exact_pts = is->seek_exact_pts;
             int64_t seek_rel = is->seek_rel;
             int64_t seek_min = seek_rel > 0 ? seek_target - seek_rel + 2 : INT64_MIN;
             int64_t seek_max = seek_rel < 0 ? seek_target - seek_rel - 2 : INT64_MAX;
@@ -1303,15 +1304,15 @@ int read_thread(void *arg) {
                     packet_queue_flush(&is->videoq);
                 }
                 if (seek_exact && !past_end && !(seek_flags & AVSEEK_FLAG_BYTE)) {
-                    exact_seek_arm(is, seek_target);
+                    exact_seek_arm(is, seek_exact_pts);
                 } else {
                     exact_seek_cancel(is);
                 }
                 if (seek_flags & AVSEEK_FLAG_BYTE) {
                     set_clock(&is->extclk, NAN, 0);
                 } else {
-                    set_clock(&is->extclk, seek_target / (double)AV_TIME_BASE, 0);
-                    is->observed_pos = seek_target / (double)AV_TIME_BASE -
+                    set_clock(&is->extclk, seek_exact_pts / (double)AV_TIME_BASE, 0);
+                    is->observed_pos = seek_exact_pts / (double)AV_TIME_BASE -
                         playhead_origin(is);
                 }
                 if (is->audio_ic && !past_end) {

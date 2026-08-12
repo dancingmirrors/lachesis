@@ -405,11 +405,7 @@ void event_loop(VideoState **pis) {
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_N:
-                if (event.key.mod & SDL_KMOD_SHIFT) {
-                    frame_step_back(cur_stream);
-                } else {
-                    frame_step(cur_stream);
-                }
+                frame_step(cur_stream);
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_S:

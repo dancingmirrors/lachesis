@@ -143,6 +143,7 @@ typedef struct Decoder {
     SDL_Thread *decoder_tid;
     int64_t wait_us;
     int exact_done_serial;
+    int exact_dropped_serial;
 } Decoder;
 
 typedef struct VideoState {
@@ -166,6 +167,9 @@ typedef struct VideoState {
     int64_t seek_pos;
     int64_t seek_rel;
     int seek_exact;
+    int64_t seek_exact_pts;
+    double exact_seek_backoff;
+    double exact_seek_backoff_target;
     double exact_seek_pts;
     int exact_seek_video_serial;
     int exact_seek_audio_serial;
@@ -303,8 +307,6 @@ typedef struct VideoState {
     int step;
     int step_from_play;
     int step_key_held;
-    double step_back_pts;
-    double step_back_reach;
     int start_pause_pending;
     int begin_paused;
     int audio_start_pending;
@@ -457,8 +459,6 @@ void toggle_mute(VideoState *is);
 void update_volume(VideoState *is, int sign, double step);
 void step_to_next_frame(VideoState *is);
 void frame_step(VideoState *is);
-void frame_step_back(VideoState *is);
-void step_back_settle(VideoState *is, double shown);
 void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
 void stream_seek_exact(VideoState *is, int64_t pos);
 void stream_cycle_channel(VideoState *is, int codec_type);
