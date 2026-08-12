@@ -1773,6 +1773,9 @@ double effective_playhead(VideoState *is) {
         return isnan(pos) ? is->start_playhead : pos;
     }
 
+    if (!isnan(is->step_back_pts)) {
+        return is->step_back_pts;
+    }
     if (is->seek_req) {
         return is->seek_pos / (double)AV_TIME_BASE;
     }
@@ -1805,6 +1808,34 @@ void exact_seek_cancel(VideoState *is) {
     is->exact_seek_pts = NAN;
     is->exact_seek_video_serial = -1;
     is->exact_seek_audio_serial = -1;
+}
+
+static double stream_start_seconds(const AVStream *st) {
+    if (!st || st->start_time == AV_NOPTS_VALUE) {
+        return NAN;
+    }
+
+    return st->start_time * av_q2d(st->time_base);
+}
+
+double aligned_start_pts(VideoState *is) {
+    double video_start, audio_start, lead;
+
+    if (is->audio_ic || !is->audio_st || !video_stream_advances(is)) {
+        return NAN;
+    }
+    video_start = stream_start_seconds(is->video_st);
+    audio_start = stream_start_seconds(is->audio_st);
+    if (isnan(video_start) || isnan(audio_start)) {
+        return NAN;
+    }
+
+    lead = video_start - audio_start;
+    if (lead <= AV_SYNC_THRESHOLD_MAX || lead >= AV_NOSYNC_THRESHOLD) {
+        return NAN;
+    }
+
+    return video_start;
 }
 
 void exact_seek_arm(VideoState *is, int64_t target) {
@@ -1854,6 +1885,7 @@ int exact_seek_drop_audio(VideoState *is, double pts, double duration) {
 
 /* Replace whatever is pending rather than dropping the request. */
 static void stream_seek_to(VideoState *is, int64_t pos, int64_t rel, int by_bytes, int exact) {
+    is->step_back_pts = NAN;
     is->seek_pos = pos;
     is->seek_rel = rel;
     is->seek_exact = exact;
@@ -2051,14 +2083,124 @@ void frame_step(VideoState *is) {
         }
         stream_seek(is, (int64_t)(to * AV_TIME_BASE),
                     (int64_t)((to - from) * AV_TIME_BASE), 0);
-        osd_show_seek();
+    } else {
+        if (!is->paused) {
+            is->step_from_play = 1;
+        }
+        step_to_next_frame(is);
+    }
+
+#if 0
+    osd_show_seek();
+#endif
+}
+
+static int step_back_from(VideoState *is, double *pts, double *duration) {
+    Frame *vp;
+    AVRational fr;
+
+    if (SDL_GetAtomicInt(&is->seek_by_bytes) > 0) {
+        return 0;
+    }
+
+    if (is->seek_req || exact_seek_pending(is)) {
+        if (is->seek_req &&
+            (!is->seek_exact || (is->seek_flags & AVSEEK_FLAG_BYTE))) {
+            return 0;
+        }
+        *pts = is->seek_req ? is->seek_pos / (double)AV_TIME_BASE
+                            : is->exact_seek_pts;
+    } else if (is->pictq.rindex_shown) {
+        vp = frame_queue_peek_last(&is->pictq);
+        if (isnan(vp->pts)) {
+            return 0;
+        }
+        *pts = vp->pts;
+    } else {
+        return 0;
+    }
+    if (isnan(*pts)) {
+        return 0;
+    }
+
+    *duration = 0.0;
+    if (is->pictq.rindex_shown && frame_queue_nb_remaining(&is->pictq) > 0) {
+        Frame *last = frame_queue_peek_last(&is->pictq);
+        Frame *next = frame_queue_peek(&is->pictq);
+
+        if (!isnan(last->pts) && !isnan(next->pts) && next->pts > last->pts &&
+            next->pts - last->pts <= is->max_frame_duration) {
+            *duration = next->pts - last->pts;
+        }
+    }
+    if (*duration <= 0.0) {
+        fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
+        if (fr.num > 0 && fr.den > 0) {
+            *duration = av_q2d((AVRational){fr.den, fr.num});
+        }
+    }
+
+    return *duration > 0.0;
+}
+
+static void step_back_seek(VideoState *is, double from, double reach) {
+    double target = playhead_clamp(is, from - reach + EXACT_SEEK_SLACK);
+
+    if (target >= from) {
+        is->step_back_pts = NAN;
+        return;
+    }
+    stream_seek_exact(is, (int64_t)(target * AV_TIME_BASE));
+    is->step_back_pts = from;
+    is->step_back_reach = reach;
+}
+
+void step_back_settle(VideoState *is, double shown) {
+    if (isnan(is->step_back_pts) || isnan(shown)) {
+        return;
+    }
+    if (shown < is->step_back_pts - EXACT_SEEK_SLACK) {
+        is->step_back_pts = NAN;
+        return;
+    }
+    if (is->step_back_reach >= EXACT_SEEK_MAX_RUNUP) {
+        is->step_back_pts = NAN;
         return;
     }
 
+    step_back_seek(is, is->step_back_pts,
+                   FFMIN(is->step_back_reach * 2.0, EXACT_SEEK_MAX_RUNUP));
+}
+
+void frame_step_back(VideoState *is) {
+    double pts, duration;
+
+    if (!video_stream_advances(is)) {
+        osd_show_message("No frames to step");
+        return;
+    }
+    if (!step_back_from(is, &pts, &duration)) {
+        osd_show_message("Can't step back here");
+        return;
+    }
+
+    if (!isnan(is->step_back_pts)) {
+        step_back_settle(is, is->step_back_pts);
+        return;
+    }
+
+    is->step_key_held = 1;
     if (!is->paused) {
         is->step_from_play = 1;
+        stream_toggle_pause(is);
+        is->step = 0;
     }
-    step_to_next_frame(is);
+
+    step_back_seek(is, pts, duration * 1.5);
+
+#if 0
+    osd_show_seek();
+#endif
 }
 
 static double compute_target_delay(double delay, VideoState *is) {
@@ -2273,6 +2415,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
             deinterlace_retire_frame(is);
             frame_queue_next(&is->pictq);
             is->force_refresh = 1;
+
+            step_back_settle(is, vp->pts);
 
             if (is->step && !is->paused) {
                 if (is->step_from_play && !is->step_key_held) {
@@ -2809,6 +2953,7 @@ static VideoState *stream_open(const char *filename,
     init_clock(&is->audclk, &is->audioq.serial);
     init_clock(&is->extclk, &is->extclk.serial);
     is->audio_clock_serial = -1;
+    is->step_back_pts = NAN;
     is->audio_catchup_pts = NAN;
     is->audio_catchup_serial = -1;
     is->audio_catchup_checked_serial = -1;

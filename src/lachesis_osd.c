@@ -645,7 +645,8 @@ static void osd_draw_status(VideoState *is, OsdLayout *L) {
     format_time(dur_str, sizeof(dur_str), dur);
     pct = (dur > 0 && !isnan(pos) && pos >= 0) ? (int)(100.0 * pos / dur + 0.5)
                                                : 0;
-    sym = is->paused ? "\xEE\x80\x82" : "\xEE\x80\x81";
+    /* XXX */
+    sym = (is->paused || is->step) ? "\xEE\x80\x82" : "\xEE\x80\x81";
     snprintf(line, sizeof(line), "%s / %s (%d%%)", pos_str, dur_str, pct);
 
     snprintf(body, sizeof(body), "{\\fn" LASS_SYMBOL_FAMILY "}%s{\\fn%s} %s",

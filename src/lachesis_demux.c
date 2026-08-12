@@ -1225,12 +1225,24 @@ int read_thread(void *arg) {
         goto fail;
     }
 
+    {
+        double align = aligned_start_pts(is);
+
+        if (!isnan(align)) {
+            int64_t align_ts = (int64_t)(align * AV_TIME_BASE);
+
+            if (start_pos == AV_NOPTS_VALUE || align_ts > start_pos) {
+                start_pos = align_ts;
+            }
+        }
+    }
+
+    exact_seek_arm(is, start_pos);
+
     if (is->audio_start_pending && (is->video_stream < 0 || display_disable)) {
         is->audio_start_pending = 0;
         audio_device_resume();
     }
-
-    exact_seek_arm(is, start_pos);
 
     if ((start_paused || is->begin_paused) && !is->is_still_image) {
         if (is->video_stream >= 0) {
