@@ -85,7 +85,8 @@ static int check_avoptions(AVDictionary *m) {
     return 0;
 }
 
-static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
+static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
+                       int shared_only) {
     enum AVHWDeviceType type;
     AVBufferRef *render_dev;
     int ret;
@@ -103,6 +104,10 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name) {
         if (ret != AVERROR(ENOSYS)) {
             return ret;
         }
+    }
+
+    if (shared_only) {
+        return AVERROR(ENOSYS);
     }
 
     return av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
@@ -126,7 +131,7 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     }
 
     if (hwaccel) {
-        ret = try_hwaccel(device_ctx, hwaccel);
+        ret = try_hwaccel(device_ctx, hwaccel, 0);
         if (ret < 0 && ret != AVERROR(ENOSYS)) {
             log_dead("hwaccel %s is not available!\n", hwaccel);
         }
@@ -140,18 +145,20 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     if (saved_level < AV_LOG_VERBOSE) {
         av_log_set_level(AV_LOG_QUIET);
     }
-    for (int i = 0; auto_hwaccels[i]; i++) {
-        if (!strcmp(auto_hwaccels[i], "vulkan") &&
-            !renderer_video_decode_caps(renderer)) {
-            continue;
+    for (int shared_only = 1; shared_only >= 0; shared_only--) {
+        for (int i = 0; auto_hwaccels[i]; i++) {
+            if (!strcmp(auto_hwaccels[i], "vulkan") &&
+                !renderer_video_decode_caps(renderer)) {
+                continue;
+            }
+            ret = try_hwaccel(device_ctx, auto_hwaccels[i], shared_only);
+            if (!ret) {
+                av_log_set_level(saved_level);
+                media_info_set_hwaccel(auto_hwaccels[i]);
+                return 0;
+            }
+            *device_ctx = NULL;
         }
-        ret = try_hwaccel(device_ctx, auto_hwaccels[i]);
-        if (!ret) {
-            av_log_set_level(saved_level);
-            media_info_set_hwaccel(auto_hwaccels[i]);
-            return 0;
-        }
-        *device_ctx = NULL;
     }
     av_log_set_level(saved_level);
 

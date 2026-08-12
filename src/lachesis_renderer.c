@@ -107,6 +107,8 @@
 #define LACHESIS_MAX_OVERLAYS 2
 #define LACHESIS_MAX_HOOKS 2
 
+#define LACHESIS_D3D11_VIEW_POOLS 6
+
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #define LACHESIS_CAN_ITERATE_LIBS 1
@@ -177,17 +179,31 @@ typedef struct RendererContext {
 
 #if LACHESIS_HAVE_D3D11
     pl_d3d11 placebo_d3d11;
-    ID3D11Texture2D *d3d11_pool;
-    pl_tex *d3d11_views;
-    unsigned d3d11_num_views;
-    int d3d11_planes;
+    ID3D10Multithread *d3d11_multithread;
+    struct D3D11ViewPool {
+        ID3D11Texture2D *texture;
+        pl_tex *views;
+        unsigned num_views;
+        uint64_t serial;
+    } d3d11_pools[LACHESIS_D3D11_VIEW_POOLS];
+    uint64_t d3d11_serial;
 #endif
 
     /* See build_pixfmt_list(). */
     enum AVPixelFormat *pixfmts;
     int num_pixfmts;
 
+    int swapchain_stale;
+    int swapchain_stale_w;
+    int swapchain_stale_h;
+    int swapchain_retry;
+
     int zero_copy_failed;
+    struct ZeroCopyPool {
+        enum AVPixelFormat sw_format;
+        int width;
+        int height;
+    } zero_copy_pool, zero_copy_failed_pool;
 
     char api_name[64];
     char device_name[256];
@@ -1393,8 +1409,12 @@ static void d3d11_read_device_name(RendererContext *ctx) {
     }
     if (SUCCEEDED(IDXGIDevice_GetAdapter(dxgi_dev, &adapter)) &&
         SUCCEEDED(IDXGIAdapter_GetDesc(adapter, &desc))) {
-        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, ctx->device_name,
-                            (int)sizeof(ctx->device_name), NULL, NULL);
+        if (!WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1,
+                                 ctx->device_name,
+                                 (int)sizeof(ctx->device_name), NULL, NULL)) {
+            ctx->device_name[0] = '\0';
+        }
+        ctx->device_name[sizeof(ctx->device_name) - 1] = '\0';
     }
     if (adapter) {
         IDXGIAdapter_Release(adapter);
@@ -1411,7 +1431,44 @@ static void d3d11_protect_device(RendererContext *ctx) {
         return;
     }
     ID3D10Multithread_SetMultithreadProtected(multithread, TRUE);
-    ID3D10Multithread_Release(multithread);
+    ctx->d3d11_multithread = multithread;
+}
+
+static void d3d11_lock(void *lock_ctx) {
+    ID3D10Multithread_Enter((ID3D10Multithread *)lock_ctx);
+}
+
+static void d3d11_unlock(void *lock_ctx) {
+    ID3D10Multithread_Leave((ID3D10Multithread *)lock_ctx);
+}
+
+static int d3d11_shader_bind_usable(RendererContext *ctx) {
+    D3D11_TEXTURE2D_DESC desc = {
+        .Width = 64,
+        .Height = 64,
+        .MipLevels = 1,
+        .Format = DXGI_FORMAT_NV12,
+        .SampleDesc = {.Count = 1},
+        .ArraySize = 2,
+        .Usage = D3D11_USAGE_DEFAULT,
+        .BindFlags = D3D11_BIND_DECODER | D3D11_BIND_SHADER_RESOURCE,
+    };
+    ID3D11Texture2D *tex = NULL;
+
+    if (SUCCEEDED(ID3D11Device_CreateTexture2D(ctx->placebo_d3d11->device, &desc,
+                                               NULL, &tex))) {
+        ID3D11Texture2D_Release(tex);
+        return 1;
+    }
+
+    desc.BindFlags = D3D11_BIND_DECODER;
+    if (FAILED(ID3D11Device_CreateTexture2D(ctx->placebo_d3d11->device, &desc,
+                                            NULL, &tex))) {
+        return 1;
+    }
+    ID3D11Texture2D_Release(tex);
+
+    return 0;
 }
 
 static int d3d11_create_hw_device(RendererContext *ctx) {
@@ -1429,7 +1486,17 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
 
     ID3D11Device_AddRef(ctx->placebo_d3d11->device);
     hwctx->device = ctx->placebo_d3d11->device;
-    hwctx->BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+
+    if (ctx->d3d11_multithread) {
+        hwctx->lock = d3d11_lock;
+        hwctx->unlock = d3d11_unlock;
+        hwctx->lock_ctx = ctx->d3d11_multithread;
+    }
+
+    if (d3d11_shader_bind_usable(ctx)) {
+        hwctx->BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+    } else {
+    }
 
     ret = av_hwdevice_ctx_init(ctx->hw_device_ref);
     if (ret < 0) {
@@ -1492,8 +1559,14 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
     snprintf(ctx->api_name, sizeof(ctx->api_name), "Direct3D 11");
     d3d11_read_device_name(ctx);
 
+    if (ctx->placebo_d3d11->software && !software) {
+    }
+
     if (!ctx->placebo_d3d11->software) {
-        (void)d3d11_create_hw_device(ctx);
+        int hw_ret = d3d11_create_hw_device(ctx);
+
+        if (hw_ret < 0) {
+        }
     }
 
     return 0;
@@ -1515,28 +1588,95 @@ static int d3d11_plane_view_formats(DXGI_FORMAT packed, DXGI_FORMAT *view) {
     }
 }
 
-static void d3d11_drop_views(RendererContext *ctx) {
-    for (unsigned i = 0; i < ctx->d3d11_num_views; i++) {
-        pl_tex_destroy(ctx->gpu, &ctx->d3d11_views[i]);
+static void d3d11_drop_pool(RendererContext *ctx, struct D3D11ViewPool *pool) {
+    for (unsigned i = 0; i < pool->num_views; i++) {
+        pl_tex_destroy(ctx->gpu, &pool->views[i]);
     }
-    av_freep(&ctx->d3d11_views);
-    ctx->d3d11_num_views = 0;
-    ctx->d3d11_pool = NULL;
+    av_freep(&pool->views);
+    pool->num_views = 0;
+    pool->texture = NULL;
+    pool->serial = 0;
+}
+
+static void d3d11_drop_views(RendererContext *ctx) {
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->d3d11_pools); i++) {
+        d3d11_drop_pool(ctx, &ctx->d3d11_pools[i]);
+    }
+}
+
+static struct D3D11ViewPool *d3d11_view_pool(RendererContext *ctx,
+                                             ID3D11Texture2D *texture,
+                                             unsigned need) {
+    struct D3D11ViewPool *victim = NULL;
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->d3d11_pools); i++) {
+        struct D3D11ViewPool *pool = &ctx->d3d11_pools[i];
+
+        if (pool->texture == texture && pool->num_views == need) {
+            pool->serial = ctx->d3d11_serial;
+            return pool;
+        }
+        if (pool->serial == ctx->d3d11_serial && pool->texture) {
+            continue;
+        }
+        if (!victim || pool->serial < victim->serial) {
+            victim = pool;
+        }
+    }
+
+    if (!victim) {
+        return NULL;
+    }
+
+    d3d11_drop_pool(ctx, victim);
+    victim->views = av_calloc(need, sizeof(*victim->views));
+    if (!victim->views) {
+        return NULL;
+    }
+    victim->num_views = need;
+    victim->texture = texture;
+    victim->serial = ctx->d3d11_serial;
+
+    return victim;
+}
+
+static void d3d11_touch_frame(RendererContext *ctx, const struct pl_frame *in) {
+    pl_tex tex = in->num_planes > 0 ? in->planes[0].texture : NULL;
+
+    if (!tex) {
+        return;
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->d3d11_pools); i++) {
+        struct D3D11ViewPool *pool = &ctx->d3d11_pools[i];
+
+        for (unsigned j = 0; j < pool->num_views; j++) {
+            if (pool->views[j] == tex) {
+                pool->serial = ctx->d3d11_serial;
+                return;
+            }
+        }
+    }
 }
 
 static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
                             struct pl_frame *out) {
-    const AVHWFramesContext *hwfc =
-        (const AVHWFramesContext *)frame->hw_frames_ctx->data;
-    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(hwfc->sw_format);
+    const AVHWFramesContext *hwfc;
+    const AVPixFmtDescriptor *desc;
     ID3D11Texture2D *texture = (ID3D11Texture2D *)frame->data[0];
     unsigned slice = (unsigned)(intptr_t)frame->data[1];
+    struct D3D11ViewPool *pool;
     DXGI_FORMAT view_fmt[4];
     D3D11_TEXTURE2D_DESC tex_desc;
     unsigned need;
     int planes;
 
-    if (!texture || !desc) {
+    if (!texture || !frame->hw_frames_ctx) {
+        return false;
+    }
+
+    hwfc = (const AVHWFramesContext *)frame->hw_frames_ctx->data;
+    desc = av_pix_fmt_desc_get(hwfc->sw_format);
+    if (!desc) {
         return false;
     }
 
@@ -1547,15 +1687,9 @@ static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
     }
 
     need = tex_desc.ArraySize * (unsigned)planes;
-    if (ctx->d3d11_pool != texture || ctx->d3d11_num_views != need) {
-        d3d11_drop_views(ctx);
-        ctx->d3d11_views = av_calloc(need, sizeof(*ctx->d3d11_views));
-        if (!ctx->d3d11_views) {
-            return false;
-        }
-        ctx->d3d11_num_views = need;
-        ctx->d3d11_planes = planes;
-        ctx->d3d11_pool = texture;
+    pool = d3d11_view_pool(ctx, texture, need);
+    if (!pool) {
+        return false;
     }
 
     pl_frame_from_avframe(out, frame);
@@ -1564,7 +1698,7 @@ static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
     }
 
     for (int i = 0; i < planes; i++) {
-        pl_tex *slot = &ctx->d3d11_views[slice * (unsigned)planes + i];
+        pl_tex *slot = &pool->views[slice * (unsigned)planes + i];
 
         if (!*slot) {
             int full_w = (int)tex_desc.Width;
@@ -1584,7 +1718,6 @@ static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
             if (!*slot) {
                 return false;
             }
-            /* A pool allocated without D3D11_BIND_SHADER_RESOURCE wraps happily but can't be sampled. */
             if (!(*slot)->params.sampleable) {
                 pl_tex_destroy(ctx->gpu, slot);
                 return false;
@@ -1608,6 +1741,10 @@ static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
 static void d3d11_backend_destroy(RendererContext *ctx) {
     d3d11_drop_views(ctx);
     av_buffer_unref(&ctx->hw_device_ref);
+    if (ctx->d3d11_multithread) {
+        ID3D10Multithread_Release(ctx->d3d11_multithread);
+        ctx->d3d11_multithread = NULL;
+    }
     pl_swapchain_destroy(&ctx->swapchain);
     pl_d3d11_destroy(&ctx->placebo_d3d11);
 }
@@ -2342,11 +2479,40 @@ static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
     return 0;
 }
 
+static void zero_copy_give_up(RendererContext *ctx, const AVFrame *frame) {
+    static int warned;
+
+    ctx->zero_copy_failed = 1;
+    ctx->zero_copy_failed_pool = ctx->zero_copy_pool;
+
+    if (!warned) {
+        warned = 1;
+        log_warn("The GPU rejected a zero copy import of a %s frame. Falling "
+                 "back to a system memory copy.\n",
+                 av_get_pix_fmt_name(frame->format));
+    }
+}
+
 static int convert_frame(Renderer *renderer, AVFrame *frame) {
     RendererContext *ctx = (RendererContext *)renderer;
+    const AVHWFramesContext *hwfc;
 
     if (!frame->hw_frames_ctx) {
         return 0;
+    }
+
+    hwfc = (const AVHWFramesContext *)frame->hw_frames_ctx->data;
+    ctx->zero_copy_pool = (struct ZeroCopyPool){
+        .sw_format = hwfc->sw_format,
+        .width = hwfc->width,
+        .height = hwfc->height,
+    };
+
+    if (ctx->zero_copy_failed &&
+        (ctx->zero_copy_failed_pool.sw_format != ctx->zero_copy_pool.sw_format ||
+         ctx->zero_copy_failed_pool.width != ctx->zero_copy_pool.width ||
+         ctx->zero_copy_failed_pool.height != ctx->zero_copy_pool.height)) {
+        ctx->zero_copy_failed = 0;
     }
 
 #if LACHESIS_HAVE_VULKAN
@@ -2377,12 +2543,7 @@ static bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
         if (map_d3d11_frame(ctx, frame, out)) {
             return true;
         }
-        if (!ctx->zero_copy_failed) {
-            ctx->zero_copy_failed = 1;
-            log_warn("The GPU rejected a zero copy import of a %s frame. "
-                     "Falling back to a system memory copy.\n",
-                     av_get_pix_fmt_name(frame->format));
-        }
+        zero_copy_give_up(ctx, frame);
         if (convert_frame_readback(ctx, frame) < 0) {
             return false;
         }
@@ -2397,12 +2558,7 @@ static bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
     if (!frame->hw_frames_ctx) {
         return false;
     }
-    if (!ctx->zero_copy_failed) {
-        ctx->zero_copy_failed = 1;
-        log_warn("The GPU rejected a zero copy import of a %s frame. Falling "
-                 "back to a system memory copy.\n",
-                 av_get_pix_fmt_name(frame->format));
-    }
+    zero_copy_give_up(ctx, frame);
     if (convert_frame_readback(ctx, frame) < 0) {
         return false;
     }
@@ -2444,8 +2600,7 @@ static const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
 #if LACHESIS_HAVE_D3D11
     if (ctx->api.backend == RENDERER_API_D3D11 &&
         frame->format == AV_PIX_FMT_D3D11) {
-        if ((ID3D11Texture2D *)frame->data[0] != ctx->d3d11_pool ||
-            !map_d3d11_frame(ctx, frame, out)) {
+        if (!map_d3d11_frame(ctx, frame, out)) {
             return NULL;
         }
     } else
@@ -2785,6 +2940,11 @@ static const struct pl_frame *map_mix_frame(RendererContext *ctx,
         if (ctx->mix_slots[i].mapped &&
             ctx->mix_slots[i].signature == mix->signature) {
             ctx->mix_slots[i].used = 1;
+#if LACHESIS_HAVE_D3D11
+            if (ctx->api.backend == RENDERER_API_D3D11) {
+                d3d11_touch_frame(ctx, &ctx->mix_slots[i].frame);
+            }
+#endif
             return &ctx->mix_slots[i].frame;
         }
     }
@@ -2858,12 +3018,26 @@ static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx
     return &pl_filter_catmull_rom;
 }
 
+static bool can_sample_polar(const RendererContext *ctx) {
+#if LACHESIS_HAVE_D3D11
+    if (ctx->api.backend == RENDERER_API_D3D11) {
+        return ctx->gpu->glsl.compute;
+    }
+#endif
+    (void)ctx;
+
+    return true;
+}
+
 static const struct pl_filter_config *pick_upscaler(const RendererContext *ctx,
                                                     const RenderParams *params) {
     const struct pl_filter_config *config = NULL;
 
     if (supersample_active(ctx, params)) {
         config = supersample_upscaler(ctx->supersample_level);
+        if (config && config->polar && !can_sample_polar(ctx)) {
+            config = &pl_filter_lanczos;
+        }
     }
 
     return config ? config : &pl_filter_bilinear;
@@ -2877,6 +3051,34 @@ static struct pl_color_adjustment equalizer_adjustment(const RenderParams *param
     adj.gamma = equalizer_pl_gamma(params->eq_gamma);
 
     return adj;
+}
+
+#define LACHESIS_SWAPCHAIN_RETRY_GRACE 4
+
+static int swapchain_sync_size(RendererContext *ctx) {
+    int w, h;
+
+    if (!ctx->swapchain_stale) {
+        return 0;
+    }
+
+    w = ctx->swapchain_stale_w;
+    h = ctx->swapchain_stale_h;
+    if (pl_swapchain_resize(ctx->swapchain, &w, &h)) {
+        ctx->swapchain_stale = 0;
+        ctx->swapchain_retry = 0;
+        return 0;
+    }
+
+    if (++ctx->swapchain_retry < LACHESIS_SWAPCHAIN_RETRY_GRACE) {
+        return 0;
+    }
+    if (ctx->swapchain_retry == LACHESIS_SWAPCHAIN_RETRY_GRACE) {
+        log_warn("The swapchain will not resize to %dx%d.\n",
+                 ctx->swapchain_stale_w, ctx->swapchain_stale_h);
+    }
+
+    return AVERROR_EXTERNAL;
 }
 
 static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
@@ -2910,6 +3112,15 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     bool deint = params->deinterlace != 0;
     AVFrame *prev_ref = deint ? params->prev_frame : NULL;
     AVFrame *next_ref = deint ? params->next_frame : NULL;
+
+#if LACHESIS_HAVE_D3D11
+    ctx->d3d11_serial++;
+#endif
+
+    ret = swapchain_sync_size(ctx);
+    if (ret < 0) {
+        return ret;
+    }
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
@@ -3130,6 +3341,10 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     AVFrame *prev_ref = deint ? params->prev_frame : NULL;
     AVFrame *next_ref = deint ? params->next_frame : NULL;
 
+#if LACHESIS_HAVE_D3D11
+    ctx->d3d11_serial++;
+#endif
+
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
         return ret;
@@ -3231,13 +3446,21 @@ out:
 
 static int resize(Renderer *renderer, int width, int height) {
     RendererContext *ctx = (RendererContext *)renderer;
+    int w = width, h = height;
 
     if (!ctx || !ctx->swapchain) {
         return AVERROR(EINVAL);
     }
-    if (!pl_swapchain_resize(ctx->swapchain, &width, &height)) {
+    if (!pl_swapchain_resize(ctx->swapchain, &w, &h)) {
+        ctx->swapchain_stale = 1;
+        ctx->swapchain_stale_w = width;
+        ctx->swapchain_stale_h = height;
+        ctx->swapchain_retry = 0;
         return AVERROR_EXTERNAL;
     }
+    ctx->swapchain_stale = 0;
+    ctx->swapchain_retry = 0;
+
     return 0;
 }
 

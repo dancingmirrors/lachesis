@@ -221,32 +221,47 @@ static void screenshot_bg_color(VideoState *is, uint8_t bg[3]) {
 
 static AVFrame *frame_to_cpu(AVFrame *frame) {
     AVFrame *sw;
+    int ret;
 
     if (!frame->hw_frames_ctx) {
         sw = av_frame_clone(frame);
+        if (!sw) {
+            return NULL;
+        }
     } else {
         sw = av_frame_alloc();
         if (!sw) {
             return NULL;
         }
-        if (av_hwframe_transfer_data(sw, frame, 0) < 0) {
+        ret = av_hwframe_transfer_data(sw, frame, 0);
+        if (ret < 0) {
+            log_warn("Couldn't read back the video frame: %s.\n",
+                     av_err2str(ret));
             av_frame_free(&sw);
             return NULL;
         }
-        av_frame_copy_props(sw, frame);
-    }
-    if (!sw) {
-        return NULL;
+        ret = av_frame_copy_props(sw, frame);
+        if (ret < 0) {
+            log_warn("Couldn't copy the frame properties: %s.\n",
+                     av_err2str(ret));
+            av_frame_free(&sw);
+            return NULL;
+        }
     }
 
     if (sw->crop_left || sw->crop_top || sw->crop_right || sw->crop_bottom) {
-        int crop_ret = av_frame_apply_cropping(sw, AV_FRAME_CROP_UNALIGNED);
-
-        if (crop_ret < 0) {
-            log_warn("Failed to apply frame cropping: %s.\n", av_err2str(crop_ret));
+        ret = av_frame_apply_cropping(sw, AV_FRAME_CROP_UNALIGNED);
+        if (ret < 0) {
+            log_warn("Failed to apply frame cropping: %s.\n", av_err2str(ret));
             av_frame_free(&sw);
             return NULL;
         }
+    }
+
+    if (sw->width <= 0 || sw->height <= 0) {
+        log_warn("The video frame is empty after cropping.\n");
+        av_frame_free(&sw);
+        return NULL;
     }
 
     return sw;
