@@ -307,7 +307,7 @@ def check(
     if required is not None and not use_dep:
         print("Warning: %s" % required)
     if force_opt and not use_dep:
-        die("This feature is required.")
+        die("%s: %s" % (option_name or desc or name, outcome))
 
 
 def _run_process(args):
