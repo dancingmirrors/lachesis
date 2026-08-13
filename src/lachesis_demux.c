@@ -887,6 +887,8 @@ int read_thread(void *arg) {
     int64_t still_deadline_us = 0;
     int still_range_done = 0;
     int64_t start_pos = AV_NOPTS_VALUE;
+    int lap_read = 0;
+    int restarted = 0;
 
     log_interrupt_begin(decode_interrupt_cb, is);
 
@@ -1389,13 +1391,25 @@ int read_thread(void *arg) {
         if (!is->paused &&
             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
+            if (is->loop_remaining != 1 && restarted && !lap_read) {
+                /* Can't seek back to the start. */
+                is->loop_remaining = 1;
+            }
             if (is->is_still_image && !still_range_done) {
                 if (play_duration != AV_NOPTS_VALUE && !still_deadline_us) {
                     still_deadline_us = av_gettime_relative() + play_duration;
                 }
                 is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
+            } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0 &&
+                       !is->play_range_done) {
+                SDL_LockMutex(wait_mutex);
+                SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 100);
+                SDL_UnlockMutex(wait_mutex);
+                continue;
             } else if (is->loop_remaining != 1 &&
                        (!is->loop_remaining || --is->loop_remaining)) {
+                lap_read = 0;
+                restarted = 1;
                 if (start_pos != AV_NOPTS_VALUE) {
                     stream_seek_exact(is, start_pos);
                 } else {
@@ -1407,13 +1421,6 @@ int read_thread(void *arg) {
                     }
                     stream_seek(is, restart, 0, 0);
                 }
-            } else if (is->ytdl_source_url && ic->pb && avio_size(ic->pb) <= 0 &&
-                       !is->play_range_done) {
-                /* An unknown size might be a live stream. */
-                SDL_LockMutex(wait_mutex);
-                SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 100);
-                SDL_UnlockMutex(wait_mutex);
-                continue;
             } else if (keep_open && playlist_pos + 1 >= playlist_size) {
                 is->paused = is->audclk.paused = is->vidclk.paused = is->extclk.paused = 1;
                 SDL_LockMutex(wait_mutex);
@@ -1446,6 +1453,7 @@ int read_thread(void *arg) {
             continue;
         } else {
             is->eof = 0;
+            lap_read = 1;
         }
 
         ic->event_flags &= ~AVFMT_EVENT_FLAG_METADATA_UPDATED;

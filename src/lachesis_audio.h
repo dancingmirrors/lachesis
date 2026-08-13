@@ -49,7 +49,7 @@ void audio_device_resume(void);
 void audio_device_close(void);
 
 int audio_spdif_open(VideoState *is, AVStream *st, int *hw_buf_size);
-
 int audio_spdif_active(void);
+int audio_spdif_names_known(const char *list);
 
 #endif /* LACHESIS_AUDIO_H */

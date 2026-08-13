@@ -50,6 +50,7 @@
 #include <libswscale/swscale.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_audio.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -233,6 +234,21 @@ static int opt_sync(void *optctx av_unused, const char *opt, const char *arg) {
     return 0;
 }
 
+static int arg_is_number(const char *arg) {
+    char *tail;
+    double num = av_strtod(arg, &tail);
+
+    return tail != arg && !*tail && !isnan(num) && !isinf(num);
+}
+
+static int arg_is_supersample(const char *arg) {
+    return !strcmp(arg, "off") || supersample_level_parse(arg) != SUPERSAMPLE_OFF;
+}
+
+static int arg_is_spdif_codecs(const char *arg) {
+    return audio_spdif_names_known(arg);
+}
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 const OptionDef options[] = {
@@ -252,45 +268,45 @@ const OptionDef options[] = {
     {"t", OPT_TYPE_TIME, 0, {&play_duration}, "play this duration of the input in seconds", "duration"},
     {"seek_interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
-    {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)", ""},
-    {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to keep the window always on top"},
+    {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)"},
+    {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to always keep the window on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 260)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type (audio, video, ext)", "type"},
-    {"skip-to-keyframe", OPT_TYPE_BOOL, 0, {&skip_to_keyframe}, "skip the video forward to keyframes instead of slowing down (drops content)", ""},
-    {"no-shader-cache", OPT_TYPE_BOOL, 0, {&no_shader_cache}, "disable caching compiled shaders on disk", ""},
+    {"skip-to-keyframe", OPT_TYPE_BOOL, 0, {&skip_to_keyframe}, "skip the video forward to keyframes instead of slowing down (drops content)"},
+    {"no-shader-cache", OPT_TYPE_BOOL, 0, {&no_shader_cache}, "disable caching compiled shaders on disk"},
     {"shader-cache-dir", OPT_TYPE_STRING, 0, {&shader_cache_dir}, "directory for the shader cache", "dir"},
-    {"keep-open", OPT_TYPE_BOOL, 0, {&keep_open}, "keep the window open at the end of the playlist", ""},
+    {"keep-open", OPT_TYPE_BOOL, 0, {&keep_open}, "keep the window open at the end of the playlist"},
     {"allow-unsafe", OPT_TYPE_BOOL, OPT_CMDLINE_ONLY, {&allow_unsafe}, "expand unsafe entries into a playlist (command line only)"},
     {"all-files", OPT_TYPE_BOOL, 0, {&all_files}, "try to play any file in an archive or directory"},
-    {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order", ""},
-    {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order", ""},
-    {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry", ""},
-    {"loop", OPT_TYPE_INT, 0, {&loop}, "set the number of times each playlist entry is played (0 = forever)", "loop count"},
+    {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order"},
+    {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order"},
+    {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry"},
+    {"loop", OPT_TYPE_INT, OPT_ARG_OPTIONAL, {&loop}, "set the number of times each playlist entry is played (0 or implied is forever)", "count", "0", "1", arg_is_number},
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters (pass more than once to cycle between them with W)", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
-    {"audio-spdif", OPT_TYPE_STRING, 0, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ':'", "codecs"},
-    {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match", ""},
+    {"audio-spdif", OPT_TYPE_STRING, OPT_ARG_OPTIONAL, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ',' (or implied all)", "codecs", "all", "", arg_is_spdif_codecs},
+    {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match"},
     {"acodec", OPT_TYPE_STRING, 0, {&audio_codec_name}, "force an audio decoder", "decoder_name"},
     {"scodec", OPT_TYPE_STRING, 0, {&subtitle_codec_name}, "force a subtitle decoder", "decoder_name"},
     {"sub-offset", OPT_TYPE_TIME, 0, {&sub_offset}, "shift an external subtitle by this many seconds (0 keeps its own timestamps)", "seconds"},
     {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},
-    {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation", ""},
-    {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees", "degrees"},
+    {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation"},
+    {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees (or implied 90)", "degrees", "90", "0", arg_is_number},
     {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl, d3d11)", "api"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
-    {"gpu-params", OPT_TYPE_STRING, 0, {&gpu_params}, "backend configuration using a list of key=value pairs separated by ':'"},
+    {"gpu-params", OPT_TYPE_STRING, 0, {&gpu_params}, "backend configuration using a list of key=value pairs separated by ':'", "params"},
     {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
     {"max-glsl-version", OPT_TYPE_INT, 0, {&max_glsl_version}, "cap the GLSL version libplacebo targets (0 for no cap)", "version"},
     {"icc-profile", OPT_TYPE_STRING, 0, {&icc_profile}, "ICC profile passed to libplacebo", "path"},
-    {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises", ""},
-    {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports", ""},
-    {"video_bg", OPT_TYPE_STRING, 0, {&video_background}, "set the video background for transparent content"},
-    {"hwaccel", OPT_TYPE_STRING, 0, {&hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none"},
+    {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises"},
+    {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports"},
+    {"video_bg", OPT_TYPE_STRING, 0, {&video_background}, "set the video background for transparent content (none, tiles, or a color)", "color"},
+    {"hwaccel", OPT_TYPE_STRING, 0, {&hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none", "method"},
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
     {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
@@ -301,12 +317,12 @@ const OptionDef options[] = {
     {"ytdl-path", OPT_TYPE_STRING, 0, {&ytdl_path}, "path to the yt-dlp binary", "path"},
     {"ytdl-format", OPT_TYPE_STRING, 0, {&ytdl_format}, "yt-dlp format selection string", "format"},
     {"delete", OPT_TYPE_BOOL, 0, {&allow_delete}, "enable permanent file deletion"},
-    {"no-terminal-quit", OPT_TYPE_BOOL, 0, {&terminal_quit_disable}, "disable the terminal quit keybinding", ""},
+    {"no-terminal-quit", OPT_TYPE_BOOL, 0, {&terminal_quit_disable}, "disable the terminal quit keybinding"},
     {"display-fps", OPT_TYPE_DOUBLE, 0, {&display_fps_override}, "override the detected display refresh rate", "fps"},
-    {"no-vsync-snap", OPT_TYPE_BOOL, 0, {&no_vsync_snap}, "disable snapping frame deadlines to the display refresh grid", ""},
-    {"interpolate", OPT_TYPE_BOOL, 0, {&frame_interpolation}, "oversample interpolation", ""},
-    {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF", ""},
-    {"supersample", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_supersample}, "sharpen and deband video (off, light, medium, strong)", "level"},
+    {"no-vsync-snap", OPT_TYPE_BOOL, 0, {&no_vsync_snap}, "disable snapping frame deadlines to the display refresh grid"},
+    {"interpolate", OPT_TYPE_BOOL, 0, {&frame_interpolation}, "oversample interpolation"},
+    {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF"},
+    {"supersample", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_supersample}, "sharpen and deband video (off, light, medium, strong, or implied medium)", "level", "medium", "off", arg_is_supersample},
     {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,
@@ -388,29 +404,34 @@ int parse_number(const char *context, const char *numstr, enum OptionType type,
     return AVERROR(EINVAL);
 }
 
+static void format_option_name(const OptionDef *po, char *buf, size_t size) {
+    av_strlcpy(buf, po->name, size);
+
+    if (!po->argname || !po->argname[0]) {
+        return;
+    }
+    if (po->flags & OPT_ARG_OPTIONAL) {
+        av_strlcatf(buf, size, " [%s]", po->argname);
+    } else {
+        av_strlcatf(buf, size, " <%s>", po->argname);
+    }
+}
+
 void show_help_options(const OptionDef *defs) {
     const OptionDef *po;
+    char buf[128];
     int max_width = 0;
 
     for (po = defs; po->name; po++) {
-        int width = strlen(po->name) + 1; /* +1 for the leading '-' */
-        if (po->argname) {
-            width += strlen(po->argname) + 3; /* +3 for " <>" */
-        }
+        format_option_name(po, buf, sizeof(buf));
+        int width = strlen(buf) + 1; /* +1 for the leading '-' */
         if (width > max_width) {
             max_width = width;
         }
     }
 
     for (po = defs; po->name; po++) {
-        char buf[128];
-
-        av_strlcpy(buf, po->name, sizeof(buf));
-
-        if (po->argname) {
-            av_strlcatf(buf, sizeof(buf), " <%s>", po->argname);
-        }
-
+        format_option_name(po, buf, sizeof(buf));
         printf("-%-*s  %s\n", max_width, buf, po->help);
     }
 }
@@ -475,6 +496,38 @@ static int config_parse_bool(const char *val) {
     }
 
     return -1;
+}
+
+static const char *opt_implied_value(const OptionDef *po, const char *arg) {
+    if (!(po->flags & OPT_ARG_OPTIONAL) || (po->is_value && po->is_value(arg))) {
+        return arg;
+    }
+
+    int on = config_parse_bool(arg);
+
+    return on < 0 ? arg : (on ? po->implied : po->implied_no);
+}
+
+static int opt_wants_next(const OptionDef *po, const char *next) {
+    if (!opt_has_arg(po)) {
+        return 0;
+    }
+    if (!(po->flags & OPT_ARG_OPTIONAL)) {
+        return 1;
+    }
+    if (!next) {
+        return 0;
+    }
+
+    return config_parse_bool(next) >= 0 || (po->is_value && po->is_value(next));
+}
+
+static int opt_negatable(const OptionDef *po) {
+    if (!po->name) {
+        return 0;
+    }
+
+    return po->type == OPT_TYPE_BOOL || (po->flags & OPT_ARG_OPTIONAL);
 }
 
 static int write_option(void *optctx, const OptionDef *po, const char *opt,
@@ -542,6 +595,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
     const char *inline_arg = split_option_name(opt, name, sizeof(name));
     const OptionDef *po;
     int negated = 0;
+    int consumed;
     int ret;
 
     if (inline_arg) {
@@ -550,8 +604,11 @@ int parse_option(void *optctx, const char *opt, const char *arg,
 
     po = find_option(defs, opt);
     if (!po->name && opt[0] == 'n' && opt[1] == 'o') {
-        po = find_option(defs, opt + 2);
-        negated = po->name && po->type == OPT_TYPE_BOOL;
+        const OptionDef *neg = find_option(defs, opt + 2);
+        if (opt_negatable(neg)) {
+            po = neg;
+            negated = 1;
+        }
     }
 
     if (!po->name) {
@@ -559,29 +616,38 @@ int parse_option(void *optctx, const char *opt, const char *arg,
         return AVERROR(EINVAL);
     }
 
-    if (!opt_has_arg(po)) {
+    consumed = !inline_arg && !negated && opt_wants_next(po, arg);
+
+    if (!opt_has_arg(po) || negated) {
+        int on = 1;
+
         if (inline_arg) {
-            int on = config_parse_bool(inline_arg);
+            on = config_parse_bool(inline_arg);
             if (on < 0) {
                 av_log(NULL, AV_LOG_ERROR,
                        "Option '%s' wants yes or no, got '%s'\n", opt, inline_arg);
                 return AVERROR(EINVAL);
             }
-            if (negated) {
-                on = !on;
-            }
+        }
+        if (negated) {
+            on = !on;
+        }
+        if (opt_has_arg(po)) {
+            arg = on ? po->implied : po->implied_no;
+        } else {
             if (po->type != OPT_TYPE_BOOL && !on) {
                 return 0;
             }
             arg = on ? "1" : "0";
-        } else {
-            arg = negated ? "0" : "1";
         }
-    } else if (inline_arg) {
-        arg = inline_arg;
-    } else if (!arg) {
-        av_log(NULL, AV_LOG_ERROR, "Missing argument for option '%s'\n", opt);
-        return AVERROR(EINVAL);
+    } else if (inline_arg || consumed) {
+        arg = opt_implied_value(po, inline_arg ? inline_arg : arg);
+    } else {
+        if (!(po->flags & OPT_ARG_OPTIONAL)) {
+            av_log(NULL, AV_LOG_ERROR, "Missing argument for option '%s'\n", opt);
+            return AVERROR(EINVAL);
+        }
+        arg = po->implied;
     }
 
     ret = write_option(optctx, po, opt, arg);
@@ -589,7 +655,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
         return ret;
     }
 
-    return inline_arg ? 0 : opt_has_arg(po);
+    return consumed;
 }
 
 int parse_config_option(void *optctx, const char *opt, const char *arg,
@@ -611,6 +677,10 @@ int parse_config_option(void *optctx, const char *opt, const char *arg,
         log_warn("%s: option '%s' is only accepted on the command line, ignoring.\n",
                  src, opt);
         return AVERROR(EINVAL);
+    }
+
+    if (po->flags & OPT_ARG_OPTIONAL) {
+        arg = arg && arg[0] ? opt_implied_value(po, arg) : po->implied;
     }
 
     if (po->type == OPT_TYPE_BOOL) {
@@ -684,6 +754,7 @@ int parse_options(void *optctx, int argc, char **argv, const OptionDef *defs,
 static int locate_option(int argc, char **argv, const OptionDef *defs,
                          const char *optname, const char **value_out) {
     const OptionDef *po;
+    int negated;
     int i;
 
     *value_out = NULL;
@@ -707,9 +778,14 @@ static int locate_option(int argc, char **argv, const OptionDef *defs,
             cur_opt = name;
         }
 
+        negated = 0;
         po = find_option(defs, cur_opt);
         if (!po->name && cur_opt[0] == 'n' && cur_opt[1] == 'o') {
-            po = find_option(defs, cur_opt + 2);
+            const OptionDef *neg = find_option(defs, cur_opt + 2);
+            if (opt_negatable(neg)) {
+                po = neg;
+                negated = 1;
+            }
         }
 
         if ((!po->name && !strcmp(cur_opt, optname)) ||
@@ -718,7 +794,10 @@ static int locate_option(int argc, char **argv, const OptionDef *defs,
             return i;
         }
 
-        if (!inline_arg && (!po->name || opt_has_arg(po))) {
+        if (!inline_arg &&
+            (!po->name ||
+             (!negated &&
+              opt_wants_next(po, i + 1 < argc ? argv[i + 1] : NULL)))) {
             i++;
         }
     }

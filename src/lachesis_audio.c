@@ -133,6 +133,31 @@ static const char *spdif_next_element(const char *p) {
     return *p == ',' ? p + 1 : p;
 }
 
+int audio_spdif_names_known(const char *list) {
+    const char *p = list;
+
+    if (!p || !*p) {
+        return 0;
+    }
+
+    while (*p) {
+        size_t len = spdif_element(&p);
+        int known = len == 3 && !av_strncasecmp(p, "all", 3);
+        size_t i;
+
+        for (i = 0; !known && i < FF_ARRAY_ELEMS(spdif_codec_names); i++) {
+            const char *name = spdif_codec_names[i].name;
+            known = strlen(name) == len && !av_strncasecmp(p, name, len);
+        }
+        if (!known) {
+            return 0;
+        }
+        p = spdif_next_element(p);
+    }
+
+    return 1;
+}
+
 static int spdif_selected(enum AVCodecID codec_id, int *want_hd) {
     const char *p = audio_spdif_opt;
     int found = 0;
@@ -177,23 +202,15 @@ int audio_spdif_active(void) {
 
 static void spdif_warn_unknown_names(void) {
     static int warned;
-    const char *p = audio_spdif_opt;
 
-    if (warned || !p) {
+    if (warned || !audio_spdif_opt || !audio_spdif_opt[0]) {
         return;
     }
     warned = 1;
 
-    while (*p) {
-        size_t len = spdif_element(&p);
-        int known = len == 3 && !av_strncasecmp(p, "all", 3);
-        size_t i;
-
-        for (i = 0; !known && i < FF_ARRAY_ELEMS(spdif_codec_names); i++) {
-            const char *name = spdif_codec_names[i].name;
-            known = strlen(name) == len && !av_strncasecmp(p, name, len);
-        }
-        p = spdif_next_element(p);
+    if (!audio_spdif_names_known(audio_spdif_opt)) {
+        log_warn("Unknown S/PDIF codec '%s'.\n",
+                 audio_spdif_opt);
     }
 }
 

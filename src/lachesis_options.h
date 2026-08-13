@@ -46,6 +46,7 @@ enum OptionType {
 #define OPT_FUNC_ARG (1 << 0)
 #define OPT_EXIT (1 << 1)
 #define OPT_CMDLINE_ONLY (1 << 2)
+#define OPT_ARG_OPTIONAL (1 << 3)
 
 typedef struct OptionDef {
     const char *name;
@@ -58,6 +59,9 @@ typedef struct OptionDef {
     } u;
     const char *help;
     const char *argname;
+    const char *implied;
+    const char *implied_no;
+    int (*is_value)(const char *arg);
 } OptionDef;
 
 int parse_number(const char *context, const char *numstr, enum OptionType type,
