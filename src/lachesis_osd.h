@@ -45,7 +45,7 @@ av_printf_format(1, 2) void osd_show_message(const char *fmt, ...);
 typedef void (*OsdInfoProvider)(const VideoState *is, char *buf, size_t bufsz);
 void osd_set_info_provider(OsdInfoProvider provider);
 void osd_set_stats_provider(OsdInfoProvider provider);
-void osd_toggle_info_page(int page);
+void osd_cycle_info(void);
 void osd_invalidate_info(void);
 void osd_invalidate_textures(void);
 

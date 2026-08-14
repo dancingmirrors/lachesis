@@ -19,6 +19,8 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <stdio.h>
+
 #include <libavutil/common.h>
 #include <libavutil/frame.h>
 
@@ -36,6 +38,14 @@ int deinterlace_active(const VideoState *is) {
     return is->deint_active;
 }
 
+static double deinterlace_field_rate(const VideoState *is) {
+    if (!(is->deint_frame_dur > 0.0)) {
+        return 0.0;
+    }
+
+    return 2.0 * playback_speed / is->deint_frame_dur;
+}
+
 /* A new picture always starts over from its first field. */
 void deinterlace_new_picture(VideoState *is, const Frame *vp) {
     if (vp->id != is->deint_frame_id) {
@@ -50,6 +60,7 @@ void deinterlace_prepare(VideoState *is, Frame *vp) {
     is->render_params.next_frame = NULL;
     is->render_params.second_field = is->deint_second_field;
     is->deint_active = deinterlace;
+    is->deint_frame_dur = vp->duration;
 
     if (!is->deint_active) {
         return;
@@ -139,4 +150,30 @@ void deinterlace_apply(struct pl_frame *pl_frame,
     pl_frame->first_field = first;
     pl_frame->field = params->second_field ? pl_field_other(first) : first;
     pl_params->deinterlace_params = &deint;
+}
+
+const char *deinterlace_status(const VideoState *is) {
+    static char status[96];
+    double fields;
+
+    if (!deinterlace) {
+        return "off";
+    }
+    if (!is->deint_active) {
+        return "on, waiting for frames";
+    }
+    if (benchmark) {
+        return "on, one field per frame while benchmarking";
+    }
+    if (is->paused || is->step) {
+        return "on, holding one field while paused";
+    }
+
+    fields = deinterlace_field_rate(is);
+    if (!(fields > 0.0)) {
+        return "on, YADIF paints both fields";
+    }
+    snprintf(status, sizeof(status), "on, YADIF at %.4g fields/s", fields);
+
+    return status;
 }

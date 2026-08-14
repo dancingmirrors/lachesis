@@ -21,6 +21,7 @@
  * Copyright © 2023 Advanced Micro Devices, Inc.
  */
 
+#include <stdio.h>
 #include <string.h>
 
 #include "lachesis_config.h"
@@ -123,6 +124,40 @@ enum SupersampleLevel supersample_level_parse(const char *name) {
     }
 
     return SUPERSAMPLE_OFF;
+}
+
+const char *supersample_status(enum SupersampleLevel level,
+                               enum SupersampleState state) {
+    static char status[96];
+    const char *name = supersample_level_name(level);
+    const char *reason = NULL;
+
+    if (level == SUPERSAMPLE_OFF) {
+        return name;
+    }
+
+    switch (state) {
+    case SUPERSAMPLE_NO_RENDERER:
+        reason = "no renderer to run it";
+        break;
+    case SUPERSAMPLE_BENCHMARKING:
+        reason = "suspended while benchmarking";
+        break;
+    case SUPERSAMPLE_DEGRADED:
+        reason = "suspended while decoding is degraded";
+        break;
+    default:
+        break;
+    }
+
+    if (reason) {
+        snprintf(status, sizeof(status), "%s, %s", name, reason);
+    } else {
+        snprintf(status, sizeof(status), "%s, RCAS %.2f", name,
+                 supersample_strength(level));
+    }
+
+    return status;
 }
 
 const struct pl_hook *supersample_pl_hook_create(const struct pl_gpu_t *gpu) {

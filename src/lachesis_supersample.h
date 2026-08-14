@@ -28,6 +28,13 @@ enum SupersampleLevel {
     SUPERSAMPLE_STRONG,
 };
 
+enum SupersampleState {
+    SUPERSAMPLE_RUNNING,
+    SUPERSAMPLE_NO_RENDERER,
+    SUPERSAMPLE_BENCHMARKING,
+    SUPERSAMPLE_DEGRADED,
+};
+
 static inline enum SupersampleLevel
 supersample_level_next(enum SupersampleLevel level) {
     switch (level) {
@@ -56,6 +63,9 @@ static inline const char *supersample_level_name(enum SupersampleLevel level) {
 }
 
 enum SupersampleLevel supersample_level_parse(const char *name);
+
+const char *supersample_status(enum SupersampleLevel level,
+                               enum SupersampleState state);
 
 struct pl_gpu_t;
 struct pl_hook;

@@ -235,6 +235,7 @@ typedef struct VideoState {
     int last_render_serial;
     int deint_active;
     int deint_second_field;
+    double deint_frame_dur;
     uint64_t deint_frame_id;
     AVFrame *deint_prev;
     int deint_prev_serial;

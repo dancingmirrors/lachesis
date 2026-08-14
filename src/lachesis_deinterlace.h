@@ -33,6 +33,8 @@ struct pl_render_params;
 
 int deinterlace_active(const VideoState *is);
 
+const char *deinterlace_status(const VideoState *is);
+
 void deinterlace_new_picture(VideoState *is, const Frame *vp);
 void deinterlace_prepare(VideoState *is, Frame *vp);
 void deinterlace_clear(VideoState *is);

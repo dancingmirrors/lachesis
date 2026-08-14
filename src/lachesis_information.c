@@ -27,12 +27,15 @@
 #include <libavutil/attributes.h>
 #include <libavutil/time.h>
 
+#include "lachesis_deinterlace.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
 #include "lachesis_interpolate.h"
 #include "lachesis_log.h"
+#include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_present.h"
+#include "lachesis_supersample.h"
 
 static const char *active_hwaccel = NULL;
 
@@ -41,7 +44,7 @@ static char audio_device_format_line[96] = "";
 static char audio_passthrough_line[96] = "";
 static char media_info_vout_line[128] = "";
 
-static char playback_stats_cached[640] = "";
+static char playback_stats_cached[768] = "";
 static int64_t playback_stats_next_refresh_us = 0;
 
 static const char *media_info_renderer(void) {
@@ -233,6 +236,20 @@ void format_media_info(const VideoState *is, char *buf, size_t bufsz) {
 #undef MI_LINE
 }
 
+static enum SupersampleState playback_stats_supersample(const VideoState *is) {
+    if (!renderer) {
+        return SUPERSAMPLE_NO_RENDERER;
+    }
+    if (benchmark) {
+        return SUPERSAMPLE_BENCHMARKING;
+    }
+    if (is->render_low_quality) {
+        return SUPERSAMPLE_DEGRADED;
+    }
+
+    return SUPERSAMPLE_RUNNING;
+}
+
 void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
     if (bufsz == 0) {
         return;
@@ -303,10 +320,13 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
         }
 
         snprintf(cached, cached_size,
-                 "Dropped frames: %d (early %d, late %d)\n%s\n%s\n%s\n"
-                 "Interpolation: %s",
-                 early + late, early, late, sync_line, disp_line, timing,
-                 interpolate_status());
+                 "Dropped frames: %d (early %d, late %d)\n%s\n%s\n"
+                 "Interpolation: %s\nDeinterlacing: %s\nSupersampling: %s\n%s",
+                 early + late, early, late, sync_line, disp_line,
+                 interpolate_status(), deinterlace_status(is),
+                 supersample_status(supersample_level,
+                                    playback_stats_supersample(is)),
+                 timing);
     }
 
     playback_stats_next_refresh_us = now + 500000;

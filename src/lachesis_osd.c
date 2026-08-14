@@ -1074,15 +1074,14 @@ av_printf_format(1, 2) void osd_show_message(const char *fmt, ...) {
     osd_dismiss_info();
 }
 
-void osd_toggle_info_page(int page) {
-    if (page != 1 && page != 2) {
-        page = 1;
-    }
-    if (osd_info_sticky && osd_info_page == page) {
-        osd_info_sticky = 0;
-    } else {
-        osd_info_page = page;
+void osd_cycle_info(void) {
+    if (!osd_info_sticky) {
+        osd_info_page = 1;
         osd_info_sticky = 1;
+    } else if (osd_info_page == 1) {
+        osd_info_page = 2;
+    } else {
+        osd_info_sticky = 0;
     }
 }
 

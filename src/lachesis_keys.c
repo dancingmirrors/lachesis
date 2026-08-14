@@ -517,14 +517,6 @@ void event_loop(VideoState **pis) {
             do_seek:
                 seek_relative(cur_stream, incr);
                 break;
-            case SDLK_1:
-                osd_toggle_info_page(1);
-                cur_stream->force_refresh = 1;
-                break;
-            case SDLK_2:
-                osd_toggle_info_page(2);
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_3:
             case SDLK_4:
             case SDLK_5:
@@ -560,7 +552,7 @@ void event_loop(VideoState **pis) {
                 break;
             case SDLK_I:
                 if (event.key.mod & SDL_KMOD_SHIFT) {
-                    osd_toggle_info_page(1);
+                    osd_cycle_info();
                     cur_stream->force_refresh = 1;
                     break;
                 }

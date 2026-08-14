@@ -189,7 +189,7 @@ const char *interpolate_status(void) {
                  100.0 * interp.blend_share);
         return status;
     case INTERP_RATE_MATCH:
-        snprintf(status, sizeof(status), "%.3g FPS matches the display",
+        snprintf(status, sizeof(status), "off, %.3g FPS matches the display",
                  interp.rate);
         return status;
     case INTERP_DEINTERLACING:
