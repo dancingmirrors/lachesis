@@ -875,8 +875,6 @@ void vkpresent_attach(VkDevice device, const char *const *extensions,
     if (vkp.have_present_wait) {
         vkp.thread = SDL_CreateThread(waiter_thread, "vk_present_wait", NULL);
         if (!vkp.thread) {
-            log_warn("Failed to start the presentation feedback thread: %s.\n",
-                     SDL_GetError());
             vkp.have_present_wait = 0;
         }
     }
@@ -997,8 +995,6 @@ int vkpresent_poll(VkPresentSample *out) {
     SDL_UnlockMutex(vkp.lock);
 
     if (vkp.device_lost && (vkp.have_display_timing || vkp.have_present_wait)) {
-        log_warn("The Vulkan device was lost. Giving up on presentation "
-                 "feedback.\n");
         vkpresent_disable();
         return 0;
     }

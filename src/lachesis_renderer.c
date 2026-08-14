@@ -2947,9 +2947,6 @@ static void collect_present_timing(RendererContext *ctx, RenderParams *params) {
     }
 
     if (++ctx->present_timing_silent > LACHESIS_PRESENT_TIMING_GRACE) {
-        log_warn("No presentation feedback after %d presents. Timing the swap "
-                 "on the CPU instead.\n",
-                 LACHESIS_PRESENT_TIMING_GRACE);
         disable_present_timing(ctx);
         params->present_source = PRESENT_SOURCE_SWAP;
     }
