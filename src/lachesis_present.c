@@ -46,6 +46,7 @@
 #define PRESENT_MAX_GAP_US 1000000
 #define PRESENT_MAX_FOLD 8
 #define PRESENT_ANCHOR_STALE_US 1000000
+#define PRESENT_SYNC_GRACE 120
 
 static struct {
     double nominal_us;
@@ -63,6 +64,9 @@ static struct {
     int64_t last_blocked_done_us;
     int64_t last_present_us;
     int num_successive;
+    int num_unusable;
+    int unsynced;
+    int noted_unsynced;
 
     int snap_disabled;
     int source;
@@ -155,6 +159,7 @@ void present_update_display_mode(void) {
         pres.estimated_us = 0;
         pres.use_estimated = 0;
         pres.jitter = 0;
+        pres.noted_unsynced = 0;
         present_reset();
         check_estimated_display_fps();
     }
@@ -185,6 +190,8 @@ void present_restore_snap(void) {
 
 void present_reset(void) {
     pres.num_successive = 0;
+    pres.num_unusable = 0;
+    pres.unsynced = 0;
     pres.last_done_us = 0;
     pres.last_blocked_done_us = 0;
     pres.last_present_us = 0;
@@ -196,30 +203,35 @@ void present_note_present(int64_t done_us) {
     }
 }
 
-static void feedback_sample(int64_t done_us, int blocked) {
-    int64_t prev_done = pres.last_done_us;
-    int64_t prev_blocked = pres.last_blocked_done_us;
-
-    if (done_us <= 0) {
+static void note_unusable(void) {
+    if (pres.num_unusable >= PRESENT_SYNC_GRACE ||
+        ++pres.num_unusable < PRESENT_SYNC_GRACE) {
         return;
     }
-    pres.last_done_us = done_us;
-    if (blocked) {
-        pres.last_blocked_done_us = done_us;
-    }
 
+    pres.unsynced = 1;
+    if (!pres.noted_unsynced) {
+        pres.noted_unsynced = 1;
+        log_verbose("The %s feedback never lines up with the display. "
+                    "Using the reported rate.\n",
+                    present_source_name(pres.source));
+    }
+}
+
+static int refresh_sample(int64_t done_us, int blocked, int64_t prev_done,
+                          int64_t prev_blocked) {
     if (prev_done <= 0 || done_us - prev_done > PRESENT_MAX_GAP_US) {
         pres.num_successive = 0;
-        return;
+        return 0;
     }
 
     pres.num_successive++;
     if (pres.num_successive <= DELAY_VSYNC_SAMPLES) {
-        return;
+        return 0;
     }
 
     if (!blocked || prev_blocked <= 0 || done_us - prev_blocked > PRESENT_MAX_GAP_US) {
-        return;
+        return 0;
     }
 
     double ref_us = pres.nominal_us > 0 ? pres.nominal_us : pres.interval_us;
@@ -228,13 +240,13 @@ static void feedback_sample(int64_t done_us, int blocked) {
     if (ref_us > 0) {
         folds = llrint(delta / ref_us);
         if (folds < 1 || folds > PRESENT_MAX_FOLD) {
-            return;
+            return 0;
         }
         if (fabs(delta - folds * ref_us) >= ref_us / 4) {
-            return;
+            return 0;
         }
     } else if (delta < 1e6 / 400.0 || delta > 1e6 / 20.0) {
-        return;
+        return 0;
     }
 
     if (pres.num_samples >= MAX_VSYNC_SAMPLES) {
@@ -257,6 +269,28 @@ static void feedback_sample(int64_t done_us, int blocked) {
     if (pres.interval_us > 0) {
         pres.jitter = vsync_stddev(pres.interval_us) / pres.interval_us;
     }
+
+    return 1;
+}
+
+static void feedback_sample(int64_t done_us, int blocked) {
+    int64_t prev_done = pres.last_done_us;
+    int64_t prev_blocked = pres.last_blocked_done_us;
+
+    if (done_us <= 0) {
+        return;
+    }
+    pres.last_done_us = done_us;
+    if (blocked) {
+        pres.last_blocked_done_us = done_us;
+    }
+
+    if (refresh_sample(done_us, blocked, prev_done, prev_blocked)) {
+        pres.num_unusable = 0;
+        pres.unsynced = 0;
+    } else {
+        note_unusable();
+    }
 }
 
 static void switch_source(int source) {
@@ -264,6 +298,7 @@ static void switch_source(int source) {
         return;
     }
     pres.source = source;
+    pres.noted_unsynced = 0;
     if (source == PRESENT_SOURCE_SWAP) {
         present_set_refresh_interval(0);
     }
@@ -297,8 +332,20 @@ int64_t present_last_done_us(void) {
     return pres.last_present_us;
 }
 
+static double phase_anchor(double now_sec) {
+    double anchor;
+
+    if (pres.snap_disabled || pres.last_blocked_done_us <= 0) {
+        return NAN;
+    }
+    anchor = pres.last_blocked_done_us / 1e6;
+
+    return now_sec - anchor > PRESENT_ANCHOR_STALE_US / 1e6 ? NAN : anchor;
+}
+
 double present_next_vsync(double now_sec, int *phase_locked) {
     double vsync = present_vsync_sec();
+    double anchor;
 
     if (phase_locked) {
         *phase_locked = 0;
@@ -307,15 +354,12 @@ double present_next_vsync(double now_sec, int *phase_locked) {
         return NAN;
     }
 
-    if (!pres.snap_disabled && pres.last_blocked_done_us > 0) {
-        double anchor = pres.last_blocked_done_us / 1e6;
-
-        if (now_sec - anchor <= PRESENT_ANCHOR_STALE_US / 1e6) {
-            if (phase_locked) {
-                *phase_locked = 1;
-            }
-            return anchor + (floor((now_sec - anchor) / vsync) + 1) * vsync;
+    anchor = phase_anchor(now_sec);
+    if (!isnan(anchor)) {
+        if (phase_locked) {
+            *phase_locked = 1;
         }
+        return anchor + (floor((now_sec - anchor) / vsync) + 1) * vsync;
     }
 
     return now_sec + vsync;
@@ -323,20 +367,14 @@ double present_next_vsync(double now_sec, int *phase_locked) {
 
 double present_snap(double ideal_sec, double now_sec) {
     double vsync = present_vsync_sec();
+    double anchor = phase_anchor(now_sec);
+    double target;
 
-    if (pres.snap_disabled || vsync <= 0 || pres.last_blocked_done_us <= 0) {
-        return ideal_sec;
-    }
-    if (ideal_sec <= now_sec) {
-        return ideal_sec;
-    }
-
-    double anchor = pres.last_blocked_done_us / 1e6;
-    if (now_sec - anchor > PRESENT_ANCHOR_STALE_US / 1e6) {
+    if (vsync <= 0 || isnan(anchor) || ideal_sec <= now_sec) {
         return ideal_sec;
     }
 
-    double target = anchor + round((ideal_sec - anchor) / vsync) * vsync;
+    target = anchor + round((ideal_sec - anchor) / vsync) * vsync;
     if (target <= now_sec) {
         return ideal_sec;
     }
@@ -345,6 +383,8 @@ double present_snap(double ideal_sec, double now_sec) {
 }
 
 void present_get_stats(PresentStats *st) {
+    double now_sec = av_gettime_relative() / 1e6;
+
     memset(st, 0, sizeof(*st));
     st->nominal_hz = pres.nominal_us > 0 ? 1e6 / pres.nominal_us : 0;
     if (pres.estimated_us > 0 && enough_samples()) {
@@ -356,7 +396,8 @@ void present_get_stats(PresentStats *st) {
         : (int)pres.num_total_samples;
     st->jitter = pres.jitter;
     st->measuring = pres.use_estimated;
-    st->snapping = !pres.snap_disabled && pres.interval_us > 0;
+    st->unsynced = pres.unsynced;
+    st->snapping = pres.interval_us > 0 && !isnan(phase_anchor(now_sec));
     st->source = pres.source;
     st->driver_refresh = pres.driver_us > 0;
 }

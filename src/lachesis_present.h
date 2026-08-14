@@ -40,6 +40,7 @@ typedef struct PresentStats {
     int samples;
     int samples_needed;
     int measuring;
+    int unsynced;
     int snapping;
     int source;
     int driver_refresh;

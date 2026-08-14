@@ -308,6 +308,11 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
                      ps.nominal_hz, hz_from, ps.measured_hz,
                      ps.measuring ? ", in use" : "", ps.jitter * 100.0,
                      ps.snapping ? "" : ", snap off", feedback);
+        } else if (ps.unsynced) {
+            snprintf(disp_line, sizeof(disp_line),
+                     "Display: %.2f%s Hz (no usable feedback)%s%s",
+                     ps.nominal_hz, hz_from, ps.snapping ? "" : ", snap off",
+                     feedback);
         } else if (ps.samples > 0) {
             snprintf(disp_line, sizeof(disp_line),
                      "Display: %.2f%s Hz (measuring, %d/%d)%s%s", ps.nominal_hz,
