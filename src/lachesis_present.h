@@ -42,6 +42,7 @@ typedef struct PresentStats {
     int measuring;
     int unsynced;
     int snapping;
+    int locked;
     int source;
     int driver_refresh;
 } PresentStats;

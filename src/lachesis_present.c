@@ -47,6 +47,7 @@
 #define PRESENT_MAX_FOLD 8
 #define PRESENT_ANCHOR_STALE_US 1000000
 #define PRESENT_SYNC_GRACE 120
+#define PRESENT_SYNC_RECOVER 10
 
 static struct {
     double nominal_us;
@@ -65,6 +66,7 @@ static struct {
     int64_t last_present_us;
     int num_successive;
     int num_unusable;
+    int num_usable;
     int unsynced;
     int noted_unsynced;
 
@@ -191,6 +193,7 @@ void present_restore_snap(void) {
 void present_reset(void) {
     pres.num_successive = 0;
     pres.num_unusable = 0;
+    pres.num_usable = 0;
     pres.unsynced = 0;
     pres.last_done_us = 0;
     pres.last_blocked_done_us = 0;
@@ -204,6 +207,7 @@ void present_note_present(int64_t done_us) {
 }
 
 static void note_unusable(void) {
+    pres.num_usable = 0;
     if (pres.num_unusable >= PRESENT_SYNC_GRACE ||
         ++pres.num_unusable < PRESENT_SYNC_GRACE) {
         return;
@@ -216,6 +220,17 @@ static void note_unusable(void) {
                     "Using the reported rate.\n",
                     present_source_name(pres.source));
     }
+}
+
+static void note_usable(void) {
+    pres.num_unusable = 0;
+    if (pres.num_usable >= PRESENT_SYNC_RECOVER ||
+        ++pres.num_usable < PRESENT_SYNC_RECOVER) {
+        return;
+    }
+
+    pres.unsynced = 0;
+    pres.noted_unsynced = 0;
 }
 
 static int refresh_sample(int64_t done_us, int blocked, int64_t prev_done,
@@ -286,8 +301,7 @@ static void feedback_sample(int64_t done_us, int blocked) {
     }
 
     if (refresh_sample(done_us, blocked, prev_done, prev_blocked)) {
-        pres.num_unusable = 0;
-        pres.unsynced = 0;
+        note_usable();
     } else {
         note_unusable();
     }
@@ -336,6 +350,9 @@ static double phase_anchor(double now_sec) {
     double anchor;
 
     if (pres.snap_disabled || pres.last_blocked_done_us <= 0) {
+        return NAN;
+    }
+    if (pres.unsynced && pres.source == PRESENT_SOURCE_SWAP) {
         return NAN;
     }
     anchor = pres.last_blocked_done_us / 1e6;
@@ -397,7 +414,8 @@ void present_get_stats(PresentStats *st) {
     st->jitter = pres.jitter;
     st->measuring = pres.use_estimated;
     st->unsynced = pres.unsynced;
-    st->snapping = pres.interval_us > 0 && !isnan(phase_anchor(now_sec));
+    st->snapping = !pres.snap_disabled && pres.interval_us > 0;
+    st->locked = st->snapping && !isnan(phase_anchor(now_sec));
     st->source = pres.source;
     st->driver_refresh = pres.driver_us > 0;
 }
