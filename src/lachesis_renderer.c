@@ -26,6 +26,7 @@
 #include "lachesis_equalizer.h"
 #include "lachesis_icon.h"
 #include "lachesis_log.h"
+#include "lachesis_present.h"
 #include "lachesis_renderer.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
@@ -83,6 +84,8 @@
 #include <d3d10.h>
 #include <libavutil/hwcontext_d3d11va.h>
 #include <libplacebo/d3d11.h>
+
+#include "lachesis_present_d3d11.h"
 #endif
 
 #include <libavutil/bprint.h>
@@ -166,7 +169,6 @@ typedef struct RendererContext {
     int num_dev_extensions;
     const VkPhysicalDeviceFeatures2 *dev_features;
 
-    int present_timing_silent;
     const char **filtered_dev_exts;
 
     AVFrame *vk_frame;
@@ -192,6 +194,8 @@ typedef struct RendererContext {
     /* See build_pixfmt_list(). */
     enum AVPixelFormat *pixfmts;
     int num_pixfmts;
+
+    int present_timing_silent;
 
     int swapchain_stale;
     int swapchain_stale_w;
@@ -1509,9 +1513,16 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
 
 static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                                 AVDictionary *opt) {
+    const AVDictionaryEntry *entry;
     HWND hwnd;
     int software = force_software(opt);
+    int present_timing = 1;
     int w, h;
+
+    entry = av_dict_get(opt, "present_timing", NULL, 0);
+    if (entry && entry->value && !strtol(entry->value, NULL, 10)) {
+        present_timing = 0;
+    }
 
     hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
                                         SDL_PROP_WINDOW_WIN32_HWND_POINTER,
@@ -1554,6 +1565,10 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
 
     if (!pl_swapchain_resize(ctx->swapchain, &w, &h)) {
         return AVERROR_EXTERNAL;
+    }
+
+    if (present_timing) {
+        d3dpresent_attach(ctx->swapchain);
     }
 
     snprintf(ctx->api_name, sizeof(ctx->api_name), "Direct3D 11");
@@ -1739,6 +1754,7 @@ static bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
 }
 
 static void d3d11_backend_destroy(RendererContext *ctx) {
+    d3dpresent_shutdown();
     d3d11_drop_views(ctx);
     av_buffer_unref(&ctx->hw_device_ref);
     if (ctx->d3d11_multithread) {
@@ -2872,24 +2888,61 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
 #define LACHESIS_PRESENT_TIMING_GRACE 120
 
-static void collect_present_timing(RendererContext *ctx, RenderParams *params) {
+static void disable_present_timing(RendererContext *ctx) {
+    switch (ctx->api.backend) {
 #if LACHESIS_HAVE_VULKAN
-    VkPresentSample sample;
+    case RENDERER_API_VULKAN:
+        vkpresent_disable();
+        break;
+#endif
+#if LACHESIS_HAVE_D3D11
+    case RENDERER_API_D3D11:
+        d3dpresent_disable();
+        break;
+#endif
+    default:
+        break;
+    }
+}
 
-    if (ctx->api.backend != RENDERER_API_VULKAN) {
+static void collect_present_timing(RendererContext *ctx, RenderParams *params) {
+    int source = PRESENT_SOURCE_SWAP;
+    int polled = 0;
+
+#if LACHESIS_HAVE_VULKAN
+    if (ctx->api.backend == RENDERER_API_VULKAN) {
+        VkPresentSample sample;
+
+        source = vkpresent_source();
+        if (source != PRESENT_SOURCE_SWAP && vkpresent_poll(&sample)) {
+            source = sample.source;
+            params->present_display_us = sample.display_us;
+            params->present_refresh_us = sample.refresh_us;
+            polled = 1;
+        }
+    }
+#endif
+#if LACHESIS_HAVE_D3D11
+    if (ctx->api.backend == RENDERER_API_D3D11) {
+        D3DPresentSample sample;
+
+        source = d3dpresent_source();
+        if (source != PRESENT_SOURCE_SWAP && d3dpresent_poll(&sample)) {
+            source = sample.source;
+            params->present_display_us = sample.display_us;
+            params->present_refresh_us = sample.refresh_us;
+            polled = 1;
+        }
+    }
+#endif
+
+    params->present_source = source;
+    if (source == PRESENT_SOURCE_SWAP) {
         return;
     }
 
-    params->present_source = vkpresent_source();
-    if (params->present_source == PRESENT_SOURCE_SWAP) {
-        return;
-    }
-
-    if (vkpresent_poll(&sample)) {
+    if (polled) {
         ctx->present_timing_silent = 0;
-        params->present_source = sample.source;
-        params->present_display_us = sample.display_us;
-        params->present_refresh_us = sample.refresh_us;
         return;
     }
 
@@ -2897,13 +2950,9 @@ static void collect_present_timing(RendererContext *ctx, RenderParams *params) {
         log_warn("No presentation feedback after %d presents. Timing the swap "
                  "on the CPU instead.\n",
                  LACHESIS_PRESENT_TIMING_GRACE);
-        vkpresent_disable();
+        disable_present_timing(ctx);
         params->present_source = PRESENT_SOURCE_SWAP;
     }
-#else
-    (void)ctx;
-    (void)params;
-#endif
 }
 
 static void unmap_mix_slot(RendererContext *ctx, struct MixSlot *slot) {
@@ -3068,6 +3117,7 @@ static int swapchain_sync_size(RendererContext *ctx) {
     if (pl_swapchain_resize(ctx->swapchain, &w, &h)) {
         ctx->swapchain_stale = 0;
         ctx->swapchain_retry = 0;
+        ctx->present_timing_silent = 0;
         return 0;
     }
 
@@ -3461,6 +3511,7 @@ static int resize(Renderer *renderer, int width, int height) {
     }
     ctx->swapchain_stale = 0;
     ctx->swapchain_retry = 0;
+    ctx->present_timing_silent = 0;
 
     return 0;
 }

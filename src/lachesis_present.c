@@ -35,6 +35,10 @@
 #include <vulkan/vulkan.h>
 #endif
 
+#if LACHESIS_HAVE_D3D11
+#include "lachesis_present_d3d11.h"
+#endif
+
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -80,6 +84,8 @@ const char *present_source_name(int source) {
         return "present-wait";
     case PRESENT_SOURCE_DISPLAY_TIMING:
         return "display-timing";
+    case PRESENT_SOURCE_FRAME_STATISTICS:
+        return "frame-statistics";
     default:
         return "swap";
     }
@@ -1055,3 +1061,190 @@ void vkpresent_shutdown(void) {
 }
 
 #endif /* LACHESIS_HAVE_VULKAN */
+
+#if LACHESIS_HAVE_D3D11
+
+#define PRESENT_STATS_WINDOW 128u
+#define PRESENT_STATS_DEADBAND 0.0005
+
+static struct {
+    int attached;
+    int usable;
+
+    IDXGISwapChain *swapchain;
+    int64_t qpc_freq;
+
+    int have_last;
+    UINT last_sync_count;
+
+    int have_anchor;
+    UINT anchor_count;
+    int64_t anchor_qpc;
+    int have_prev;
+    UINT prev_count;
+    int64_t prev_qpc;
+
+    double refresh_us;
+} d3dp;
+
+static int64_t qpc_to_relative_us(int64_t qpc) {
+    LARGE_INTEGER now;
+    int64_t delta;
+    int64_t behind_us;
+
+    if (qpc <= 0 || d3dp.qpc_freq <= 0 || !QueryPerformanceCounter(&now)) {
+        return 0;
+    }
+
+    delta = now.QuadPart - qpc;
+    if (delta < -d3dp.qpc_freq || delta > d3dp.qpc_freq) {
+        return 0;
+    }
+
+    behind_us = delta * INT64_C(1000000) / d3dp.qpc_freq;
+    if (behind_us <= -1000) {
+        return 0;
+    }
+
+    return av_gettime_relative() - (behind_us > 0 ? behind_us : 0);
+}
+
+static void forget_refresh_window(void) {
+    d3dp.have_anchor = 0;
+    d3dp.have_prev = 0;
+    d3dp.refresh_us = 0;
+}
+
+static void note_refresh_window(UINT sync_count, int64_t qpc) {
+    double measured;
+    UINT span;
+
+    if (!d3dp.have_anchor) {
+        d3dp.anchor_count = sync_count;
+        d3dp.anchor_qpc = qpc;
+        d3dp.have_anchor = 1;
+        return;
+    }
+
+    if ((UINT)(sync_count - d3dp.anchor_count) >= PRESENT_STATS_WINDOW) {
+        d3dp.prev_count = d3dp.anchor_count;
+        d3dp.prev_qpc = d3dp.anchor_qpc;
+        d3dp.have_prev = 1;
+        d3dp.anchor_count = sync_count;
+        d3dp.anchor_qpc = qpc;
+    }
+
+    span = d3dp.have_prev ? (UINT)(sync_count - d3dp.prev_count) : 0;
+    if (span < PRESENT_STATS_WINDOW) {
+        return;
+    }
+
+    measured = (double)(qpc - d3dp.prev_qpc) * 1e6 /
+        ((double)d3dp.qpc_freq * span);
+    if (measured < 1e6 / 400.0 || measured > 1e6 / 20.0) {
+        forget_refresh_window();
+        return;
+    }
+
+    if (d3dp.refresh_us <= 0 ||
+        fabs(measured - d3dp.refresh_us) >
+            d3dp.refresh_us * PRESENT_STATS_DEADBAND) {
+        d3dp.refresh_us = measured;
+    }
+}
+
+void d3dpresent_attach(pl_swapchain swapchain) {
+    DXGI_SWAP_CHAIN_DESC desc;
+    LARGE_INTEGER freq;
+
+    if (d3dp.attached || !swapchain) {
+        return;
+    }
+    d3dp.attached = 1;
+
+    d3dp.swapchain = pl_d3d11_swapchain_unwrap(swapchain);
+    if (!d3dp.swapchain) {
+        return;
+    }
+
+    if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0) {
+        return;
+    }
+    d3dp.qpc_freq = freq.QuadPart;
+
+    if (FAILED(IDXGISwapChain_GetDesc(d3dp.swapchain, &desc))) {
+        return;
+    }
+
+    if (desc.Windowed && desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL &&
+        desc.SwapEffect != DXGI_SWAP_EFFECT_FLIP_DISCARD) {
+        return;
+    }
+
+    d3dp.usable = 1;
+    log_verbose("Presentation feedback via DXGI frame statistics.\n");
+}
+
+int d3dpresent_source(void) {
+    return d3dp.usable ? PRESENT_SOURCE_FRAME_STATISTICS : PRESENT_SOURCE_SWAP;
+}
+
+int d3dpresent_poll(D3DPresentSample *out) {
+    DXGI_FRAME_STATISTICS stats;
+    int64_t display_us;
+    HRESULT hr;
+
+    memset(out, 0, sizeof(*out));
+
+    if (!d3dp.usable) {
+        return 0;
+    }
+
+    hr = IDXGISwapChain_GetFrameStatistics(d3dp.swapchain, &stats);
+    if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT) {
+        d3dp.have_last = 0;
+        forget_refresh_window();
+        return 0;
+    }
+    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
+        hr == DXGI_ERROR_DEVICE_HUNG ||
+        hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR) {
+        d3dpresent_disable();
+        return 0;
+    }
+    if (FAILED(hr)) {
+        return 0;
+    }
+
+    if (d3dp.have_last && stats.SyncRefreshCount == d3dp.last_sync_count) {
+        return 0;
+    }
+
+    display_us = qpc_to_relative_us(stats.SyncQPCTime.QuadPart);
+    if (display_us <= 0) {
+        return 0;
+    }
+
+    note_refresh_window(stats.SyncRefreshCount, stats.SyncQPCTime.QuadPart);
+    d3dp.last_sync_count = stats.SyncRefreshCount;
+    d3dp.have_last = 1;
+
+    out->display_us = display_us;
+    out->refresh_us = d3dp.refresh_us;
+    out->source = PRESENT_SOURCE_FRAME_STATISTICS;
+
+    return 1;
+}
+
+void d3dpresent_disable(void) {
+    d3dp.usable = 0;
+}
+
+void d3dpresent_shutdown(void) {
+    if (d3dp.swapchain) {
+        IDXGISwapChain_Release(d3dp.swapchain);
+    }
+    memset(&d3dp, 0, sizeof(d3dp));
+}
+
+#endif /* LACHESIS_HAVE_D3D11 */

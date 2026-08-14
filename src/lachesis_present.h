@@ -29,6 +29,7 @@ enum PresentSource {
     PRESENT_SOURCE_SWAP = 0,
     PRESENT_SOURCE_PRESENT_WAIT,
     PRESENT_SOURCE_DISPLAY_TIMING,
+    PRESENT_SOURCE_FRAME_STATISTICS,
 };
 
 const char *present_source_name(int source);
