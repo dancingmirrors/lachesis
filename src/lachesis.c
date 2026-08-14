@@ -913,6 +913,7 @@ static void video_image_display(VideoState *is) {
     is->render_params.eq_brightness = eq.brightness;
     is->render_params.eq_gamma = eq.gamma;
     is->render_params.eq_contrast = eq.contrast;
+    is->render_params.eq_saturation = eq.saturation;
     deinterlace_prepare(is, vp);
 
     is->render_params.mix_num_frames =
@@ -1532,6 +1533,7 @@ static int video_display(VideoState *is) {
         is->render_params.eq_brightness = 0;
         is->render_params.eq_gamma = 0;
         is->render_params.eq_contrast = 0;
+        is->render_params.eq_saturation = 0;
         deinterlace_clear(is);
         renderer_display_blank(renderer, &is->render_params);
     }

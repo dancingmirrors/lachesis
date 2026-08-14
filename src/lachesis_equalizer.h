@@ -25,6 +25,7 @@ enum EqualizerControl {
     EQ_BRIGHTNESS,
     EQ_GAMMA,
     EQ_CONTRAST,
+    EQ_SATURATION,
     EQ_CONTROL_COUNT,
 };
 
@@ -35,6 +36,7 @@ typedef struct EqualizerValues {
     int brightness;
     int gamma;
     int contrast;
+    int saturation;
 } EqualizerValues;
 
 void equalizer_adjust(enum EqualizerControl control, int steps);
@@ -42,11 +44,12 @@ void equalizer_adjust(enum EqualizerControl control, int steps);
 EqualizerValues equalizer_get(void);
 
 static inline int equalizer_values_neutral(EqualizerValues v) {
-    return !v.brightness && !v.gamma && !v.contrast;
+    return !v.brightness && !v.gamma && !v.contrast && !v.saturation;
 }
 
 float equalizer_pl_brightness(int brightness);
 float equalizer_pl_contrast(int contrast);
 float equalizer_pl_gamma(int gamma);
+float equalizer_pl_saturation(int saturation);
 
 #endif /* LACHESIS_EQUALIZER_H */

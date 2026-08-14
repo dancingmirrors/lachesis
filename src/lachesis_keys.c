@@ -517,6 +517,8 @@ void event_loop(VideoState **pis) {
             do_seek:
                 seek_relative(cur_stream, incr);
                 break;
+            case SDLK_1:
+            case SDLK_2:
             case SDLK_3:
             case SDLK_4:
             case SDLK_5:
@@ -527,23 +529,29 @@ void event_loop(VideoState **pis) {
                     break;
                 }
                 switch (event.key.key) {
-                case SDLK_3:
+                case SDLK_1:
                     equalizer_adjust(EQ_BRIGHTNESS, -1);
                     break;
-                case SDLK_4:
+                case SDLK_2:
                     equalizer_adjust(EQ_BRIGHTNESS, 1);
                     break;
-                case SDLK_5:
+                case SDLK_3:
                     equalizer_adjust(EQ_GAMMA, -1);
                     break;
-                case SDLK_6:
+                case SDLK_4:
                     equalizer_adjust(EQ_GAMMA, 1);
                     break;
-                case SDLK_7:
+                case SDLK_5:
                     equalizer_adjust(EQ_CONTRAST, -1);
                     break;
-                case SDLK_8:
+                case SDLK_6:
                     equalizer_adjust(EQ_CONTRAST, 1);
+                    break;
+                case SDLK_7:
+                    equalizer_adjust(EQ_SATURATION, -1);
+                    break;
+                case SDLK_8:
+                    equalizer_adjust(EQ_SATURATION, 1);
                     break;
                 default:
                     break;

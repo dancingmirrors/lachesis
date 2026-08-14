@@ -3048,6 +3048,7 @@ static struct pl_color_adjustment equalizer_adjustment(const RenderParams *param
 
     adj.brightness = equalizer_pl_brightness(params->eq_brightness);
     adj.contrast = equalizer_pl_contrast(params->eq_contrast);
+    adj.saturation = equalizer_pl_saturation(params->eq_saturation);
     adj.gamma = equalizer_pl_gamma(params->eq_gamma);
 
     return adj;

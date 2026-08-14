@@ -45,6 +45,10 @@ float equalizer_pl_gamma(int gamma) {
     return (float)exp(log(8.0) * gamma / 100.0);
 }
 
+float equalizer_pl_saturation(int saturation) {
+    return (saturation + 100) / 100.0f;
+}
+
 void equalizer_adjust(enum EqualizerControl control, int steps) {
     const char *name;
     int *value;
@@ -61,6 +65,10 @@ void equalizer_adjust(enum EqualizerControl control, int steps) {
     case EQ_CONTRAST:
         name = "Contrast";
         value = &eq_values.contrast;
+        break;
+    case EQ_SATURATION:
+        name = "Saturation";
+        value = &eq_values.saturation;
         break;
     default:
         return;
