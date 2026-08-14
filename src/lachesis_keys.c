@@ -382,7 +382,7 @@ void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                     break;
                 }
-                [[fallthrough]];
+                __attribute__((fallthrough));
             case SDLK_SPACE:
                 toggle_pause(cur_stream);
                 osd_show_seek();
@@ -703,7 +703,7 @@ void event_loop(VideoState **pis) {
                     last_mouse_left_click = av_gettime_relative();
                 }
             }
-            [[fallthrough]];
+            __attribute__((fallthrough));
         case SDL_EVENT_MOUSE_MOTION:
             if (cursor_hidden) {
                 SDL_ShowCursor();
@@ -793,7 +793,7 @@ void event_loop(VideoState **pis) {
                 }
                 present_reset();
             }
-            [[fallthrough]];
+            __attribute__((fallthrough));
         case SDL_EVENT_WINDOW_EXPOSED:
         case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
             cur_stream->force_refresh = 1;
