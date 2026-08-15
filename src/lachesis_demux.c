@@ -113,7 +113,38 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
     return av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
 }
 
-static int create_hwaccel(AVBufferRef **device_ctx) {
+static int hwaccel_codec_allowed(enum AVCodecID codec_id) {
+    const char *list = hwaccel_codecs;
+    const char *name = avcodec_get_name(codec_id);
+    size_t name_len = strlen(name);
+    int allowed = 0;
+    int listed = 0;
+
+    if (!list) {
+        return 1;
+    }
+
+    for (const char *p = list; *p;) {
+        int exclude = *p == '-';
+        const char *entry = p + exclude;
+        size_t len = strcspn(entry, ",");
+
+        if ((len == 3 && !av_strncasecmp(entry, "all", 3)) ||
+            (len == name_len && !av_strncasecmp(entry, name, len))) {
+            if (exclude) {
+                return 0;
+            }
+            allowed = 1;
+        }
+        listed |= !exclude;
+        p = entry + len;
+        p += *p == ',';
+    }
+
+    return allowed || (!listed && *list);
+}
+
+static int create_hwaccel(AVBufferRef **device_ctx, enum AVCodecID codec_id) {
     static const char *auto_hwaccels_vk[] = {
         "vulkan", "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
     static const char *auto_hwaccels_other[] = {
@@ -127,6 +158,11 @@ static int create_hwaccel(AVBufferRef **device_ctx) {
     *device_ctx = NULL;
 
     if (no_hwaccel) {
+        return 0;
+    }
+
+    if (!hwaccel_codec_allowed(codec_id)) {
+        log_verbose("Not using hwaccel for %s.\n", avcodec_get_name(codec_id));
         return 0;
     }
 
@@ -322,7 +358,7 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        ret = create_hwaccel(&avctx->hw_device_ctx);
+        ret = create_hwaccel(&avctx->hw_device_ctx, avctx->codec_id);
         if (ret < 0) {
             goto fail;
         }

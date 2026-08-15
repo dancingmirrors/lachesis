@@ -107,6 +107,7 @@ int no_display_hdr = 0;
 char *video_background = NULL;
 const char *hwaccel = NULL;
 int no_hwaccel = 0;
+const char *hwaccel_codecs = NULL;
 int hwaccel_max_size = 0;
 int max_texture_size = 0;
 int video_unscaled = 0;
@@ -194,6 +195,74 @@ static int opt_supersample(void *optctx av_unused, const char *opt av_unused,
     }
 
     supersample_level = level;
+
+    return 0;
+}
+
+static int codec_name_known(const char *name) {
+    const AVCodecDescriptor *desc = NULL;
+
+    while ((desc = avcodec_descriptor_next(desc))) {
+        if (!av_strcasecmp(desc->name, name)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int opt_hwaccel_codecs(void *optctx av_unused, const char *opt,
+                              const char *arg) {
+    char *list = av_mallocz(strlen(arg) + 1);
+    const char *p = arg;
+    size_t len = 0;
+
+    if (!list) {
+        return AVERROR(ENOMEM);
+    }
+
+    while (*p) {
+        const char *entry = p + strspn(p, " \t");
+        size_t n = strcspn(entry, ",");
+        char name[64];
+        size_t skip;
+        int exclude;
+        int known;
+
+        p = entry + n;
+        p += *p == ',';
+        while (n && (entry[n - 1] == ' ' || entry[n - 1] == '\t')) {
+            n--;
+        }
+        if (!n) {
+            continue;
+        }
+
+        exclude = entry[0] == '-';
+        skip = exclude + strspn(entry + exclude, " \t");
+        if (n == skip) {
+            continue;
+        }
+
+        av_strlcpy(name, entry + skip, FFMIN(sizeof(name), n - skip + 1));
+        known = !av_strcasecmp(name, "all") || codec_name_known(name);
+        if (!known) {
+            log_warn("Unknown codec '%s' for -%s.\n", name, opt);
+        }
+
+        if (len) {
+            list[len++] = ',';
+        }
+        if (exclude) {
+            list[len++] = '-';
+        }
+        memcpy(list + len, entry + skip, n - skip);
+        len += n - skip;
+    }
+    list[len] = '\0';
+
+    av_freep(&hwaccel_codecs);
+    hwaccel_codecs = list;
 
     return 0;
 }
@@ -308,6 +377,7 @@ const OptionDef options[] = {
     {"video_bg", OPT_TYPE_STRING, 0, {&video_background}, "set the video background for transparent content (none, tiles, or a color)", "color"},
     {"hwaccel", OPT_TYPE_STRING, 0, {&hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none", "method"},
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},
+    {"hwaccel-codecs", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel_codecs}, "a list of codecs allowed to use hwaccel separated by ',', or all, with '-' before a name to exclude it (default all)", "codecs"},
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
     {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
     {"video_unscaled", OPT_TYPE_BOOL, 0, {&video_unscaled}, "scale video to fill the window"},

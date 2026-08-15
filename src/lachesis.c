@@ -1167,6 +1167,7 @@ static void uninit_opts(void) {
     av_freep(&audio_codec_name);
     av_freep(&subtitle_codec_name);
     av_freep(&hwaccel);
+    av_freep(&hwaccel_codecs);
     av_freep(&afilters_opt);
     av_freep(&audio_spdif_opt);
     av_freep(&gpu_api_name);
