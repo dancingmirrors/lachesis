@@ -509,14 +509,11 @@ static const char *opt_implied_value(const OptionDef *po, const char *arg) {
 }
 
 static int opt_wants_next(const OptionDef *po, const char *next) {
-    if (!opt_has_arg(po)) {
+    if (!opt_has_arg(po) || !next) {
         return 0;
     }
     if (!(po->flags & OPT_ARG_OPTIONAL)) {
         return 1;
-    }
-    if (!next) {
-        return 0;
     }
 
     return config_parse_bool(next) >= 0 || (po->is_value && po->is_value(next));
