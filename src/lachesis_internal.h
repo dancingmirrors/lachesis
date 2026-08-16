@@ -226,6 +226,8 @@ typedef struct VideoState {
     int frame_drops_late;
     int decode_behind_streak;
     int decode_recover_streak;
+    double decode_span_pts;
+    int decode_span_serial;
     int decode_degraded;
     int degraded_warned;
     int64_t last_catchup_us;

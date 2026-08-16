@@ -358,6 +358,15 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+        if (fast) {
+            avctx->flags2 |= AV_CODEC_FLAG2_FAST;
+        }
+        if (is->decode_degraded) {
+            apply_degraded_decode(avctx);
+        }
+    }
+
+    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
         ret = create_hwaccel(&avctx->hw_device_ctx, avctx->codec_id);
         if (ret < 0) {
             goto fail;
@@ -450,10 +459,6 @@ static int component_open(VideoState *is, int stream_index) {
     case AVMEDIA_TYPE_VIDEO:
         is->video_stream = stream_index;
         is->video_st = ic->streams[stream_index];
-
-        if (is->decode_degraded) {
-            apply_degraded_decode(avctx);
-        }
 
         if ((ret = decoder_init(&is->viddec, avctx, &is->videoq, is->continue_read_thread)) < 0) {
             goto fail;
