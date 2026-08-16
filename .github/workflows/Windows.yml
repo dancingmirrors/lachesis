@@ -44,7 +44,6 @@ jobs:
             mingw-w64-x86_64-pkg-config
             mingw-w64-x86_64-sdl3
             mingw-w64-x86_64-libarchive
-            mingw-w64-x86_64-zlib
             mingw-w64-x86_64-shaderc
             mingw-w64-x86_64-spirv-headers
             mingw-w64-x86_64-vulkan-headers

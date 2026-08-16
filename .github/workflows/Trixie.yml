@@ -52,8 +52,7 @@ jobs:
           apt-get install -y libavcodec-dev libavdevice-dev libavfilter-dev \
                              libavformat-dev libavutil-dev libswresample-dev \
                              libswscale-dev
-          apt-get install -y libplacebo-dev libarchive-dev zlib1g-dev \
-                             libvulkan-dev
+          apt-get install -y libplacebo-dev libarchive-dev libvulkan-dev
           apt-get install -y ffmpeg mesa-vulkan-drivers libgl1-mesa-dri \
                              libegl-mesa0 vulkan-tools xauth xvfb
 
@@ -124,7 +123,6 @@ jobs:
           atleast libplacebo    7.349.0
           atleast libarchive    3.4.0
 
-          printf '%-14s %s\n' zlib   "$(pkg-config --modversion zlib)"
           printf '%-14s %s\n' vulkan "$(pkg-config --modversion vulkan)"
 
           exit $fail

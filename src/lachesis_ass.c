@@ -23,12 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include <zlib.h>
-
 #include <libavutil/macros.h>
-#include <libavutil/mem.h>
 
-#include "lachesis_alloc.h"
 #include "lachesis_ass.h"
 #include "lachesis_log.h"
 #include "lachesis_osd_emoji_font.h"
@@ -55,31 +51,6 @@ static void lass_message_cb(int level, const char *fmt, va_list va, void *data) 
     }
 }
 
-static unsigned char *lass_emoji_buf;
-static int lass_emoji_refs;
-
-static void lass_add_emoji_font(ASS_Library *lib) {
-    if (!lass_emoji_buf) {
-        uLongf len = osd_emoji_font_size;
-        unsigned char *buf = av_malloc(len);
-
-        if (!buf) {
-            return;
-        }
-        if (uncompress(buf, &len, osd_emoji_font_deflate,
-                       osd_emoji_font_deflate_size) != Z_OK ||
-            len != osd_emoji_font_size) {
-            av_free(buf);
-            return;
-        }
-        lass_emoji_buf = buf;
-    }
-
-    ass_add_font(lib, "NotoEmoji", (const char *)lass_emoji_buf,
-                 (int)osd_emoji_font_size);
-    lass_emoji_refs++;
-}
-
 ASS_Library *lass_library_new(int extract_fonts) {
     ASS_Library *lib = ass_library_init();
 
@@ -95,7 +66,8 @@ ASS_Library *lass_library_new(int extract_fonts) {
                  (int)osd_ui_font_data_size);
     ass_add_font(lib, "lachesis-osd-symbols", (const char *)osd_font_data,
                  (int)osd_font_size);
-    lass_add_emoji_font(lib);
+    ass_add_font(lib, "NotoEmoji", (const char *)osd_emoji_font_data,
+                 (int)osd_emoji_font_size);
 
     return lib;
 }
@@ -103,9 +75,6 @@ ASS_Library *lass_library_new(int extract_fonts) {
 void lass_library_free(ASS_Library *lib) {
     if (lib) {
         ass_library_done(lib);
-        if (lass_emoji_refs > 0 && --lass_emoji_refs == 0) {
-            av_freep(&lass_emoji_buf);
-        }
     }
 }
 

@@ -33,7 +33,7 @@ jobs:
             done
 
             /usr/sbin/pkg_add MesaLib cmake ffmpeg8 git-base libarchive libass \
-            meson ninja-build pkgconf python313 zlib
+            meson ninja-build pkgconf python313
 
             ln -sf /usr/pkg/bin/python3.13 /usr/pkg/bin/python3
             export PATH="/usr/pkg/bin:$PATH"
@@ -64,7 +64,7 @@ jobs:
             export LDFLAGS="-Wl,-rpath,/usr/local/lib -Wl,-rpath,/usr/pkg/lib/ffmpeg8 -Wl,-rpath,/usr/pkg/lib"
             export LACHESIS_LEAK_REPORT=full
 
-            pkg-config --modversion libavutil libplacebo libarchive libass sdl3 zlib
+            pkg-config --modversion libavutil libplacebo libarchive libass sdl3
 
             CFLAGS="-Werror" ./configure || { cat build/config.log; exit 1; }
             ninja -v -C build
