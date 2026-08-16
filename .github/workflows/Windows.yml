@@ -80,7 +80,7 @@ jobs:
         run: |
           set -ex
 
-          export LACHESIS_LEAK_REPORT=full
+          export LACHESIS_LEAK_REPORT=1
 
           CFLAGS="-Werror" ./configure
 

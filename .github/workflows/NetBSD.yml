@@ -62,7 +62,7 @@ jobs:
             export PATH="/usr/pkg/bin:$PATH"
             export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/pkg/lib/ffmpeg8/pkgconfig:/usr/pkg/lib/pkgconfig:/usr/pkg/share/pkgconfig:/usr/X11R7/lib/pkgconfig
             export LDFLAGS="-Wl,-rpath,/usr/local/lib -Wl,-rpath,/usr/pkg/lib/ffmpeg8 -Wl,-rpath,/usr/pkg/lib"
-            export LACHESIS_LEAK_REPORT=full
+            export LACHESIS_LEAK_REPORT=1
 
             pkg-config --modversion libavutil libplacebo libarchive libass sdl3
 

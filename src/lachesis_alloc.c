@@ -57,7 +57,6 @@ static uint64_t alloc_live_bytes;
 static uint64_t alloc_peak_bytes;
 static uint64_t alloc_total;
 static int alloc_enabled;
-static int alloc_verbose;
 static int alloc_reported;
 static int alloc_sdl_baseline = -1;
 static int alloc_lost;
@@ -239,32 +238,39 @@ void alloc_track_disown(const void *ptr) {
     alloc_forget(ptr);
 }
 
-void alloc_track_init(void) {
-    const char *env = getenv("LACHESIS_LEAK_REPORT");
+static int alloc_env_off(const char *env) {
+    static const char *const no[] = {"0", "no", "false", "off", "disable", "disabled"};
 
-    if (!env || !*env || !strcmp(env, "0") || !strcmp(env, "no") ||
-        !strcmp(env, "off") || !strcmp(env, "false")) {
+    if (!env || !*env) {
+        return 1;
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(no); i++) {
+        if (!av_strcasecmp(env, no[i])) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+void alloc_track_init(void) {
+    if (alloc_env_off(getenv("LACHESIS_LEAK_REPORT"))) {
         return;
     }
 
     alloc_mutex = SDL_CreateMutex();
     if (!alloc_mutex) {
-        fprintf(stderr, "LEAK: Unable to create the tracking mutex because leak reporting is off.\n");
         return;
     }
 
-    alloc_sdl_baseline = SDL_GetNumAllocations();
-
-    alloc_verbose = !strcmp(env, "full");
-    alloc_enabled = 1;
-
     if (atexit(alloc_track_report) != 0) {
-        fprintf(stderr, "LEAK: Unable to register the report because leak reporting is off.\n");
-        alloc_enabled = 0;
         SDL_DestroyMutex(alloc_mutex);
         alloc_mutex = NULL;
         return;
     }
+
+    alloc_sdl_baseline = SDL_GetNumAllocations();
+    alloc_enabled = 1;
 }
 
 static const char *alloc_trim(const char *loc) {
@@ -393,8 +399,7 @@ void alloc_track_report(void) {
     alloc_human(total, sizeof(total), alloc_live_bytes);
     alloc_human(peak, sizeof(peak), alloc_peak_bytes);
 
-    if (!alloc_live) {
-    } else {
+    if (alloc_live) {
         fprintf(stderr, "LEAK: %zu allocations amounting to %s were never freed "
                         "(%" PRIu64 " allocations, peak %s):\n",
                 alloc_live, total, alloc_total, peak);
@@ -417,7 +422,7 @@ void alloc_track_report(void) {
             fprintf(stderr, "LEAK: out of memory while building the report.\n");
         }
 
-        if (blocks && alloc_verbose) {
+        if (blocks) {
             qsort(blocks, count, sizeof(*blocks), alloc_cmp_block);
             fprintf(stderr, "LEAK: Outstanding blocks:\n");
             for (size_t i = 0; i < count; i++) {
