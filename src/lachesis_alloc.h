@@ -30,6 +30,8 @@
 void alloc_track_init(void);
 void alloc_track_report(void);
 
+void alloc_track_complete(void);
+
 /* Safe to call when tracking is off, on a NULL pointer, or on a pointer that
  * was never tracked. */
 void alloc_track_disown(const void *ptr);

@@ -58,8 +58,8 @@ static uint64_t alloc_peak_bytes;
 static uint64_t alloc_total;
 static int alloc_enabled;
 static int alloc_reported;
-static int alloc_sdl_baseline = -1;
 static int alloc_lost;
+static int alloc_completed;
 
 static size_t alloc_hash(const void *ptr) {
     uint64_t x = (uint64_t)(uintptr_t)ptr;
@@ -168,7 +168,7 @@ static int alloc_reserve(void) {
     return 1;
 }
 
-static void alloc_remember(const void *ptr, size_t size, const char *loc) {
+static void alloc_insert(const void *ptr, size_t size, const char *loc, int fresh) {
     struct alloc_entry *e;
 
     if (!alloc_enabled || !ptr) {
@@ -204,7 +204,9 @@ static void alloc_remember(const void *ptr, size_t size, const char *loc) {
     e->loc = loc;
 
     alloc_live_bytes += size;
-    alloc_total++;
+    if (fresh) {
+        alloc_total++;
+    }
     if (alloc_live_bytes > alloc_peak_bytes) {
         alloc_peak_bytes = alloc_live_bytes;
     }
@@ -212,17 +214,23 @@ static void alloc_remember(const void *ptr, size_t size, const char *loc) {
     SDL_UnlockMutex(alloc_mutex);
 }
 
-static void alloc_forget(const void *ptr) {
+static void alloc_remember(const void *ptr, size_t size, const char *loc) {
+    alloc_insert(ptr, size, loc, 1);
+}
+
+static struct alloc_entry alloc_release(const void *ptr) {
+    struct alloc_entry old = {0};
     struct alloc_entry *e;
 
     if (!alloc_enabled || !ptr) {
-        return;
+        return old;
     }
 
     SDL_LockMutex(alloc_mutex);
 
     e = alloc_cap ? alloc_find(ptr) : NULL;
     if (e) {
+        old = *e;
         alloc_live_bytes -= e->size;
         alloc_live--;
         alloc_dead++;
@@ -232,6 +240,16 @@ static void alloc_forget(const void *ptr) {
     }
 
     SDL_UnlockMutex(alloc_mutex);
+
+    return old;
+}
+
+static void alloc_return(const struct alloc_entry *old) {
+    alloc_insert(old->ptr, old->size, old->loc, 0);
+}
+
+static void alloc_forget(const void *ptr) {
+    alloc_release(ptr);
 }
 
 void alloc_track_disown(const void *ptr) {
@@ -269,8 +287,11 @@ void alloc_track_init(void) {
         return;
     }
 
-    alloc_sdl_baseline = SDL_GetNumAllocations();
     alloc_enabled = 1;
+}
+
+void alloc_track_complete(void) {
+    alloc_completed = 1;
 }
 
 static const char *alloc_trim(const char *loc) {
@@ -364,10 +385,12 @@ static struct alloc_site *alloc_group(const struct alloc_entry *blocks, size_t c
         return NULL;
     }
     for (size_t i = 0; i < count; i++) {
+        const char *loc = blocks[i].loc;
         size_t s;
 
         for (s = 0; s < n; s++) {
-            if (sites[s].loc == blocks[i].loc || !strcmp(sites[s].loc, blocks[i].loc)) {
+            if (sites[s].loc == loc ||
+                (sites[s].loc && loc && !strcmp(sites[s].loc, loc))) {
                 break;
             }
         }
@@ -385,26 +408,42 @@ static struct alloc_site *alloc_group(const struct alloc_entry *blocks, size_t c
 void alloc_track_report(void) {
     struct alloc_entry *blocks = NULL;
     struct alloc_site *sites = NULL;
-    size_t count = 0, nsites = 0;
+    size_t count = 0, nsites = 0, live;
+    uint64_t nallocs;
     char total[32], peak[32];
-    int sdl_live;
+    int lost, completed;
 
-    if (!alloc_enabled || alloc_reported) {
+    if (!alloc_enabled) {
+        return;
+    }
+
+    SDL_LockMutex(alloc_mutex);
+    if (alloc_reported) {
+        SDL_UnlockMutex(alloc_mutex);
         return;
     }
     alloc_reported = 1;
-
-    SDL_LockMutex(alloc_mutex);
-
+    live = alloc_live;
+    nallocs = alloc_total;
+    lost = alloc_lost;
+    completed = alloc_completed;
     alloc_human(total, sizeof(total), alloc_live_bytes);
     alloc_human(peak, sizeof(peak), alloc_peak_bytes);
+    if (live) {
+        blocks = alloc_snapshot(&count);
+    }
+    SDL_UnlockMutex(alloc_mutex);
 
-    if (alloc_live) {
+    if (live) {
         fprintf(stderr, "LEAK: %zu allocations amounting to %s were never freed "
                         "(%" PRIu64 " allocations, peak %s):\n",
-                alloc_live, total, alloc_total, peak);
+                live, total, nallocs, peak);
 
-        blocks = alloc_snapshot(&count);
+        if (!completed) {
+            fprintf(stderr, "LEAK: the teardown did not finish "
+                            "so this is an overcount.\n");
+        }
+
         if (blocks) {
             sites = alloc_group(blocks, count, &nsites);
         }
@@ -436,17 +475,9 @@ void alloc_track_report(void) {
         free(blocks);
     }
 
-    if (alloc_lost) {
+    if (lost) {
         fprintf(stderr, "LEAK: the tracking table ran out of memory "
                         "so this is an undercount.\n");
-    }
-
-    SDL_UnlockMutex(alloc_mutex);
-
-    sdl_live = SDL_GetNumAllocations();
-    if (sdl_live > 0 && alloc_sdl_baseline >= 0 && sdl_live > alloc_sdl_baseline) {
-        fprintf(stderr, "LEAK: SDL reports %d outstanding allocations of its own.\n",
-                sdl_live - alloc_sdl_baseline);
     }
 
     fflush(stderr);
@@ -485,49 +516,55 @@ void *alloc_wrap_calloc(size_t nmemb, size_t size, const char *loc) {
 }
 
 void *alloc_wrap_realloc(void *ptr, size_t size, const char *loc) {
+    struct alloc_entry old = alloc_release(ptr);
     void *ret = av_realloc(ptr, size);
 
-    if (!ret) {
+    if (!ret && size) {
+        alloc_return(&old);
         return ret;
     }
-    alloc_forget(ptr);
     alloc_remember(ret, size, loc);
 
     return ret;
 }
 
 void *alloc_wrap_realloc_f(void *ptr, size_t nelem, size_t elsize, const char *loc) {
-    void *ret = av_realloc_f(ptr, nelem, elsize);
+    void *ret;
 
+    /* This one frees ptr even when it fails. */
     alloc_forget(ptr);
+    ret = av_realloc_f(ptr, nelem, elsize);
     alloc_remember(ret, alloc_mul(nelem, elsize), loc);
 
     return ret;
 }
 
 void *alloc_wrap_realloc_array(void *ptr, size_t nmemb, size_t size, const char *loc) {
+    struct alloc_entry old = alloc_release(ptr);
     void *ret = av_realloc_array(ptr, nmemb, size);
 
-    if (!ret) {
+    if (!ret && nmemb && size) {
+        alloc_return(&old);
         return ret;
     }
-    alloc_forget(ptr);
     alloc_remember(ret, alloc_mul(nmemb, size), loc);
 
     return ret;
 }
 
 void *alloc_wrap_fast_realloc(void *ptr, unsigned int *size, size_t min_size, const char *loc) {
+    struct alloc_entry old;
     void *ret;
 
     if (!alloc_enabled || min_size <= *size) {
         return av_fast_realloc(ptr, size, min_size);
     }
+    old = alloc_release(ptr);
     ret = av_fast_realloc(ptr, size, min_size);
     if (!ret) {
+        alloc_return(&old);
         return ret;
     }
-    alloc_forget(ptr);
     alloc_remember(ret, *size, loc);
 
     return ret;
@@ -541,9 +578,9 @@ int alloc_wrap_reallocp(void *ptr, size_t size, const char *loc) {
         return av_reallocp(ptr, size);
     }
     memcpy(&before, ptr, sizeof(before));
+    alloc_forget(before);
     ret = av_reallocp(ptr, size);
     memcpy(&after, ptr, sizeof(after));
-    alloc_forget(before);
     alloc_remember(after, size, loc);
 
     return ret;
@@ -557,9 +594,9 @@ int alloc_wrap_reallocp_array(void *ptr, size_t nmemb, size_t size, const char *
         return av_reallocp_array(ptr, nmemb, size);
     }
     memcpy(&before, ptr, sizeof(before));
+    alloc_forget(before);
     ret = av_reallocp_array(ptr, nmemb, size);
     memcpy(&after, ptr, sizeof(after));
-    alloc_forget(before);
     alloc_remember(after, alloc_mul(nmemb, size), loc);
 
     return ret;
@@ -573,9 +610,9 @@ void alloc_wrap_fast_malloc(void *ptr, unsigned int *size, size_t min_size, cons
         return;
     }
     memcpy(&before, ptr, sizeof(before));
+    alloc_forget(before);
     av_fast_malloc(ptr, size, min_size);
     memcpy(&after, ptr, sizeof(after));
-    alloc_forget(before);
     alloc_remember(after, *size, loc);
 }
 
@@ -587,9 +624,9 @@ void alloc_wrap_fast_mallocz(void *ptr, unsigned int *size, size_t min_size, con
         return;
     }
     memcpy(&before, ptr, sizeof(before));
+    alloc_forget(before);
     av_fast_mallocz(ptr, size, min_size);
     memcpy(&after, ptr, sizeof(after));
-    alloc_forget(before);
     alloc_remember(after, *size, loc);
 }
 

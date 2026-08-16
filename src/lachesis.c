@@ -183,6 +183,10 @@ static void win32_argv_to_utf8(int *argc_p, char ***argv_p) {
         WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, uargv[i], n, NULL, NULL);
     }
     LocalFree(wargv);
+    for (int i = 0; i < wargc; i++) {
+        alloc_track_disown(uargv[i]);
+    }
+    alloc_track_disown(uargv);
     *argc_p = wargc;
     *argv_p = uargv;
     return;
@@ -1192,7 +1196,14 @@ static void uninit_opts(void) {
     n_pending_dirs = 0;
 }
 
+static volatile sig_atomic_t quit_signal;
+static volatile sig_atomic_t quit_signal_polled;
+
 av_noreturn void do_exit(VideoState *is) {
+    int status = quit_signal ? 123 : 0;
+
+    quit_signal_polled = 0;
+
     if (is) {
         stream_close(is);
     }
@@ -1205,19 +1216,24 @@ av_noreturn void do_exit(VideoState *is) {
     }
     if (reader_abandoned) {
         terminal_restore_now();
-        _Exit(0);
+        alloc_track_report();
+        _Exit(status);
     }
     uninit_opts();
     avformat_network_deinit();
     subtitles_uninit();
     osd_uninit();
     SDL_Quit();
-    exit(0);
+    alloc_track_complete();
+    exit(status);
 }
 
-static void sigterm_handler(int sig av_unused) {
-    terminal_restore_now();
-    _Exit(123);
+static void sigterm_handler(int sig) {
+    if (!quit_signal_polled || quit_signal) {
+        terminal_restore_now();
+        _Exit(123);
+    }
+    quit_signal = sig;
 }
 
 static float window_points_scale(void) {
@@ -3254,10 +3270,19 @@ void toggle_fullscreen(VideoState *is) {
     present_reset();
 }
 
+static void input_poll(VideoState *is) {
+    terminal_input_poll();
+    if (quit_signal) {
+        do_exit(is);
+    }
+}
+
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
+
+    quit_signal_polled = 1;
     SDL_PumpEvents();
-    terminal_input_poll();
+    input_poll(is);
     while (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) <= 0) {
         if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
             SDL_HideCursor();
@@ -3283,7 +3308,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             video_refresh(is, &remaining_time);
         }
         SDL_PumpEvents();
-        terminal_input_poll();
+        input_poll(is);
     }
 }
 
@@ -3527,12 +3552,12 @@ int main(int argc, char **argv) {
     int flags, ret;
     VideoState *is;
 
+    alloc_track_init();
+
 #if defined(_WIN32)
     win32_attach_console();
     win32_argv_to_utf8(&argc, &argv);
 #endif
-
-    alloc_track_init();
 
     terminal_output_init();
     init_dynload();
@@ -3560,6 +3585,7 @@ int main(int argc, char **argv) {
     ret = parse_options(NULL, argc, argv, options, opt_input_file);
     if (ret < 0) {
         uninit_opts();
+        alloc_track_complete();
         exit(ret == AVERROR_EXIT ? 0 : 1);
     }
 
