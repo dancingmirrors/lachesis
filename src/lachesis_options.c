@@ -41,8 +41,10 @@
 #include <libavutil/avassert.h>
 #include <libavutil/avstring.h>
 #include <libavutil/avutil.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/eval.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/log.h>
 #include <libavutil/mem.h>
 #include <libavutil/parseutils.h>
@@ -198,6 +200,181 @@ static int opt_supersample(void *optctx av_unused, const char *opt av_unused,
     supersample_level = level;
 
     return 0;
+}
+
+static int store_string(const char **dst, const char *arg) {
+    char *str = av_strdup(arg);
+
+    if (!str) {
+        return AVERROR(ENOMEM);
+    }
+    av_freep(dst);
+    *dst = str;
+
+    return 0;
+}
+
+static int opt_vulkan_swap_mode(void *optctx av_unused, const char *opt av_unused,
+                                const char *arg) {
+    static const char *const modes[] = {"fifo", "fifo-relaxed", "mailbox",
+                                        "immediate"};
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(modes); i++) {
+        if (!strcmp(arg, modes[i])) {
+            return store_string((const char **)&vulkan_swap_mode, arg);
+        }
+    }
+    av_log(NULL, AV_LOG_FATAL,
+           "-vulkan-swap-mode must be fifo, fifo-relaxed, mailbox, or immediate.\n");
+
+    return AVERROR(EINVAL);
+}
+
+static const char *hwaccel_method_list(char *buf, size_t size) {
+    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
+
+    buf[0] = '\0';
+    while ((type = av_hwdevice_iterate_types(type)) != AV_HWDEVICE_TYPE_NONE) {
+        const char *name = av_hwdevice_get_type_name(type);
+        size_t len = strlen(buf);
+
+        if (!name) {
+            continue;
+        }
+        if (len && av_strlcat(buf, ", ", size) >= size) {
+            buf[len] = '\0';
+            return buf;
+        }
+        if (av_strlcat(buf, name, size) >= size) {
+            buf[len] = '\0';
+            return buf;
+        }
+    }
+
+    return buf;
+}
+
+static int hwaccel_off_name(const char *arg) {
+    return !strcmp(arg, "no") || !strcmp(arg, "none") || !strcmp(arg, "off") ||
+        !strcmp(arg, "0");
+}
+
+static int opt_hwaccel(void *optctx av_unused, const char *opt av_unused,
+                       const char *arg) {
+    char methods[256];
+    int ret;
+
+    if (hwaccel_off_name(arg)) {
+        av_freep(&hwaccel);
+        no_hwaccel = 1;
+        return 0;
+    }
+    if (av_hwdevice_find_type_by_name(arg) == AV_HWDEVICE_TYPE_NONE) {
+        hwaccel_method_list(methods, sizeof(methods));
+        av_log(NULL, AV_LOG_FATAL,
+               "Unknown hwaccel method '%s'! Available methods: %s.\n",
+               arg, *methods ? methods : "no others");
+        return AVERROR(EINVAL);
+    }
+
+    ret = store_string(&hwaccel, arg);
+    if (ret < 0) {
+        return ret;
+    }
+    no_hwaccel = 0;
+
+    return 0;
+}
+
+static int opt_decoder(const char **dst, enum AVMediaType type, const char *opt,
+                       const char *arg) {
+    const AVCodec *codec = avcodec_find_decoder_by_name(arg);
+    const char *decodes;
+
+    if (!codec) {
+        av_log(NULL, AV_LOG_FATAL, "Unknown decoder '%s' for -%s!\n", arg, opt);
+        return AVERROR(EINVAL);
+    }
+    if (codec->type != type) {
+        decodes = av_get_media_type_string(codec->type);
+        av_log(NULL, AV_LOG_FATAL, "The decoder '%s' for -%s decodes %s, not %s!\n",
+               arg, opt, decodes ? decodes : "something else",
+               av_get_media_type_string(type));
+        return AVERROR(EINVAL);
+    }
+
+    return store_string(dst, arg);
+}
+
+static int opt_vcodec(void *optctx av_unused, const char *opt, const char *arg) {
+    return opt_decoder(&video_codec_name, AVMEDIA_TYPE_VIDEO, opt, arg);
+}
+
+static int opt_acodec(void *optctx av_unused, const char *opt, const char *arg) {
+    return opt_decoder(&audio_codec_name, AVMEDIA_TYPE_AUDIO, opt, arg);
+}
+
+static int opt_scodec(void *optctx av_unused, const char *opt, const char *arg) {
+    return opt_decoder(&subtitle_codec_name, AVMEDIA_TYPE_SUBTITLE, opt, arg);
+}
+
+int parse_video_background(const char *value, uint8_t rgba[4]) {
+    if (!strcmp(value, "none")) {
+        return VIDEO_BACKGROUND_NONE;
+    }
+    if (!strcmp(value, "tiles")) {
+        return VIDEO_BACKGROUND_TILES;
+    }
+    /* Any other value is parsed as a color. */
+    if (av_parse_color(rgba, value, -1, NULL) < 0) {
+        return -1;
+    }
+
+    return VIDEO_BACKGROUND_COLOR;
+}
+
+static int opt_video_bg(void *optctx av_unused, const char *opt av_unused,
+                        const char *arg) {
+    uint8_t rgba[4];
+
+    if (parse_video_background(arg, rgba) < 0) {
+        av_log(NULL, AV_LOG_FATAL,
+               "-video_bg must be none, tiles, or a color.\n");
+        return AVERROR(EINVAL);
+    }
+
+    return store_string((const char **)&video_background, arg);
+}
+
+static int opt_icc_profile(void *optctx av_unused, const char *opt av_unused,
+                           const char *arg) {
+    FILE *f;
+
+    if (arg[0]) {
+        f = fopen(arg, "rb");
+        if (!f) {
+            av_log(NULL, AV_LOG_FATAL, "Failed to open the ICC profile '%s'!\n", arg);
+            return AVERROR(EINVAL);
+        }
+        fclose(f);
+    }
+
+    return store_string(&icc_profile, arg);
+}
+
+static int opt_gpu_params(void *optctx av_unused, const char *opt av_unused,
+                          const char *arg) {
+    AVDictionary *dict = NULL;
+    int ret = av_dict_parse_string(&dict, arg, "=", ":", 0);
+
+    av_dict_free(&dict);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_FATAL,
+               "-gpu-params must be key=value pairs separated by ':'.\n");
+        return AVERROR(EINVAL);
+    }
+
+    return store_string((const char **)&gpu_params, arg);
 }
 
 static int codec_name_known(const char *name) {
@@ -362,22 +539,22 @@ const OptionDef options[] = {
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
     {"audio-spdif", OPT_TYPE_STRING, OPT_ARG_OPTIONAL, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ',' (or implied all)", "codecs", "all", "", arg_is_spdif_codecs},
     {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match"},
-    {"acodec", OPT_TYPE_STRING, 0, {&audio_codec_name}, "force an audio decoder", "decoder_name"},
-    {"scodec", OPT_TYPE_STRING, 0, {&subtitle_codec_name}, "force a subtitle decoder", "decoder_name"},
+    {"acodec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_acodec}, "force an audio decoder", "decoder_name"},
+    {"scodec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_scodec}, "force a subtitle decoder", "decoder_name"},
     {"sub-offset", OPT_TYPE_TIME, 0, {&sub_offset}, "shift an external subtitle by this many seconds (0 keeps its own timestamps)", "seconds"},
-    {"vcodec", OPT_TYPE_STRING, 0, {&video_codec_name}, "force a video decoder", "decoder_name"},
+    {"vcodec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_vcodec}, "force a video decoder", "decoder_name"},
     {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation"},
     {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees (or implied 90)", "degrees", "90", "0", arg_is_number},
     {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl, d3d11)", "api"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
-    {"gpu-params", OPT_TYPE_STRING, 0, {&gpu_params}, "backend configuration using a list of key=value pairs separated by ':'", "params"},
-    {"vulkan-swap-mode", OPT_TYPE_STRING, 0, {&vulkan_swap_mode}, "present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
+    {"gpu-params", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_params}, "backend configuration using a list of key=value pairs separated by ':'", "params"},
+    {"vulkan-swap-mode", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_vulkan_swap_mode}, "present mode (fifo, fifo-relaxed, mailbox, immediate)", "mode"},
     {"max-glsl-version", OPT_TYPE_INT, 0, {&max_glsl_version}, "cap the GLSL version libplacebo targets (0 for no cap)", "version"},
-    {"icc-profile", OPT_TYPE_STRING, 0, {&icc_profile}, "ICC profile passed to libplacebo", "path"},
+    {"icc-profile", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_profile}, "ICC profile passed to libplacebo", "path"},
     {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises"},
     {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports"},
-    {"video_bg", OPT_TYPE_STRING, 0, {&video_background}, "set the video background for transparent content (none, tiles, or a color)", "color"},
-    {"hwaccel", OPT_TYPE_STRING, 0, {&hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none", "method"},
+    {"video_bg", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_video_bg}, "set the video background for transparent content (none, tiles, or a color)", "color"},
+    {"hwaccel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none, or off", "method"},
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},
     {"hwaccel-codecs", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel_codecs}, "a list of codecs allowed to use hwaccel separated by ',', or all, with '-' before a name to exclude it (default all)", "codecs"},
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},

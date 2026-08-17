@@ -821,6 +821,7 @@ void event_loop(VideoState **pis) {
                 break;
             }
             if (fatal_error_pending) {
+                exit_status = 1;
                 do_exit(*pis);
             }
             if (delete_confirm_pending) {

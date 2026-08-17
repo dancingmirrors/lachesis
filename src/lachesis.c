@@ -250,6 +250,7 @@ int64_t cursor_last_shown;
 int cursor_hidden = 0;
 int frame_interpolation = 0;
 int fatal_error_pending = 0;
+int exit_status = 0;
 enum View360Layout view360_layout = VIEW360_LAYOUT_OFF;
 float sbs360_yaw = 0.0f;
 float sbs360_pitch = VIEW360_DEFAULT_PITCH;
@@ -1200,7 +1201,7 @@ static volatile sig_atomic_t quit_signal;
 static volatile sig_atomic_t quit_signal_polled;
 
 av_noreturn void do_exit(VideoState *is) {
-    int status = quit_signal ? 123 : 0;
+    int status = quit_signal ? 123 : exit_status;
 
     quit_signal_polled = 0;
 
@@ -2933,16 +2934,11 @@ static VideoState *stream_open(const char *filename,
     is->start_playhead = NAN;
     exact_seek_cancel(is);
     if (video_background) {
-        if (!strcmp(video_background, "none")) {
-            is->render_params.video_background_type = VIDEO_BACKGROUND_NONE;
-        } else if (strcmp(video_background, "tiles")) {
-            /* Any other value is parsed as a color. */
-            if (av_parse_color(is->render_params.video_background_color, video_background, -1, NULL) >= 0) {
-                is->render_params.video_background_type = VIDEO_BACKGROUND_COLOR;
-            } else {
-                goto fail;
-            }
-        }
+        int type = parse_video_background(
+            video_background, is->render_params.video_background_color);
+
+        av_assert0(type >= 0);
+        is->render_params.video_background_type = type;
         is->render_params.video_background_explicit = 1;
     }
     int vol_max_pct = allow_volume_boost ? VOLUME_BOOST_MAX_PCT : 100;
@@ -3533,6 +3529,30 @@ static const char *audio_driver_list(char *buf, size_t size) {
     return buf;
 }
 
+static void validate_options(void) {
+    for (int i = 0; i < nb_vfilters; i++) {
+        if (check_filtergraph(vfilters_list[i]) < 0) {
+            fatal_quit("Invalid video filter \"%s\".\n", vfilters_list[i]);
+        }
+    }
+    if (check_filtergraph(afilters_opt) < 0) {
+        fatal_quit("Invalid audio filter \"%s\".\n", afilters_opt);
+    }
+    if (fps_convert < 0 || fps_convert > 480) {
+        fatal_quit("-r must be between 0 and 480.\n");
+    }
+    if (display_fps_override < 0 || display_fps_override > 1000) {
+        fatal_quit("-display-fps must be between 0 and 1000.\n");
+    }
+    if (enable_360sbs && enable_360tb) {
+        fatal_quit("-360-sbs and -360-tb are mutually exclusive.\n");
+    }
+    if (audio_spdif_opt && audio_spdif_opt[0] &&
+        !audio_spdif_names_known(audio_spdif_opt)) {
+        log_warn("Unknown S/PDIF codec '%s'.\n", audio_spdif_opt);
+    }
+}
+
 static void fatal_sdl_init(const char *subsystem) {
     char video[256];
     char audio[256];
@@ -3599,22 +3619,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    for (int i = 0; i < nb_vfilters; i++) {
-        if (check_filtergraph(vfilters_list[i]) < 0) {
-            fatal_quit("Invalid video filter \"%s\".\n",
-                       vfilters_list[i]);
-        }
-    }
-    if (check_filtergraph(afilters_opt) < 0) {
-        fatal_quit("Invalid audio filter \"%s\".\n",
-                   afilters_opt);
-    }
-    if (fps_convert < 0 || fps_convert > 480) {
-        fatal_quit("-r must be between 0 and 480.\n");
-    }
-    if (display_fps_override < 0 || display_fps_override > 1000) {
-        fatal_quit("-display-fps must be between 0 and 1000.\n");
-    }
+    validate_options();
 
     if (playlist_size == 0 && n_pending_dirs > 0) {
         playlist_add_directory(pending_dirs[0]);
@@ -3698,13 +3703,6 @@ int main(int argc, char **argv) {
     if (!display_disable) {
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
         init_default_window_size();
-        if (hwaccel && (!strcmp(hwaccel, "none") || !strcmp(hwaccel, "no") || !strcmp(hwaccel, "off") || !strcmp(hwaccel, "0"))) {
-            no_hwaccel = 1;
-            av_freep(&hwaccel);
-        }
-        if (enable_360sbs && enable_360tb) {
-            fatal_quit("-360-sbs and -360-tb are mutually exclusive.\n");
-        }
         if (enable_360sbs || enable_360tb) {
             view360_layout = enable_360tb ? VIEW360_LAYOUT_TB : VIEW360_LAYOUT_FULL;
             sbs360_reset_view();

@@ -200,20 +200,6 @@ int audio_spdif_active(void) {
     return spdif.active;
 }
 
-static void spdif_warn_unknown_names(void) {
-    static int warned;
-
-    if (warned || !audio_spdif_opt || !audio_spdif_opt[0]) {
-        return;
-    }
-    warned = 1;
-
-    if (!audio_spdif_names_known(audio_spdif_opt)) {
-        log_warn("Unknown S/PDIF codec '%s'.\n",
-                 audio_spdif_opt);
-    }
-}
-
 static void spdif_muxer_close(void) {
     if (spdif.muxer) {
         if (spdif.muxer->pb) {
@@ -1189,8 +1175,6 @@ int audio_spdif_open(VideoState *is, AVStream *st, int *hw_buf_size) {
     int want_hd;
     int buf_size;
     int ret;
-
-    spdif_warn_unknown_names();
 
     if (!spdif_selected(st->codecpar->codec_id, &want_hd)) {
         return 0;

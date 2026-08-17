@@ -160,6 +160,8 @@ extern int enable_360tb;
 extern int is_fullscreen;
 extern int start_windowed;
 
+int parse_video_background(const char *value, uint8_t rgba[4]);
+
 #define AUTOFIT_MIN 0.05
 #define AUTOFIT_MAX 10.0
 extern float autofit_larger;

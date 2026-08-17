@@ -441,6 +441,7 @@ extern float sbs360_pitch;
 extern float sbs360_roll;
 extern float sbs360_hfov;
 void sbs360_reset_view(void);
+
 extern int deinterlace;
 extern enum SupersampleLevel supersample_level;
 extern int frame_interpolation;
@@ -452,6 +453,7 @@ extern int default_height;
 extern int cursor_hidden;
 extern int64_t cursor_last_shown;
 extern int fatal_error_pending;
+extern int exit_status;
 
 int pipeline_setup_begin(VideoState *is);
 void pipeline_setup_end(VideoState *is);
