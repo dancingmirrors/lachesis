@@ -30,6 +30,8 @@
 
 extern int lachesis_quiet;
 
+void alloc_track_abort(void);
+
 void log_init(void);
 void log_interrupt_begin(int (*cb)(void *), void *ctx);
 void log_interrupt_end(void);
@@ -79,6 +81,7 @@ static av_unused av_printf_format(1, 2) void fatal_quit(const char *fmt, ...) {
     va_start(ap, fmt);
     log_vline("DEAD: ", fmt, ap);
     va_end(ap);
+    alloc_track_abort();
     exit(1);
 }
 

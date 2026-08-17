@@ -60,6 +60,7 @@ static int alloc_enabled;
 static int alloc_reported;
 static int alloc_lost;
 static int alloc_completed;
+static int alloc_aborted;
 
 static size_t alloc_hash(const void *ptr) {
     uint64_t x = (uint64_t)(uintptr_t)ptr;
@@ -294,6 +295,10 @@ void alloc_track_complete(void) {
     alloc_completed = 1;
 }
 
+void alloc_track_abort(void) {
+    alloc_aborted = 1;
+}
+
 static const char *alloc_trim(const char *loc) {
     const char *slash;
 
@@ -413,7 +418,7 @@ void alloc_track_report(void) {
     char total[32], peak[32];
     int lost, completed;
 
-    if (!alloc_enabled) {
+    if (!alloc_enabled || alloc_aborted) {
         return;
     }
 
