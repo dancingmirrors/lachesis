@@ -149,30 +149,31 @@ static char *parse_value(char *v) {
     return v;
 }
 
-static void apply_line(void *optctx, const OptionDef *defs, char *line,
-                       const char *path, int lineno) {
+static int apply_line(void *optctx, const OptionDef *defs, char *line,
+                      const char *path, int lineno) {
     char *s = trim(line);
     if (!*s || *s == '#') {
-        return;
+        return 0;
     }
 
     char *eq = strchr(s, '=');
     if (!eq) {
-        log_warn("%s:%d: expected 'key = value', ignoring.\n", path, lineno);
-        return;
+        log_dead("%s:%d: expected 'key = value'.\n", path, lineno);
+        return AVERROR(EINVAL);
     }
     *eq = '\0';
 
     char *key = trim(s);
     if (!*key) {
-        log_warn("%s:%d: missing option name, ignoring.\n", path, lineno);
-        return;
+        log_dead("%s:%d: missing option name.\n", path, lineno);
+        return AVERROR(EINVAL);
     }
     char *value = parse_value(eq + 1);
 
     char src[LACHESIS_RC_SRC_MAX];
     snprintf(src, sizeof(src), "%s:%d", path, lineno);
-    parse_config_option(optctx, key, value, defs, src);
+
+    return parse_config_option(optctx, key, value, defs, src);
 }
 
 int load_config_file(void *optctx, const OptionDef *defs) {
@@ -191,6 +192,7 @@ int load_config_file(void *optctx, const OptionDef *defs) {
     }
 
     int lineno = 0;
+    int ret = 0;
     char *p = buf;
     while (*p) {
         char *nl = strchr(p, '\n');
@@ -208,9 +210,12 @@ int load_config_file(void *optctx, const OptionDef *defs) {
             line[len - 1] = '\0';
         }
 
-        apply_line(optctx, defs, line, path, ++lineno);
+        ret = apply_line(optctx, defs, line, path, ++lineno);
+        if (ret < 0) {
+            break;
+        }
     }
     av_free(buf);
 
-    return 0;
+    return ret;
 }

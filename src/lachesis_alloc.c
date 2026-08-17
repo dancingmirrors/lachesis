@@ -61,6 +61,7 @@ static int alloc_reported;
 static int alloc_lost;
 static int alloc_completed;
 static int alloc_aborted;
+static int alloc_setup_done;
 
 static size_t alloc_hash(const void *ptr) {
     uint64_t x = (uint64_t)(uintptr_t)ptr;
@@ -295,8 +296,14 @@ void alloc_track_complete(void) {
     alloc_completed = 1;
 }
 
+void alloc_track_setup_done(void) {
+    alloc_setup_done = 1;
+}
+
 void alloc_track_abort(void) {
-    alloc_aborted = 1;
+    if (!alloc_setup_done) {
+        alloc_aborted = 1;
+    }
 }
 
 static const char *alloc_trim(const char *loc) {

@@ -2971,6 +2971,7 @@ static void playlist_skip_unreachable(void) {
         playlist_pos++;
     }
     if (playlist_pos >= playlist_size) {
+        exit_status = 1;
         do_exit(NULL);
     }
 }
@@ -3544,9 +3545,7 @@ static void validate_options(void) {
     if (display_fps_override < 0 || display_fps_override > 1000) {
         fatal_quit("-display-fps must be between 0 and 1000.\n");
     }
-    if (enable_360sbs && enable_360tb) {
-        fatal_quit("-360-sbs and -360-tb are mutually exclusive.\n");
-    }
+    validate_option_relations(options);
     if (audio_spdif_opt && audio_spdif_opt[0] &&
         !audio_spdif_names_known(audio_spdif_opt)) {
         log_warn("Unknown S/PDIF codec '%s'.\n", audio_spdif_opt);
@@ -3599,7 +3598,12 @@ int main(int argc, char **argv) {
     signal(SIGTERM, sigterm_handler);
 
     /* The command line wins. */
-    load_config_file(NULL, options);
+    ret = load_config_file(NULL, options);
+    if (ret < 0) {
+        uninit_opts();
+        alloc_track_complete();
+        exit(1);
+    }
     int nb_config_vfilters = nb_vfilters;
 
     ret = parse_options(NULL, argc, argv, options, opt_input_file);
@@ -3716,6 +3720,8 @@ int main(int argc, char **argv) {
         osd_set_stats_provider(format_playback_stats);
         osd_warmup();
     }
+
+    alloc_track_setup_done();
 
     is = stream_open_playlist_entry(playlist_pos);
     if (!is) {

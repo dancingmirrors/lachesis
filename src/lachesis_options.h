@@ -47,6 +47,7 @@ enum OptionType {
 #define OPT_EXIT (1 << 1)
 #define OPT_CMDLINE_ONLY (1 << 2)
 #define OPT_ARG_OPTIONAL (1 << 3)
+#define OPT_STRICT_VALUE (1 << 4)
 
 typedef struct OptionDef {
     const char *name;
@@ -66,6 +67,8 @@ typedef struct OptionDef {
 
 int parse_number(const char *context, const char *numstr, enum OptionType type,
                  double min, double max, double *dst);
+
+void validate_option_relations(const OptionDef *defs);
 
 void show_help_options(const OptionDef *defs);
 void show_help_default(void);

@@ -279,6 +279,27 @@ static int path_is_readable(const char *path) {
 #endif
 }
 
+int playlist_path_is_usable(const char *path) {
+    const char *proto;
+    struct stat st;
+
+    if (!path || !*path) {
+        return 0;
+    }
+    if (!strcmp(path, "-")) {
+        return 1;
+    }
+    proto = avio_find_protocol_name(path);
+    if (!proto || strcmp(proto, "file")) {
+        return 1;
+    }
+    if (!strncmp(path, "file:", 5)) {
+        path += 5;
+    }
+
+    return stat(path, &st) == 0;
+}
+
 int playlist_entry_is_reachable(int pos) {
     const PlaylistEntry *e = playlist_get(pos);
     const char *path;

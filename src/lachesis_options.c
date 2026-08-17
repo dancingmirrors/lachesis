@@ -56,6 +56,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
+#include "lachesis_playlist.h"
 
 const AVInputFormat *file_iformat;
 const char *window_title;
@@ -132,7 +133,7 @@ int allow_volume_boost = 1;
 
 static int grow_array(void **array, int elem_size, int *size, int new_size) {
     if (new_size >= INT_MAX / elem_size) {
-        av_log(NULL, AV_LOG_ERROR, "Array too big.\n");
+        log_dead("Array too big.\n");
         return AVERROR(ERANGE);
     }
     if (*size < new_size) {
@@ -175,10 +176,11 @@ static int opt_rotate(void *optctx av_unused, const char *opt av_unused,
     errno = 0;
     deg = strtol(arg, &tail, 10);
     if (errno || tail == arg || (tail && *tail)) {
+        log_dead("-rotate wants a number of degrees, not '%s'.\n", arg);
         return AVERROR(EINVAL);
     }
     if (deg % 90 != 0) {
-        av_log(NULL, AV_LOG_FATAL, "-rotate must be a multiple of 90 degrees.\n");
+        log_dead("-rotate must be a multiple of 90 degrees.\n");
         return AVERROR(EINVAL);
     }
 
@@ -192,8 +194,7 @@ static int opt_supersample(void *optctx av_unused, const char *opt av_unused,
     enum SupersampleLevel level = supersample_level_parse(arg);
 
     if (level == SUPERSAMPLE_OFF && strcmp(arg, "off")) {
-        av_log(NULL, AV_LOG_FATAL,
-               "-supersample must be off, light, medium, or strong.\n");
+        log_dead("-supersample must be off, light, medium, or strong.\n");
         return AVERROR(EINVAL);
     }
 
@@ -224,8 +225,7 @@ static int opt_vulkan_swap_mode(void *optctx av_unused, const char *opt av_unuse
             return store_string((const char **)&vulkan_swap_mode, arg);
         }
     }
-    av_log(NULL, AV_LOG_FATAL,
-           "-vulkan-swap-mode must be fifo, fifo-relaxed, mailbox, or immediate.\n");
+    log_dead("-vulkan-swap-mode must be fifo, fifo-relaxed, mailbox, or immediate.\n");
 
     return AVERROR(EINVAL);
 }
@@ -271,9 +271,8 @@ static int opt_hwaccel(void *optctx av_unused, const char *opt av_unused,
     }
     if (av_hwdevice_find_type_by_name(arg) == AV_HWDEVICE_TYPE_NONE) {
         hwaccel_method_list(methods, sizeof(methods));
-        av_log(NULL, AV_LOG_FATAL,
-               "Unknown hwaccel method '%s'! Available methods: %s.\n",
-               arg, *methods ? methods : "no others");
+        log_dead("Unknown hwaccel method '%s'! Available methods: %s.\n",
+                 arg, *methods ? methods : "no others");
         return AVERROR(EINVAL);
     }
 
@@ -292,14 +291,14 @@ static int opt_decoder(const char **dst, enum AVMediaType type, const char *opt,
     const char *decodes;
 
     if (!codec) {
-        av_log(NULL, AV_LOG_FATAL, "Unknown decoder '%s' for -%s!\n", arg, opt);
+        log_dead("Unknown decoder '%s' for -%s!\n", arg, opt);
         return AVERROR(EINVAL);
     }
     if (codec->type != type) {
         decodes = av_get_media_type_string(codec->type);
-        av_log(NULL, AV_LOG_FATAL, "The decoder '%s' for -%s decodes %s, not %s!\n",
-               arg, opt, decodes ? decodes : "something else",
-               av_get_media_type_string(type));
+        log_dead("The decoder '%s' for -%s decodes %s, not %s!\n",
+                 arg, opt, decodes ? decodes : "something else",
+                 av_get_media_type_string(type));
         return AVERROR(EINVAL);
     }
 
@@ -338,8 +337,7 @@ static int opt_video_bg(void *optctx av_unused, const char *opt av_unused,
     uint8_t rgba[4];
 
     if (parse_video_background(arg, rgba) < 0) {
-        av_log(NULL, AV_LOG_FATAL,
-               "-video_bg must be none, tiles, or a color.\n");
+        log_dead("-video_bg must be none, tiles, or a color.\n");
         return AVERROR(EINVAL);
     }
 
@@ -353,7 +351,7 @@ static int opt_icc_profile(void *optctx av_unused, const char *opt av_unused,
     if (arg[0]) {
         f = fopen(arg, "rb");
         if (!f) {
-            av_log(NULL, AV_LOG_FATAL, "Failed to open the ICC profile '%s'!\n", arg);
+            log_dead("Failed to open the ICC profile '%s'!\n", arg);
             return AVERROR(EINVAL);
         }
         fclose(f);
@@ -369,8 +367,7 @@ static int opt_gpu_params(void *optctx av_unused, const char *opt av_unused,
 
     av_dict_free(&dict);
     if (ret < 0) {
-        av_log(NULL, AV_LOG_FATAL,
-               "-gpu-params must be key=value pairs separated by ':'.\n");
+        log_dead("-gpu-params must be key=value pairs separated by ':'.\n");
         return AVERROR(EINVAL);
     }
 
@@ -458,10 +455,13 @@ static int opt_autofit(void *optctx av_unused, const char *opt, const char *arg)
 }
 
 static int opt_format(void *optctx av_unused, const char *opt av_unused, const char *arg) {
-    file_iformat = av_find_input_format(arg);
-    if (!file_iformat) {
+    const AVInputFormat *fmt = av_find_input_format(arg);
+
+    if (!fmt) {
+        log_dead("Unknown input format '%s'!\n", arg);
         return AVERROR(EINVAL);
     }
+    file_iformat = fmt;
 
     return 0;
 }
@@ -474,7 +474,8 @@ static int opt_sync(void *optctx av_unused, const char *opt, const char *arg) {
     } else if (!strcmp(arg, "ext")) {
         av_sync_type = AV_SYNC_EXTERNAL_CLOCK;
     } else {
-        fatal_quit("Unknown value for %s: %s.\n", opt, arg);
+        log_dead("Unknown value for -%s: %s.\n", opt, arg);
+        return AVERROR(EINVAL);
     }
     av_sync_type_explicit = 1;
 
@@ -527,7 +528,7 @@ const OptionDef options[] = {
     {"shader-cache-dir", OPT_TYPE_STRING, 0, {&shader_cache_dir}, "directory for the shader cache", "dir"},
     {"keep-open", OPT_TYPE_BOOL, 0, {&keep_open}, "keep the window open at the end of the playlist"},
     {"allow-unsafe", OPT_TYPE_BOOL, OPT_CMDLINE_ONLY, {&allow_unsafe}, "expand unsafe entries into a playlist (command line only)"},
-    {"all-files", OPT_TYPE_BOOL, 0, {&all_files}, "try to play any file in an archive or directory"},
+    {"all-files", OPT_TYPE_BOOL, OPT_CMDLINE_ONLY, {&all_files}, "try to play any file in an archive or directory (command line only)"},
     {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order"},
     {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order"},
     {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry"},
@@ -537,7 +538,7 @@ const OptionDef options[] = {
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters (pass more than once to cycle between them with W)", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
-    {"audio-spdif", OPT_TYPE_STRING, OPT_ARG_OPTIONAL, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ',' (or implied all)", "codecs", "all", "", arg_is_spdif_codecs},
+    {"audio-spdif", OPT_TYPE_STRING, OPT_ARG_OPTIONAL | OPT_STRICT_VALUE, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ',' (or implied all)", "codecs", "all", "", arg_is_spdif_codecs},
     {"audio-spdif-force", OPT_TYPE_BOOL, 0, {&audio_spdif_force}, "pass audio through even when the device format does not match"},
     {"acodec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_acodec}, "force an audio decoder", "decoder_name"},
     {"scodec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_scodec}, "force a subtitle decoder", "decoder_name"},
@@ -648,7 +649,7 @@ int parse_number(const char *context, const char *numstr, enum OptionType type,
         *dst = d;
         return 0;
     }
-    av_log(NULL, AV_LOG_FATAL, error, context, numstr, min, max);
+    log_dead(error, context, numstr, min, max);
 
     return AVERROR(EINVAL);
 }
@@ -700,6 +701,186 @@ static const OptionDef *find_option(const OptionDef *po, const char *name) {
         po++;
     }
     return po;
+}
+
+enum OptionOrigin {
+    OPT_FROM_NOWHERE = 0,
+    OPT_FROM_CONFIG,
+    OPT_FROM_CMDLINE,
+};
+
+static uint8_t option_origin[FF_ARRAY_ELEMS(options)];
+
+static void note_option_origin(const OptionDef *defs, const OptionDef *po,
+                               enum OptionOrigin origin, const char *arg) {
+    size_t i = (size_t)(po - defs);
+
+    if (po->type == OPT_TYPE_BOOL) {
+        if (!*(int *)po->u.dst_ptr) {
+            origin = OPT_FROM_NOWHERE;
+        }
+    } else if (!arg || !arg[0] ||
+               (po->implied_no && !strcmp(arg, po->implied_no))) {
+        origin = OPT_FROM_NOWHERE;
+    }
+    if (i < FF_ARRAY_ELEMS(option_origin)) {
+        option_origin[i] = origin;
+    }
+}
+
+static enum OptionOrigin option_origin_of(const OptionDef *defs, const char *name) {
+    const OptionDef *po = find_option(defs, name);
+    size_t i = (size_t)(po - defs);
+
+    if (!po->name || i >= FF_ARRAY_ELEMS(option_origin)) {
+        return OPT_FROM_NOWHERE;
+    }
+
+    return option_origin[i];
+}
+
+enum OptionRelation {
+    OPT_CONFLICTS_WITH,
+    OPT_DISABLES,
+    OPT_IMPLIES,
+};
+
+static const struct {
+    const char *a;
+    const char *b;
+    enum OptionRelation how;
+} option_relations[] = {
+    {"360-sbs", "360-tb", OPT_CONFLICTS_WITH},
+
+    {"nodisp", "vn", OPT_IMPLIES},
+    {"benchmark", "an", OPT_IMPLIES},
+
+    {"vn", "vf", OPT_DISABLES},
+    {"vn", "r", OPT_DISABLES},
+    {"vn", "rotate", OPT_DISABLES},
+    {"vn", "no-autorotate", OPT_DISABLES},
+    {"vn", "deinterlace", OPT_DISABLES},
+    {"vn", "interpolate", OPT_DISABLES},
+    {"vn", "supersample", OPT_DISABLES},
+    {"vn", "video_bg", OPT_DISABLES},
+    {"vn", "video_unscaled", OPT_DISABLES},
+    {"vn", "vcodec", OPT_DISABLES},
+    {"vn", "fast", OPT_DISABLES},
+    {"vn", "skip-to-keyframe", OPT_DISABLES},
+    {"vn", "max-texture-size", OPT_DISABLES},
+    {"vn", "hwaccel", OPT_DISABLES},
+    {"vn", "hwaccel-codecs", OPT_DISABLES},
+    {"vn", "hwaccel-max-size", OPT_DISABLES},
+    {"vn", "360-sbs", OPT_DISABLES},
+    {"vn", "360-tb", OPT_DISABLES},
+
+    {"an", "af", OPT_DISABLES},
+    {"an", "volume", OPT_DISABLES},
+    {"an", "mute", OPT_DISABLES},
+    {"an", "acodec", OPT_DISABLES},
+    {"an", "audio-spdif", OPT_DISABLES},
+    {"an", "audio-spdif-force", OPT_DISABLES},
+
+    {"sn", "scodec", OPT_DISABLES},
+    {"sn", "sub-offset", OPT_DISABLES},
+
+    {"nodisp", "windowed", OPT_DISABLES},
+    {"nodisp", "autofit", OPT_DISABLES},
+    {"nodisp", "alwaysontop", OPT_DISABLES},
+    {"nodisp", "window_title", OPT_DISABLES},
+    {"nodisp", "delete", OPT_DISABLES},
+    {"nodisp", "icc-profile", OPT_DISABLES},
+    {"nodisp", "icc-auto", OPT_DISABLES},
+    {"nodisp", "no-display-hdr", OPT_DISABLES},
+    {"nodisp", "gpu-api", OPT_DISABLES},
+    {"nodisp", "gpu-params", OPT_DISABLES},
+    {"nodisp", "vulkan-swap-mode", OPT_DISABLES},
+    {"nodisp", "max-glsl-version", OPT_DISABLES},
+    {"nodisp", "display-fps", OPT_DISABLES},
+    {"nodisp", "no-vsync-snap", OPT_DISABLES},
+    {"nodisp", "shader-cache-dir", OPT_DISABLES},
+
+    {"no-shader-cache", "shader-cache-dir", OPT_DISABLES},
+    {"no-ytdl", "ytdl-path", OPT_DISABLES},
+    {"no-ytdl", "ytdl-format", OPT_DISABLES},
+    {"icc-profile", "icc-auto", OPT_DISABLES},
+};
+
+static enum OptionOrigin option_reach(const OptionDef *defs, const char *name,
+                                      const char **via) {
+    enum OptionOrigin origin = option_origin_of(defs, name);
+
+    *via = name;
+    if (origin) {
+        return origin;
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
+        if (option_relations[i].how != OPT_IMPLIES ||
+            strcmp(option_relations[i].b, name)) {
+            continue;
+        }
+        origin = option_origin_of(defs, option_relations[i].a);
+        if (origin) {
+            *via = option_relations[i].a;
+            return origin;
+        }
+    }
+
+    return OPT_FROM_NOWHERE;
+}
+
+static void option_forget(const OptionDef *defs, const char *name) {
+    const OptionDef *po = find_option(defs, name);
+    size_t i = (size_t)(po - defs);
+
+    if (!po->name) {
+        return;
+    }
+    av_assert0(po->type == OPT_TYPE_BOOL || po->type == OPT_TYPE_STRING);
+    if (po->type == OPT_TYPE_BOOL) {
+        *(int *)po->u.dst_ptr = 0;
+    } else {
+        av_freep(po->u.dst_ptr);
+    }
+    if (i < FF_ARRAY_ELEMS(option_origin)) {
+        option_origin[i] = OPT_FROM_NOWHERE;
+    }
+}
+
+void validate_option_relations(const OptionDef *defs) {
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
+        const char *a = option_relations[i].a;
+        const char *b = option_relations[i].b;
+        const char *via;
+        enum OptionOrigin oa, ob;
+
+        if (option_relations[i].how == OPT_IMPLIES) {
+            continue;
+        }
+        oa = option_reach(defs, a, &via);
+        ob = option_origin_of(defs, b);
+        if (!oa || !ob) {
+            continue;
+        }
+        if (option_relations[i].how == OPT_DISABLES) {
+            log_warn("-%s does nothing because -%s was given.\n", b, via);
+            continue;
+        }
+        if (oa == ob) {
+            fatal_quit("-%s and -%s are mutually exclusive.\n", via, b);
+        }
+        if (oa == OPT_FROM_CONFIG) {
+            log_warn("-%s from the configuration file is ignored because -%s "
+                     "was given.\n",
+                     via, b);
+            option_forget(defs, via);
+        } else {
+            log_warn("-%s from the configuration file is ignored because -%s "
+                     "was given.\n",
+                     b, via);
+            option_forget(defs, b);
+        }
+    }
 }
 
 #define OPTION_NAME_MAX 128
@@ -804,7 +985,7 @@ static int write_option(void *optctx, const OptionDef *po, const char *opt,
     } else if (po->type == OPT_TYPE_TIME) {
         ret = av_parse_time(dst, arg, 1);
         if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR, "Invalid duration for option %s: %s\n", opt, arg);
+            log_dead("Invalid duration for option -%s: %s.\n", opt, arg);
             return ret;
         }
     } else if (po->type == OPT_TYPE_FLOAT) {
@@ -823,9 +1004,10 @@ static int write_option(void *optctx, const OptionDef *po, const char *opt,
         av_assert0(po->type == OPT_TYPE_FUNC && po->u.func_arg);
         ret = po->u.func_arg(optctx, opt, arg);
         if (ret < 0) {
-            av_log(NULL, AV_LOG_ERROR,
-                   "Failed to set value '%s' for option '%s': %s\n",
-                   arg, opt, av_err2str(ret));
+            if (ret != AVERROR(EINVAL)) {
+                log_dead("Failed to set value '%s' for option '%s': %s.\n",
+                         arg, opt, av_err2str(ret));
+            }
             return ret;
         }
     }
@@ -858,7 +1040,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
     }
 
     if (!po->name) {
-        av_log(NULL, AV_LOG_ERROR, "Unrecognized option '%s'\n", opt);
+        log_dead("Unrecognized option '%s'.\n", opt);
         return AVERROR(EINVAL);
     }
 
@@ -870,8 +1052,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
         if (inline_arg) {
             on = config_parse_bool(inline_arg);
             if (on < 0) {
-                av_log(NULL, AV_LOG_ERROR,
-                       "Option '%s' wants yes or no, got '%s'\n", opt, inline_arg);
+                log_dead("Option '%s' wants yes or no, got '%s'.\n", opt, inline_arg);
                 return AVERROR(EINVAL);
             }
         }
@@ -890,7 +1071,13 @@ int parse_option(void *optctx, const char *opt, const char *arg,
         arg = opt_implied_value(po, inline_arg ? inline_arg : arg);
     } else {
         if (!(po->flags & OPT_ARG_OPTIONAL)) {
-            av_log(NULL, AV_LOG_ERROR, "Missing argument for option '%s'\n", opt);
+            log_dead("Missing argument for option '%s'.\n", opt);
+            return AVERROR(EINVAL);
+        }
+        if ((po->flags & OPT_STRICT_VALUE) && arg && arg[0] &&
+            !(arg[0] == '-' && arg[1]) && !playlist_path_is_usable(arg)) {
+            log_dead("'%s' is neither an input nor a value for -%s: %s.\n",
+                     arg, opt, po->help);
             return AVERROR(EINVAL);
         }
         arg = po->implied;
@@ -900,6 +1087,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
     if (ret < 0) {
         return ret;
     }
+    note_option_origin(defs, po, OPT_FROM_CMDLINE, arg);
 
     return consumed;
 }
@@ -910,17 +1098,16 @@ int parse_config_option(void *optctx, const char *opt, const char *arg,
     int ret;
 
     if (!po->name) {
-        log_warn("%s: unknown option '%s', ignoring.\n", src, opt);
+        log_dead("%s: unknown option '%s'.\n", src, opt);
         return AVERROR(EINVAL);
     }
     /* For example --help, --version... */
     if (po->flags & OPT_EXIT) {
-        log_warn("%s: option '%s' is not allowed, ignoring.\n",
-                 src, opt);
+        log_dead("%s: option '%s' is not allowed here.\n", src, opt);
         return AVERROR(EINVAL);
     }
     if (po->flags & OPT_CMDLINE_ONLY) {
-        log_warn("%s: option '%s' is only accepted on the command line, ignoring.\n",
+        log_dead("%s: option '%s' is only accepted on the command line.\n",
                  src, opt);
         return AVERROR(EINVAL);
     }
@@ -929,34 +1116,31 @@ int parse_config_option(void *optctx, const char *opt, const char *arg,
         arg = arg && arg[0] ? opt_implied_value(po, arg) : po->implied;
     }
 
-    if (po->type == OPT_TYPE_BOOL) {
+    if (po->type == OPT_TYPE_BOOL || !opt_has_arg(po)) {
         int on = config_parse_bool(arg);
         if (on < 0) {
-            log_warn("%s: option '%s' wants yes or no, got '%s', ignoring.\n",
+            log_dead("%s: option '%s' wants yes or no, got '%s'.\n",
                      src, opt, arg);
             return AVERROR(EINVAL);
         }
-        arg = on ? "1" : "0";
-    } else if (!opt_has_arg(po)) {
-        int on = config_parse_bool(arg);
-        if (on < 0) {
-            log_warn("%s: option '%s' wants yes or no, got '%s', ignoring.\n",
-                     src, opt, arg);
-            return AVERROR(EINVAL);
-        }
-        if (!on) {
+        if (po->type != OPT_TYPE_BOOL && !on) {
             return 0;
         }
-    } else if (po->type != OPT_TYPE_STRING && (!arg || !arg[0])) {
-        /* "" is allowed. */
-        log_warn("%s: option '%s' needs a value, ignoring.\n", src, opt);
+        arg = on ? "1" : "0";
+    } else if (!arg || (!arg[0] && po->type != OPT_TYPE_STRING && po->type != OPT_TYPE_FUNC)) {
+        log_dead("%s: option '%s' needs a value.\n", src, opt);
         return AVERROR(EINVAL);
     }
 
     ret = write_option(optctx, po, opt, arg);
-    if (ret < 0 && ret != AVERROR_EXIT) {
-        log_warn("%s: could not apply option '%s'.\n", src, opt);
+    if (ret < 0) {
+        if (ret != AVERROR_EXIT) {
+            log_dead("%s: option '%s' was not applied.\n", src, opt);
+        }
+        return ret;
     }
+    note_option_origin(defs, po, OPT_FROM_CONFIG, arg);
+
     return ret;
 }
 
@@ -1109,11 +1293,9 @@ int opt_loglevel(void *optctx av_unused, const char *opt av_unused, const char *
         }
         level = strtol(arg, &tail, 10);
         if (*tail) {
-            av_log(NULL, AV_LOG_FATAL, "Invalid loglevel \"%s\". "
-                                       "Possible levels are numbers or:\n",
-                   arg);
+            log_dead("Invalid loglevel \"%s\". Possible levels are numbers or:\n", arg);
             for (i = 0; i < FF_ARRAY_ELEMS(log_levels); i++) {
-                av_log(NULL, AV_LOG_FATAL, "\"%s\"\n", log_levels[i].name);
+                log_dead("\"%s\"\n", log_levels[i].name);
             }
             return AVERROR(EINVAL);
         }

@@ -31,7 +31,7 @@ void alloc_track_init(void);
 void alloc_track_report(void);
 
 void alloc_track_complete(void);
-
+void alloc_track_setup_done(void);
 void alloc_track_abort(void);
 
 /* Safe to call when tracking is off, on a NULL pointer, or on a pointer that
