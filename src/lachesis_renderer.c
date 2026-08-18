@@ -283,6 +283,7 @@ static void hwctx_unlock_queue(void *priv, uint32_t qf, uint32_t qidx) {
 #endif
 }
 
+/* https://github.com/KhronosGroup/MoltenVK/issues/2618 */
 static int want_host_image_copy(const AVDictionary *opt) {
     const AVDictionaryEntry *entry = av_dict_get(opt, "host_image_copy", NULL, 0);
     int want = 0;
