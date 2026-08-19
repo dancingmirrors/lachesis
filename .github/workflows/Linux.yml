@@ -107,6 +107,37 @@ jobs:
           make -j$(nproc)
           sudo make install
 
+      - name: Build and install Mesa
+        run: |
+          set -x
+
+          sudo apt-get build-dep -y mesa
+          sudo apt-get install -y --reinstall meson ninja-build
+
+          git clone --depth 1 https://github.com/chaotic-cx/mesa-mirror.git mesa
+
+          meson setup --prefix=/usr/local -Dlibdir=lib \
+                      -Dbuildtype=release \
+                      -Dglvnd=disabled \
+                      -Dgallium-drivers=llvmpipe \
+                      -Dvulkan-drivers=swrast \
+                      -Dplatforms=x11,wayland \
+                      -Dglx=dri \
+                      -Degl=enabled \
+                      -Dgbm=enabled \
+                      -Dgles1=disabled \
+                      -Dgles2=enabled \
+                      -Dllvm=enabled \
+                      -Dshared-llvm=enabled \
+                      mesa/build mesa
+          ninja -v -C mesa/build
+          sudo ninja -C mesa/build install
+          sudo ldconfig
+
+          LD_LIBRARY_PATH=/usr/local/lib \
+          VK_DRIVER_FILES=/usr/local/share/vulkan/icd.d/lvp_icd.x86_64.json \
+          vulkaninfo --summary
+
       - name: Build, install, run
         run: |
           set -x
@@ -120,14 +151,16 @@ jobs:
 
           export LACHESIS_LEAK_REPORT=1
 
-          # ?
           sudo ldconfig
-          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h
+          export LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+          export VK_DRIVER_FILES=/usr/local/share/vulkan/icd.d/lvp_icd.x86_64.json
+
+          lachesis -h
 
           ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
-          #LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBARRY_PATH SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
-          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH xvfb-run -a env SDL_VIDEO_DRIVER=x11 lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
-          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBARRY_PATH SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
+          xvfb-run -a env SDL_VIDEO_DRIVER=x11 lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+          SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+          SDL_VIDEO_DRIVER=offscreen lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
 
           rm -rf build
                       
@@ -136,9 +169,8 @@ jobs:
           ninja -v -C build
           sudo ninja -C build install
 
-          # ?
           sudo ldconfig
-          LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH lachesis -h
+          lachesis -h
 
           sudo apt-get purge -y git
           rm -fr build
