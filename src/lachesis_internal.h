@@ -44,7 +44,7 @@
 #include "lachesis_renderer.h"
 
 #define FFP_MIX_MAXVOLUME 128
-#define VOLUME_BOOST_MAX_PCT 260
+#define VOLUME_BOOST_MAX_PCT 300
 /* No A/V sync correction is done if below this threshold. */
 #define AV_NOSYNC_THRESHOLD 10.0
 /* Number of audio samples over which the audio difference average is computed. */
