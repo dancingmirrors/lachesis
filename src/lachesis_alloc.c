@@ -21,6 +21,7 @@
 #define LACHESIS_ALLOC_INTERNAL
 
 #include "lachesis_alloc.h"
+#include "lachesis_log.h"
 
 #include <inttypes.h>
 #include <stdint.h>
@@ -289,6 +290,7 @@ void alloc_track_init(void) {
         return;
     }
 
+    log_warn("Leak reporting is active. Performance will suffer.\n");
     alloc_enabled = 1;
 }
 
