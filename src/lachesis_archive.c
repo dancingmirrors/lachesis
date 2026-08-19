@@ -134,7 +134,12 @@ typedef struct {
     struct archive *arch;
     int64_t size;
     int64_t pos;
+    AVIOInterruptCB interrupt;
 } ArchiveIO;
+
+static int archive_interrupted(const ArchiveIO *io) {
+    return io->interrupt.callback && io->interrupt.callback(io->interrupt.opaque);
+}
 
 static int archive_io_open(ArchiveIO *io) {
     struct archive *arch = archive_read_new();
@@ -153,6 +158,10 @@ static int archive_io_open(ArchiveIO *io) {
     struct archive_entry *entry;
     while ((r = archive_read_next_header(arch, &entry)) == ARCHIVE_OK ||
            r == ARCHIVE_WARN) {
+        if (archive_interrupted(io)) {
+            archive_read_free(arch);
+            return -1;
+        }
         if (archive_entry_filetype(entry) != AE_IFREG) {
             continue;
         }
@@ -186,6 +195,9 @@ static int archive_read_packet(void *opaque, uint8_t *buf, int buf_size) {
     ArchiveIO *io = opaque;
     if (!io->arch) {
         return AVERROR_EOF;
+    }
+    if (archive_interrupted(io)) {
+        return AVERROR_EXIT;
     }
 
     la_ssize_t r = archive_read_data(io->arch, buf, buf_size);
@@ -250,7 +262,7 @@ static int64_t archive_seek(void *opaque, int64_t offset, int whence) {
         while (io->pos < target) {
             int want = (int)FFMIN((int64_t)sizeof(discard), target - io->pos);
             la_ssize_t r = archive_read_data(io->arch, discard, want);
-            if (r <= 0) {
+            if (r <= 0 || archive_interrupted(io)) {
                 return -1;
             }
             io->pos += r;
@@ -269,7 +281,8 @@ static void archive_io_free_cb(void *opaque) {
 }
 
 AVIOContext *archive_entry_open_avio(const char *archive_path,
-                                     const char *entry_name) {
+                                     const char *entry_name,
+                                     const AVIOInterruptCB *interrupt) {
     ArchiveIO *io = av_mallocz(sizeof(*io));
     if (!io) {
         return NULL;
@@ -279,6 +292,9 @@ AVIOContext *archive_entry_open_avio(const char *archive_path,
     io->entry_name = av_strdup(entry_name);
     io->size = -1;
     io->pos = 0;
+    if (interrupt) {
+        io->interrupt = *interrupt;
+    }
 
     if (!io->archive_path || !io->entry_name) {
         archive_io_free_cb(io);

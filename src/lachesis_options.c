@@ -74,6 +74,7 @@ int av_sync_type = AV_SYNC_AUDIO_MASTER;
 int av_sync_type_explicit = 0;
 int fast = 0;
 int skip_to_keyframe = 0;
+int no_edit_list = 0;
 int64_t start_time = AV_NOPTS_VALUE;
 int64_t play_duration = AV_NOPTS_VALUE;
 int64_t sub_offset = AV_NOPTS_VALUE;
@@ -199,6 +200,33 @@ static int opt_supersample(void *optctx av_unused, const char *opt av_unused,
     }
 
     supersample_level = level;
+
+    return 0;
+}
+
+static int opt_edit_list(void *optctx av_unused, const char *opt av_unused,
+                         const char *arg) {
+    if (strcmp(arg, "auto") && strcmp(arg, "off")) {
+        log_dead("-edit-list must be auto or off.\n");
+        return AVERROR(EINVAL);
+    }
+    no_edit_list = !strcmp(arg, "off");
+
+    return 0;
+}
+
+static int opt_loop(void *optctx av_unused, const char *opt, const char *arg) {
+    double count;
+    int ret = parse_number(opt, arg, OPT_TYPE_INT64, INT_MIN, INT_MAX, &count);
+
+    if (ret < 0) {
+        return ret;
+    }
+    if (count < 0) {
+        log_dead("-loop must not be a negative value.\n");
+        return AVERROR(EINVAL);
+    }
+    loop = (int)count;
 
     return 0;
 }
@@ -521,6 +549,7 @@ const OptionDef options[] = {
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 260)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
+    {"edit-list", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_edit_list}, "whether to honor edit lists (auto, off)", "mode"},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type (audio, video, ext)", "type"},
     {"fast", OPT_TYPE_BOOL, 0, {&fast}, "decode degraded from the start instead of waiting to fall behind (drops frames)"},
     {"skip-to-keyframe", OPT_TYPE_BOOL, 0, {&skip_to_keyframe}, "skip the video forward to keyframes instead of slowing down (drops content)"},
@@ -532,7 +561,7 @@ const OptionDef options[] = {
     {"shuffle", OPT_TYPE_BOOL, 0, {&shuffle}, "play the playlist entries in random order"},
     {"reverse-playlist", OPT_TYPE_BOOL, 0, {&reverse_playlist}, "play the playlist entries in reverse order"},
     {"pause", OPT_TYPE_BOOL, 0, {&start_paused}, "start paused on the first frame of each entry"},
-    {"loop", OPT_TYPE_INT, OPT_ARG_OPTIONAL, {&loop}, "set the number of times each playlist entry is played (0 or implied is forever)", "count", "0", "1", arg_is_number},
+    {"loop", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_loop}, "set the number of times each playlist entry is played (0 or implied is forever)", "count", "0", "1", arg_is_number},
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
     {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},

@@ -117,6 +117,7 @@ extern int av_sync_type;
 extern int av_sync_type_explicit;
 extern int fast;
 extern int skip_to_keyframe;
+extern int no_edit_list;
 extern int64_t start_time;
 extern int64_t play_duration;
 extern int64_t sub_offset;

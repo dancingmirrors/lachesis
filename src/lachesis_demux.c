@@ -75,6 +75,50 @@ static void print_error(const char *filename, int err) {
     av_log(NULL, AV_LOG_ERROR, "%s: %s\n", filename, av_err2str(err));
 }
 
+static int stream_selects_nothing(AVStream *st) {
+    int count = avformat_index_get_entries_count(st);
+
+    if ((st->disposition & AV_DISPOSITION_ATTACHED_PIC) || st->nb_frames <= 0) {
+        return 0;
+    }
+    for (int i = 0; i < count; i++) {
+        if (!(avformat_index_get_entry(st, i)->flags & AVINDEX_DISCARD_FRAME)) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+static int is_mp4(const AVFormatContext *ic) {
+    return ic->iformat && av_match_name("mp4", ic->iformat->name);
+}
+
+static int edit_list_selected_nothing(AVFormatContext *ic) {
+    int empty = 0;
+
+    if (!is_mp4(ic)) {
+        return 0;
+    }
+    for (unsigned i = 0; i < ic->nb_streams; i++) {
+        AVStream *st = ic->streams[i];
+        enum AVMediaType type = st->codecpar->codec_type;
+
+        if (type != AVMEDIA_TYPE_VIDEO && type != AVMEDIA_TYPE_AUDIO) {
+            continue;
+        }
+        if ((st->disposition & AV_DISPOSITION_ATTACHED_PIC) || st->nb_frames <= 0) {
+            continue;
+        }
+        if (!stream_selects_nothing(st)) {
+            return 0;
+        }
+        empty = 1;
+    }
+
+    return empty;
+}
+
 static int check_avoptions(AVDictionary *m) {
     const AVDictionaryEntry *t = av_dict_iterate(m, NULL);
     if (t) {
@@ -525,6 +569,46 @@ static int decode_interrupt_cb(void *ctx) {
     return is->abort_request;
 }
 
+static AVFormatContext *new_format_context(VideoState *is) {
+    AVFormatContext *ic = avformat_alloc_context();
+
+    if (ic) {
+        ic->interrupt_callback.callback = decode_interrupt_cb;
+        ic->interrupt_callback.opaque = is;
+    }
+
+    return ic;
+}
+
+static int reopen_format_context(VideoState *is, AVFormatContext **pic) {
+    AVIOContext *pb = (*pic)->pb;
+    int custom_io = !!((*pic)->flags & AVFMT_FLAG_CUSTOM_IO);
+    AVFormatContext *ic;
+    int ret;
+
+    avformat_close_input(pic);
+    if (!(ic = new_format_context(is))) {
+        return AVERROR(ENOMEM);
+    }
+    if (custom_io) {
+        ret = avio_seek(pb, 0, SEEK_SET);
+        if (ret < 0) {
+            avformat_free_context(ic);
+            return ret;
+        }
+        pb->error = 0;
+        ic->pb = pb;
+        ic->flags |= AVFMT_FLAG_CUSTOM_IO;
+    }
+    *pic = ic;
+
+    return 0;
+}
+
+static int input_can_reopen(const AVFormatContext *ic) {
+    return ic->pb && (ic->pb->seekable & AVIO_SEEKABLE_NORMAL);
+}
+
 int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue) {
     return stream_id < 0 ||
         queue->abort_request ||
@@ -930,6 +1014,9 @@ int read_thread(void *arg) {
     int64_t start_pos = AV_NOPTS_VALUE;
     int lap_read = 0;
     int restarted = 0;
+    AVDictionary *base_opts = NULL;
+    AVFormatContext *kept_ic = NULL;
+    int edit_list_fell_back = 0;
 
     log_interrupt_begin(decode_interrupt_cb, is);
 
@@ -951,24 +1038,23 @@ int read_thread(void *arg) {
         ret = AVERROR(ENOMEM);
         goto fail;
     }
-    ic = avformat_alloc_context();
+    ic = new_format_context(is);
     if (!ic) {
         ret = AVERROR(ENOMEM);
         goto fail;
     }
-    ic->interrupt_callback.callback = decode_interrupt_cb;
-    ic->interrupt_callback.opaque = is;
     if (!av_dict_get(fmt_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE)) {
-        av_dict_set(&fmt_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
         scan_all_pmts_set = 1;
     }
     if (is_http_input(is->filename) &&
         !av_dict_get(fmt_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE)) {
-        av_dict_set(&fmt_opts, "extension_picky", "0", AV_DICT_DONT_OVERWRITE);
         extension_picky_set = 1;
     }
     if (is->archive_path && is->entry_name) {
-        is->archive_avio = archive_entry_open_avio(is->archive_path, is->entry_name);
+        AVIOInterruptCB archive_interrupt = {decode_interrupt_cb, is};
+
+        is->archive_avio = archive_entry_open_avio(is->archive_path, is->entry_name,
+                                                   &archive_interrupt);
         if (!is->archive_avio) {
             log_warn("Could not open archive entry '%s' in '%s'!\n",
                      is->entry_name, is->archive_path);
@@ -1015,64 +1101,117 @@ int read_thread(void *arg) {
         ret = -1;
         goto fail;
     }
-    if (is->from_playlist) {
-        const char *whitelist = playlist_protocol_whitelist(is->filename);
-        if (!whitelist || av_opt_set(ic, "protocol_whitelist", whitelist, 0) < 0) {
-            log_warn("Refusing '%s' from a playlist.\n", is->filename);
-            ret = -1;
-            goto fail;
-        }
-    }
-    {
-        const char *open_url = (is->archive_path && is->entry_name)
-            ? is->entry_name
-            : is->filename;
-        const AVInputFormat *open_fmt = is->iformat;
-        if (!open_fmt && is->archive_avio && is->entry_name) {
-            open_fmt = guess_archive_entry_format(is->entry_name);
-        }
-        err = avformat_open_input(&ic, open_url, open_fmt, &fmt_opts);
-    }
-    if (scan_all_pmts_set) {
-        av_dict_set(&fmt_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE);
-    }
-    if (extension_picky_set) {
-        av_dict_set(&fmt_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE);
-    }
-    if (err < 0) {
-        if (!is->abort_request) {
-            print_error(is->filename, err);
-            playlist_warn_unsafe_disabled(is->filename, 1);
-        } else {
-            log_verbose("Open of '%s' aborted: %s\n", is->filename, av_err2str(err));
-        }
-        ret = -1;
-        goto fail;
-    }
-    /* An open can outlive the abort request that was meant to cut it short, and
-     * everything below here starts claiming shared state.
-     */
-    if (is->abort_request) {
-        ret = -1;
-        goto fail;
-    }
-    ret = check_avoptions(fmt_opts);
+    ret = av_dict_copy(&base_opts, fmt_opts, 0);
     if (ret < 0) {
         goto fail;
     }
-    is->ic = ic;
+    for (int attempt = 0;; attempt++) {
+        int ignore_editlist = edit_list_fell_back || no_edit_list;
+        int info_err = 0;
 
-    err = avformat_find_stream_info(ic, NULL);
-    if (err < 0) {
-        if (!is->archive_avio) {
+        if (is->from_playlist) {
+            const char *whitelist = playlist_protocol_whitelist(is->filename);
+            if (!whitelist || av_opt_set(ic, "protocol_whitelist", whitelist, 0) < 0) {
+                log_warn("Refusing '%s' from a playlist.\n", is->filename);
+                ret = -1;
+                goto fail;
+            }
+        }
+        av_dict_free(&fmt_opts);
+        ret = av_dict_copy(&fmt_opts, base_opts, 0);
+        if (ret < 0) {
+            goto fail;
+        }
+        if (scan_all_pmts_set) {
+            av_dict_set(&fmt_opts, "scan_all_pmts", "1", AV_DICT_DONT_OVERWRITE);
+        }
+        if (extension_picky_set) {
+            av_dict_set(&fmt_opts, "extension_picky", "0", AV_DICT_DONT_OVERWRITE);
+        }
+        if (ignore_editlist) {
+            av_dict_set(&fmt_opts, "ignore_editlist", "1", AV_DICT_DONT_OVERWRITE);
+        }
+        {
+            const char *open_url = (is->archive_path && is->entry_name)
+                ? is->entry_name
+                : is->filename;
+            const AVInputFormat *open_fmt = is->iformat;
+            if (!open_fmt && is->archive_avio && is->entry_name) {
+                open_fmt = guess_archive_entry_format(is->entry_name);
+            }
+            err = avformat_open_input(&ic, open_url, open_fmt, &fmt_opts);
+        }
+        if (scan_all_pmts_set) {
+            av_dict_set(&fmt_opts, "scan_all_pmts", NULL, AV_DICT_MATCH_CASE);
+        }
+        if (extension_picky_set) {
+            av_dict_set(&fmt_opts, "extension_picky", NULL, AV_DICT_MATCH_CASE);
+        }
+        if (ignore_editlist) {
+            av_dict_set(&fmt_opts, "ignore_editlist", NULL, AV_DICT_MATCH_CASE);
+        }
+        if (!err) {
+            if (is->abort_request) {
+                ret = -1;
+                goto fail;
+            }
+            if (!kept_ic && (ret = check_avoptions(fmt_opts)) < 0) {
+                goto fail;
+            }
+            info_err = avformat_find_stream_info(ic, NULL);
+            if (is->archive_avio) {
+                info_err = 0;
+            }
+            if (is->abort_request) {
+                ret = -1;
+                goto fail;
+            }
+        }
+        if (kept_ic) {
+            if (err < 0 || info_err < 0) {
+                avformat_close_input(&ic);
+                ic = kept_ic;
+                edit_list_fell_back = 0;
+            } else {
+                avformat_close_input(&kept_ic);
+            }
+            kept_ic = NULL;
+            break;
+        }
+        if (err < 0) {
+            if (!is->abort_request) {
+                print_error(is->filename, err);
+                playlist_warn_unsafe_disabled(is->filename, 1);
+            } else {
+                log_verbose("Open of '%s' aborted: %s\n", is->filename, av_err2str(err));
+            }
             ret = -1;
             goto fail;
         }
+        if (info_err < 0) {
+            ret = -1;
+            goto fail;
+        }
+
+        if (attempt || no_edit_list ||
+            !edit_list_selected_nothing(ic) || !input_can_reopen(ic)) {
+            break;
+        }
+        edit_list_fell_back = 1;
+        if (ic->flags & AVFMT_FLAG_CUSTOM_IO) {
+            ret = reopen_format_context(is, &ic);
+            if (ret < 0) {
+                goto fail;
+            }
+        } else {
+            kept_ic = ic;
+            if (!(ic = new_format_context(is))) {
+                ret = AVERROR(ENOMEM);
+                goto fail;
+            }
+        }
     }
-    if (is->abort_request) {
-        ret = -1;
-        goto fail;
-    }
+    is->ic = ic;
 
     is->is_still_image = detect_still_image(ic);
 
@@ -1222,18 +1361,20 @@ int read_thread(void *arg) {
         if (aic) {
             aic->interrupt_callback.callback = audio_interrupt_cb;
             aic->interrupt_callback.opaque = is;
+            AVDictionary *audio_opts = NULL;
             int audio_open_ret;
             is->ytdl_aio = ytdl_chunked_create(is->ytdl_audio_url, is);
             if (is->ytdl_aio) {
                 aic->pb = ytdl_chunked_pb(is->ytdl_aio);
                 aic->flags |= AVFMT_FLAG_CUSTOM_IO;
-                audio_open_ret = avformat_open_input(&aic, is->ytdl_audio_url, NULL, NULL);
             } else {
-                AVDictionary *audio_opts = NULL;
                 set_ytdl_http_opts(&audio_opts);
-                audio_open_ret = avformat_open_input(&aic, is->ytdl_audio_url, NULL, &audio_opts);
-                av_dict_free(&audio_opts);
             }
+            if (edit_list_fell_back || no_edit_list) {
+                av_dict_set(&audio_opts, "ignore_editlist", "1", 0);
+            }
+            audio_open_ret = avformat_open_input(&aic, is->ytdl_audio_url, NULL, &audio_opts);
+            av_dict_free(&audio_opts);
             if (audio_open_ret >= 0 &&
                 avformat_find_stream_info(aic, NULL) >= 0) {
                 int aidx = av_find_best_stream(aic, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
@@ -1543,6 +1684,7 @@ fail:
         avformat_close_input(&is->ic);
         ic = NULL;
     }
+    avformat_close_input(&kept_ic);
     if (!is->ic) {
         avformat_close_input(&ic);
         /* ic->pb is not freed by avformat_close_input with AVFMT_FLAG_CUSTOM_IO,
@@ -1555,6 +1697,7 @@ fail:
      * free the archive I/O.
      */
     av_dict_free(&fmt_opts);
+    av_dict_free(&base_opts);
     av_packet_free(&pkt);
     log_interrupt_end();
     if (ret != 0 && !is->abort_request) {

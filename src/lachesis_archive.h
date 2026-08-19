@@ -29,7 +29,8 @@ int archive_list_entries(const char *archive_path, char ***out, int *count);
 void archive_free_entries(char **names, int count);
 
 AVIOContext *archive_entry_open_avio(const char *archive_path,
-                                     const char *entry_name);
+                                     const char *entry_name,
+                                     const AVIOInterruptCB *interrupt);
 void archive_entry_close_avio(AVIOContext *avio);
 
 #endif // LACHESIS_ARCHIVE_H
