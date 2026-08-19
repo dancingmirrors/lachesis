@@ -127,6 +127,21 @@ struct Renderer {
     enum RendererApi backend;
 };
 
+typedef struct ImageState {
+    SDL_Rect rect;
+    int rotate;
+    int changed;
+    int moving;
+} ImageState;
+
+typedef struct ImageTracker {
+    ImageState last;
+    int64_t changed_at;
+    int64_t repaint_failed_at;
+    int seen;
+    int repaint_asked;
+} ImageTracker;
+
 typedef struct RendererContext {
     Renderer api;
 
@@ -229,6 +244,8 @@ typedef struct RendererContext {
     double stat_render_ms;
     double stat_present_ms;
     int stat_valid;
+
+    ImageTracker image;
 
     struct pl_color_space last_hint;
     bool have_hint;
@@ -2719,6 +2736,39 @@ static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target
     *dst = vis;
 }
 
+/* Theoretically needs consideration for fractional scaling. */
+static View360Viewport clip_360_viewport(struct pl_frame *target) {
+    View360Viewport viewport = VIEW360_VIEWPORT_WHOLE;
+    pl_tex tex = target->num_planes > 0 ? target->planes[0].texture : NULL;
+    pl_rect2df *dst = &target->crop;
+    float w = dst->x1 - dst->x0;
+    float h = dst->y1 - dst->y0;
+    pl_rect2df visible;
+
+    if (!tex || w <= 0.0f || h <= 0.0f) {
+        return viewport;
+    }
+    viewport.aspect = w / h;
+
+    visible = (pl_rect2df){
+        .x0 = FFMAX(dst->x0, 0.0f),
+        .y0 = FFMAX(dst->y0, 0.0f),
+        .x1 = FFMIN(dst->x1, (float)tex->params.w),
+        .y1 = FFMIN(dst->y1, (float)tex->params.h),
+    };
+    if (visible.x1 <= visible.x0 || visible.y1 <= visible.y0) {
+        return viewport;
+    }
+
+    viewport.off_x = (visible.x0 - dst->x0) / w;
+    viewport.off_y = (visible.y0 - dst->y0) / h;
+    viewport.scale_x = (visible.x1 - visible.x0) / w;
+    viewport.scale_y = (visible.y1 - visible.y0) / h;
+    *dst = visible;
+
+    return viewport;
+}
+
 static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
                              int w, int h, int stride) {
     if (!*slot || (int)(*slot)->params.w != w || (int)(*slot)->params.h != h) {
@@ -2751,21 +2801,27 @@ static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
 }
 
 static int supersample_active(const RendererContext *ctx,
-                              const RenderParams *params) {
-    return ctx->supersample_level != SUPERSAMPLE_OFF && !ctx->benchmark && !params->disable_linear_scaling;
+                              const RenderParams *params,
+                              const ImageState *image) {
+    return ctx->supersample_level != SUPERSAMPLE_OFF && !ctx->benchmark &&
+        !image->moving && !params->disable_linear_scaling;
 }
 
 static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                          struct pl_frame *target, struct pl_render_params *pl_params,
                          RenderParams *params, struct pl_overlay *overlays,
                          struct pl_overlay_part *parts,
-                         const struct pl_hook **hooks) {
+                         const struct pl_hook **hooks,
+                         const ImageState *image) {
     SDL_Rect *rect = &params->target_rect;
     target->crop = (pl_rect2df){.x0 = rect->x, .x1 = rect->x + rect->w, .y0 = rect->y, .y1 = rect->y + rect->h};
 
     pl_rotation rotation = pl_rotation_normalize(params->rotate / 90);
+    View360Viewport viewport = VIEW360_VIEWPORT_WHOLE;
+
     if (ctx->sbs360_enabled && ctx->sbs360_hook) {
         pl_frame->rotation = PL_ROTATION_0;
+        viewport = clip_360_viewport(target);
     } else {
         pl_frame->rotation = rotation;
         clip_crops_to_target(pl_frame, target,
@@ -2809,11 +2865,11 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
                                ctx->sbs360_pitch, ctx->sbs360_roll,
                                ctx->sbs360_hfov, ctx->sbs360_layout,
-                               (int)rotation * 90);
+                               (int)rotation * 90, &viewport);
         hooks[num_hooks++] = ctx->sbs360_hook;
     }
 
-    if (supersample_active(ctx, params) && ctx->supersample_hook) {
+    if (supersample_active(ctx, params, image) && ctx->supersample_hook) {
         supersample_pl_hook_update(ctx->supersample_hook, ctx->supersample_level);
         hooks[num_hooks++] = ctx->supersample_hook;
         pl_params->deband_params =
@@ -3057,7 +3113,12 @@ static int map_frame_mix(RendererContext *ctx, const AVFrame *frame,
 }
 
 static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx,
-                                                      const RenderParams *params) {
+                                                      const RenderParams *params,
+                                                      const ImageState *image) {
+    if (image->moving) {
+        return NULL;
+    }
+
     if (ctx->benchmark || params->disable_linear_scaling || !params->still_image) {
         return &pl_filter_bilinear;
     }
@@ -3077,10 +3138,15 @@ static bool can_sample_polar(const RendererContext *ctx) {
 }
 
 static const struct pl_filter_config *pick_upscaler(const RendererContext *ctx,
-                                                    const RenderParams *params) {
+                                                    const RenderParams *params,
+                                                    const ImageState *image) {
     const struct pl_filter_config *config = NULL;
 
-    if (supersample_active(ctx, params)) {
+    if (image->moving) {
+        return NULL;
+    }
+
+    if (supersample_active(ctx, params, image)) {
         config = supersample_upscaler(ctx->supersample_level);
         if (config && config->polar && !can_sample_polar(ctx)) {
             config = &pl_filter_lanczos;
@@ -3130,23 +3196,68 @@ static int swapchain_sync_size(RendererContext *ctx) {
     return AVERROR_EXTERNAL;
 }
 
+static struct pl_render_params base_render_params(const RendererContext *ctx,
+                                                  const RenderParams *params,
+                                                  const ImageState *image,
+                                                  struct pl_color_adjustment *adjustment) {
+    int cheapest = ctx->benchmark;
+
+    return (struct pl_render_params){
+        .upscaler = pick_upscaler(ctx, params, image),
+        .downscaler = pick_downscaler(ctx, params, image),
+        .color_adjustment = adjustment,
+        .sigmoid_params = cheapest ? NULL : pl_render_default_params.sigmoid_params,
+        .dither_params = cheapest ? NULL : pl_render_default_params.dither_params,
+        .cone_params = pl_render_default_params.cone_params,
+        .color_map_params = pl_render_default_params.color_map_params,
+        .disable_linear_scaling = cheapest || params->disable_linear_scaling,
+        .skip_anti_aliasing = cheapest || params->skip_anti_aliasing,
+    };
+}
+
+#define IMAGE_SETTLE_US 250000
+
+static ImageState track_image(RendererContext *ctx, const RenderParams *params) {
+    ImageTracker *t = &ctx->image;
+    int64_t now = av_gettime_relative();
+    ImageState image = {
+        .rect = params->target_rect,
+        .rotate = params->rotate,
+        .moving = t->last.moving,
+    };
+
+    image.changed = t->last.rect.x != image.rect.x ||
+        t->last.rect.y != image.rect.y ||
+        t->last.rect.w != image.rect.w ||
+        t->last.rect.h != image.rect.h ||
+        t->last.rotate != image.rotate;
+
+    if (!t->seen) {
+        t->seen = 1;
+        image.changed = 0;
+        image.moving = 0;
+    } else if (image.changed) {
+        image.moving = t->changed_at && now - t->changed_at < IMAGE_SETTLE_US;
+        t->changed_at = now;
+        t->repaint_asked = 0;
+    } else if (now - t->changed_at >= IMAGE_SETTLE_US) {
+        image.moving = 0;
+    }
+
+    t->last = image;
+
+    return image;
+}
+
 static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     struct pl_swapchain_frame swap_frame = {0};
     struct pl_frame pl_frame = {0};
     struct pl_frame target = {0};
     RendererContext *ctx = (RendererContext *)renderer;
+    ImageState image;
+    ImageTracker tracked;
     struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
-    struct pl_render_params pl_params = {
-        .upscaler = pick_upscaler(ctx, params),
-        .downscaler = pick_downscaler(ctx, params),
-        .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
-        .color_adjustment = &color_adjustment,
-        .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
-        .cone_params = pl_render_default_params.cone_params,
-        .color_map_params = pl_render_default_params.color_map_params,
-        .disable_linear_scaling = ctx->benchmark || params->disable_linear_scaling,
-        .skip_anti_aliasing = ctx->benchmark || params->skip_anti_aliasing,
-    };
+    struct pl_render_params pl_params;
     int ret = 0;
     bool frame_started = false;
     bool mapped_image = false;
@@ -3166,14 +3277,18 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     ctx->d3d11_serial++;
 #endif
 
+    tracked = ctx->image;
+    image = track_image(ctx, params);
+    pl_params = base_render_params(ctx, params, &image, &color_adjustment);
+
     ret = swapchain_sync_size(ctx);
     if (ret < 0) {
-        return ret;
+        goto done;
     }
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
-        return ret;
+        goto done;
     }
 
     if (prev_ref && convert_frame(renderer, prev_ref) < 0) {
@@ -3194,8 +3309,9 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
         goto done;
     }
 
-    num_mix = map_frame_mix(ctx, frame, params, mix_images, mix_refs, mix_ts,
-                            mix_sigs);
+    num_mix = image.changed ? 0
+                            : map_frame_mix(ctx, frame, params, mix_images,
+                                            mix_refs, mix_ts, mix_sigs);
     if (num_mix > 0) {
         pl_frame = mix_images[0];
     } else {
@@ -3246,7 +3362,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     const struct pl_hook *hooks[LACHESIS_MAX_HOOKS];
 
     setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts,
-                 hooks);
+                 hooks, &image);
     deinterlace_apply(&pl_frame, &pl_params, frame, params);
 
     if (pl_params.deinterlace_params &&
@@ -3360,6 +3476,12 @@ out:
     }
 
 done:
+    if (ret < 0) {
+        ctx->image = tracked;
+        ctx->image.repaint_asked = 0;
+        ctx->image.repaint_failed_at = av_gettime_relative();
+    }
+
     return ret;
 }
 
@@ -3368,18 +3490,9 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     RendererContext *ctx = (RendererContext *)renderer;
     struct pl_frame pl_frame = {0};
     struct pl_frame target = {0};
+    ImageState image = {.rect = params->target_rect, .rotate = params->rotate};
     struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
-    struct pl_render_params pl_params = {
-        .upscaler = pick_upscaler(ctx, params),
-        .downscaler = pick_downscaler(ctx, params),
-        .sigmoid_params = ctx->benchmark ? NULL : pl_render_default_params.sigmoid_params,
-        .color_adjustment = &color_adjustment,
-        .dither_params = ctx->benchmark ? NULL : pl_render_default_params.dither_params,
-        .cone_params = pl_render_default_params.cone_params,
-        .color_map_params = pl_render_default_params.color_map_params,
-        .disable_linear_scaling = params->disable_linear_scaling,
-        .skip_anti_aliasing = params->skip_anti_aliasing,
-    };
+    struct pl_render_params pl_params;
     pl_tex cap_tex = NULL;
     struct pl_tex_params cap_params;
     struct pl_tex_transfer_params xfer;
@@ -3393,6 +3506,8 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
 #if LACHESIS_HAVE_D3D11
     ctx->d3d11_serial++;
 #endif
+
+    pl_params = base_render_params(ctx, params, &image, &color_adjustment);
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
@@ -3451,7 +3566,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     const struct pl_hook *hooks[LACHESIS_MAX_HOOKS];
 
     setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts,
-                 hooks);
+                 hooks, &image);
     deinterlace_apply(&pl_frame, &pl_params, frame, params);
 
     if (pl_params.deinterlace_params &&
@@ -3974,6 +4089,27 @@ void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll,
     ctx->sbs360_pitch = pitch;
     ctx->sbs360_roll = roll;
     ctx->sbs360_hfov = hfov;
+}
+
+int renderer_take_image_repaint(Renderer *renderer) {
+    RendererContext *ctx = (RendererContext *)renderer;
+    int64_t now;
+
+    if (!ctx || !ctx->image.last.moving || ctx->image.repaint_asked) {
+        return 0;
+    }
+    now = av_gettime_relative();
+    if (now - ctx->image.changed_at < IMAGE_SETTLE_US) {
+        return 0;
+    }
+    if (ctx->image.repaint_failed_at &&
+        now - ctx->image.repaint_failed_at < IMAGE_SETTLE_US) {
+        return 0;
+    }
+
+    ctx->image.repaint_asked = 1;
+
+    return 1;
 }
 
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {

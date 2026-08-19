@@ -76,6 +76,41 @@ static const char view360_shader[] =
     "//!MAXIMUM 3.0\n"
     "0.0\n"
     "\n"
+    "//!PARAM view_off_x\n"
+    "//!DESC Left edge of the visible part of the view, 0..1\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 1.0\n"
+    "0.0\n"
+    "\n"
+    "//!PARAM view_off_y\n"
+    "//!DESC Top edge of the visible part of the view, 0..1\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 1.0\n"
+    "0.0\n"
+    "\n"
+    "//!PARAM view_scale_x\n"
+    "//!DESC How much of the view is visible horizontally, 0..1\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 1.0\n"
+    "1.0\n"
+    "\n"
+    "//!PARAM view_scale_y\n"
+    "//!DESC How much of the view is visible vertically, 0..1\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 1.0\n"
+    "1.0\n"
+    "\n"
+    "//!PARAM view_aspect\n"
+    "//!DESC Aspect of the whole view\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.01\n"
+    "//!MAXIMUM 100.0\n"
+    "1.0\n"
+    "\n"
     "//!HOOK MAIN\n"
     "//!BIND HOOKED\n"
     "//!DESC 360 Panini projection with zoom-coupled vertical fit\n"
@@ -115,11 +150,12 @@ static const char view360_shader[] =
     "}\n"
     "\n"
     "vec4 hook() {\n"
-    "    vec2 ndc = HOOKED_pos * 2.0 - 1.0;\n"
-    "    ndc.y    = -ndc.y;\n"
+    "    vec2 view  = vec2(view_off_x, view_off_y) +\n"
+    "                 HOOKED_pos * vec2(view_scale_x, view_scale_y);\n"
+    "    vec2 ndc   = view * 2.0 - 1.0;\n"
+    "    ndc.y      = -ndc.y;\n"
     "\n"
-    "    float aspect = target_size.x / target_size.y;\n"
-    "    vec3 ray = view_ray(ndc, aspect);\n"
+    "    vec3 ray = view_ray(ndc, view_aspect);\n"
     "\n"
     "    float r  = roll * (PI / 180.0);\n"
     "    float cr = cos(r), sr = sin(r);\n"
@@ -176,7 +212,7 @@ void view360_pl_hook_destroy(const struct pl_hook **hook) {
 
 void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
                             float roll, float hfov, enum View360Layout layout,
-                            int rotate) {
+                            int rotate, const View360Viewport *viewport) {
     float tb = layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f;
 
     for (int i = 0; i < hook->num_parameters; i++) {
@@ -198,6 +234,21 @@ void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
         }
         if (!strcmp(par->name, "rot")) {
             par->data->f = (float)(rotate / 90);
+        }
+        if (!strcmp(par->name, "view_off_x")) {
+            par->data->f = viewport->off_x;
+        }
+        if (!strcmp(par->name, "view_off_y")) {
+            par->data->f = viewport->off_y;
+        }
+        if (!strcmp(par->name, "view_scale_x")) {
+            par->data->f = viewport->scale_x;
+        }
+        if (!strcmp(par->name, "view_scale_y")) {
+            par->data->f = viewport->scale_y;
+        }
+        if (!strcmp(par->name, "view_aspect")) {
+            par->data->f = viewport->aspect;
         }
     }
 }

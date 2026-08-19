@@ -56,6 +56,15 @@ static inline const char *view360_layout_name(enum View360Layout layout) {
 #define VIEW360_DEFAULT_HFOV 140.0f
 #define VIEW360_DEFAULT_PITCH -15.0f
 
+typedef struct View360Viewport {
+    float off_x, off_y;
+    float scale_x, scale_y;
+    float aspect;
+} View360Viewport;
+
+#define VIEW360_VIEWPORT_WHOLE \
+    (View360Viewport){.scale_x = 1.0f, .scale_y = 1.0f, .aspect = 1.0f}
+
 struct pl_gpu_t;
 struct pl_hook;
 
@@ -65,6 +74,6 @@ void view360_pl_hook_destroy(const struct pl_hook **hook);
 
 void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
                             float roll, float hfov, enum View360Layout layout,
-                            int rotate);
+                            int rotate, const View360Viewport *viewport);
 
 #endif /* LACHESIS_VIEW360_H */

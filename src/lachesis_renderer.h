@@ -129,6 +129,9 @@ int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
 /* NULL unless the backend can decode into its own memory. */
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);
 
+/* Call only from the event loop. Safe to call with a NULL renderer. */
+int renderer_take_image_repaint(Renderer *renderer);
+
 int renderer_display(Renderer *renderer, AVFrame *frame, RenderParams *params);
 int renderer_display_blank(Renderer *renderer, RenderParams *params);
 

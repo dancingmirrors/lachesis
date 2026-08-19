@@ -3300,6 +3300,9 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             is->audio_start_pending = 0;
             audio_device_resume();
         }
+        if (renderer_take_image_repaint(renderer)) {
+            is->force_refresh = 1;
+        }
         if (!is->paused || is->step || is->force_refresh || !is->window_opened ||
             osd_wants_repaint(is, av_gettime_relative() / 1000000.0)) {
             video_refresh(is, &remaining_time);

@@ -672,19 +672,18 @@ void event_loop(VideoState **pis) {
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_UP:
-            if (view360_enabled() && event.button.button == SDL_BUTTON_LEFT) {
-                sbs360_drag = 0;
-            }
             if (event.button.button == SDL_BUTTON_LEFT) {
+                sbs360_drag = 0;
                 pan_drag = 0;
             }
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            if (view360_enabled() && event.button.button == SDL_BUTTON_LEFT) {
+            if (view360_enabled() && event.button.button == SDL_BUTTON_LEFT &&
+                !(SDL_GetModState() & SDL_KMOD_CTRL)) {
                 sbs360_drag = 1;
                 sbs360_drag_last_x = event.button.x;
                 sbs360_drag_last_y = event.button.y;
-                break;
+                /* Deliberately no break. */
             }
             if ((SDL_GetModState() & SDL_KMOD_CTRL) &&
                 event.button.button == SDL_BUTTON_LEFT) {
@@ -696,6 +695,7 @@ void event_loop(VideoState **pis) {
             if (event.button.button == SDL_BUTTON_LEFT) {
                 static int64_t last_mouse_left_click = 0;
                 if (av_gettime_relative() - last_mouse_left_click <= 500000) {
+                    sbs360_drag = 0;
                     toggle_fullscreen(cur_stream);
                     cur_stream->force_refresh = 1;
                     last_mouse_left_click = 0;
