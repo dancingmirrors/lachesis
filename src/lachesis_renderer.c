@@ -3262,13 +3262,15 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     bool frame_started = false;
     bool mapped_image = false;
     struct pl_color_space hint = {0};
-    int64_t _ts1, _ts2, _ts3 = 0, prs_us = 0;
+    int64_t _ts0, _ts1, _ts2, _ts3 = 0, prs_us = 0;
     uint32_t max_dim;
     const struct pl_frame *mix_refs[LACHESIS_MAX_MIX_FRAMES];
     struct pl_frame mix_images[LACHESIS_MAX_MIX_FRAMES];
     float mix_ts[LACHESIS_MAX_MIX_FRAMES];
     uint64_t mix_sigs[LACHESIS_MAX_MIX_FRAMES];
     int num_mix;
+    struct pl_frame pl_prev = {0}, pl_next = {0};
+    bool mapped_prev = false, mapped_next = false;
     bool deint = params->deinterlace != 0;
     AVFrame *prev_ref = deint ? params->prev_frame : NULL;
     AVFrame *next_ref = deint ? params->next_frame : NULL;
@@ -3331,10 +3333,8 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     }
 
     static int64_t t_acq, t_rnd, t_prs, t_n;
-    int64_t _ts0 = av_gettime_relative();
-    struct pl_frame pl_prev = {0}, pl_next = {0};
-    bool mapped_prev = false, mapped_next = false;
 
+    _ts0 = av_gettime_relative();
     if (!pl_swapchain_start_frame(ctx->swapchain, &swap_frame)) {
         ret = AVERROR_EXTERNAL;
         goto out;
@@ -3886,6 +3886,8 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
     SDL_Window *window;
     Renderer *renderer;
     const char *what;
+    const char *video_driver;
+    int show_before_test;
     int w = 0, h = 0;
     int ret;
 
@@ -3913,8 +3915,8 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
         goto fail;
     }
 
-    const char *video_driver = SDL_GetCurrentVideoDriver();
-    int show_before_test = video_driver && !strcmp(video_driver, "wayland");
+    video_driver = SDL_GetCurrentVideoDriver();
+    show_before_test = video_driver && !strcmp(video_driver, "wayland");
 
     if (show_before_test) {
         SDL_ShowWindow(window);

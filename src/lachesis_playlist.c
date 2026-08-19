@@ -176,7 +176,7 @@ const PlaylistEntry *playlist_get(int pos) {
 
 static int playlist_add(char *display_path, char *archive_path, char *entry_name,
                         int from_playlist) {
-    PlaylistEntry *tmp;
+    PlaylistEntry *tmp, *e;
 
     if (!display_path || (!!archive_path != !!entry_name)) {
         goto fail;
@@ -188,7 +188,7 @@ static int playlist_add(char *display_path, char *archive_path, char *entry_name
     }
     playlist_entries = tmp;
 
-    PlaylistEntry *e = &playlist_entries[playlist_size++];
+    e = &playlist_entries[playlist_size++];
     e->display_path = display_path;
     e->archive_path = archive_path;
     e->entry_name = entry_name;
@@ -1697,6 +1697,12 @@ static void free_names(char **names, int count) {
 }
 
 void playlist_add_directory(const char *dir_path) {
+    size_t dir_len = strlen(dir_path);
+
+    while (dir_len > 0 && dir_path[dir_len - 1] == '/') {
+        dir_len--;
+    }
+
     DIR *d = opendir(dir_path);
     if (!d) {
         return;
@@ -1728,11 +1734,6 @@ void playlist_add_directory(const char *dir_path) {
 
     if (n > 1) {
         qsort(names, n, sizeof(*names), cmp_str);
-    }
-
-    size_t dir_len = strlen(dir_path);
-    while (dir_len > 0 && dir_path[dir_len - 1] == '/') {
-        dir_len--;
     }
 
     for (int i = 0; i < n; i++) {

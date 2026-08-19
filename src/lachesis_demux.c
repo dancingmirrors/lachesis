@@ -686,9 +686,65 @@ static int asf_find_guid(const uint8_t *buf, int size, const uint8_t *guid) {
     return -1;
 }
 
+static void asf_inject_index_entries(AVFormatContext *ic, AVStream *st,
+                                     const uint8_t *buf, int tsize,
+                                     int64_t data_offset, int64_t fsize,
+                                     int64_t preroll_ms) {
+    int off = asf_find_guid(buf, tsize, asf_simple_index_guid);
+    if (off < 0 || off + 56 > tsize) {
+        return;
+    }
+
+    int64_t itime = AV_RL64(buf + off + 40);
+    uint32_t ict = AV_RL32(buf + off + 52);
+    int64_t itime_ms = itime / 10000;
+    if (itime_ms <= 0 || ict < 8 || off + 56 + (int64_t)ict * 6 > tsize) {
+        return;
+    }
+
+    int64_t dur_ms = av_rescale(ic->duration, 1000, AV_TIME_BASE);
+    if ((int64_t)ict * itime_ms >= (int64_t)(dur_ms * ASF_IDX_COVERAGE)) {
+        return;
+    }
+
+    const uint8_t *ent = buf + off + 56;
+    uint32_t pkt_first = AV_RL32(ent);
+    uint32_t pkt_last = AV_RL32(ent + (int64_t)(ict - 1) * 6);
+    if (pkt_last <= pkt_first) {
+        return;
+    }
+    double pkts_per_entry = (double)(pkt_last - pkt_first) / (ict - 1);
+    for (uint32_t k = ict / 4; k < ict; k += ict / 4) {
+        double expect = pkt_first + pkts_per_entry * k;
+        double got = AV_RL32(ent + (int64_t)k * 6);
+        double tol = FFMAX(pkts_per_entry * 8, (double)(pkt_last - pkt_first) * 0.05);
+        if (got < expect - tol || got > expect + tol) {
+            return;
+        }
+    }
+
+    int64_t last_ts_ms = (int64_t)(ict - 1) * itime_ms - preroll_ms;
+    int64_t max_pkt = (fsize - data_offset) / ic->packet_size - 1;
+    int injected = 0;
+
+    for (int64_t ts = last_ts_ms + itime_ms;
+         ts <= dur_ms && injected < ASF_IDX_MAX_ADD; ts += itime_ms) {
+        int64_t pkt = pkt_last +
+            (int64_t)((double)(ts - last_ts_ms) / itime_ms * pkts_per_entry);
+        if (pkt > max_pkt) {
+            pkt = max_pkt;
+        }
+        int64_t pos = data_offset + pkt * ic->packet_size;
+        int64_t ts_st = av_rescale_q(ts, (AVRational){1, 1000}, st->time_base);
+        if (av_add_index_entry(st, pos, ts_st, ic->packet_size, 0,
+                               AVINDEX_KEYFRAME) >= 0) {
+            injected++;
+        }
+    }
+}
+
 static void asf_extend_truncated_index(AVFormatContext *ic) {
     int64_t preroll_ms = 0;
-    int injected = 0;
     uint8_t *buf;
 
     if (strcmp(ic->iformat->name, "asf") ||
@@ -730,62 +786,12 @@ static void asf_extend_truncated_index(AVFormatContext *ic) {
     }
 
     int tsize = (int)FFMIN(ASF_IDX_TAIL_MAX, fsize - data_offset);
-    if (avio_seek(ic->pb, fsize - tsize, SEEK_SET) < 0 ||
-        avio_read(ic->pb, buf, tsize) != tsize) {
-        goto out;
+    if (avio_seek(ic->pb, fsize - tsize, SEEK_SET) >= 0 &&
+        avio_read(ic->pb, buf, tsize) == tsize) {
+        asf_inject_index_entries(ic, st, buf, tsize, data_offset, fsize,
+                                 preroll_ms);
     }
 
-    int off = asf_find_guid(buf, tsize, asf_simple_index_guid);
-    if (off < 0 || off + 56 > tsize) {
-        goto out;
-    }
-
-    int64_t itime = AV_RL64(buf + off + 40);
-    uint32_t ict = AV_RL32(buf + off + 52);
-    int64_t itime_ms = itime / 10000;
-    if (itime_ms <= 0 || ict < 8 || off + 56 + (int64_t)ict * 6 > tsize) {
-        goto out;
-    }
-
-    int64_t dur_ms = av_rescale(ic->duration, 1000, AV_TIME_BASE);
-    if ((int64_t)ict * itime_ms >= (int64_t)(dur_ms * ASF_IDX_COVERAGE)) {
-        goto out;
-    }
-
-    const uint8_t *ent = buf + off + 56;
-    uint32_t pkt_first = AV_RL32(ent);
-    uint32_t pkt_last = AV_RL32(ent + (int64_t)(ict - 1) * 6);
-    if (pkt_last <= pkt_first) {
-        goto out;
-    }
-    double pkts_per_entry = (double)(pkt_last - pkt_first) / (ict - 1);
-    for (uint32_t k = ict / 4; k < ict; k += ict / 4) {
-        double expect = pkt_first + pkts_per_entry * k;
-        double got = AV_RL32(ent + (int64_t)k * 6);
-        double tol = FFMAX(pkts_per_entry * 8, (double)(pkt_last - pkt_first) * 0.05);
-        if (got < expect - tol || got > expect + tol) {
-            goto out;
-        }
-    }
-
-    int64_t last_ts_ms = (int64_t)(ict - 1) * itime_ms - preroll_ms;
-    int64_t max_pkt = (fsize - data_offset) / ic->packet_size - 1;
-
-    for (int64_t ts = last_ts_ms + itime_ms;
-         ts <= dur_ms && injected < ASF_IDX_MAX_ADD; ts += itime_ms) {
-        int64_t pkt = pkt_last +
-            (int64_t)((double)(ts - last_ts_ms) / itime_ms * pkts_per_entry);
-        if (pkt > max_pkt) {
-            pkt = max_pkt;
-        }
-        int64_t pos = data_offset + pkt * ic->packet_size;
-        int64_t ts_st = av_rescale_q(ts, (AVRational){1, 1000}, st->time_base);
-        if (av_add_index_entry(st, pos, ts_st, ic->packet_size, 0,
-                               AVINDEX_KEYFRAME) >= 0) {
-            injected++;
-        }
-    }
-out:
     av_free(buf);
     avformat_seek_file(ic, -1, INT64_MIN, 0, INT64_MAX, 0);
 }

@@ -70,11 +70,14 @@ static char *read_entire_file(const char *path, int *err_out) {
     }
 
     char *buf = NULL;
+    long size;
+    size_t got;
+
     if (fseek(f, 0, SEEK_END) != 0) {
         *err_out = errno;
         goto done;
     }
-    long size = ftell(f);
+    size = ftell(f);
     if (size < 0) {
         *err_out = errno;
         goto done;
@@ -94,7 +97,7 @@ static char *read_entire_file(const char *path, int *err_out) {
         goto done;
     }
 
-    size_t got = fread(buf, 1, (size_t)size, f);
+    got = fread(buf, 1, (size_t)size, f);
     buf[got] = '\0';
 
 done:

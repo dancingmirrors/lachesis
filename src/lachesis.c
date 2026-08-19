@@ -2863,7 +2863,7 @@ static VideoState *stream_open(const char *filename,
                                const char *entry_name,
                                int from_playlist) {
     VideoState *is;
-    int vol;
+    int vol, vol_max_pct;
 
     is = av_mallocz(sizeof(VideoState));
     if (!is) {
@@ -2941,7 +2941,7 @@ static VideoState *stream_open(const char *filename,
         is->render_params.video_background_type = type;
         is->render_params.video_background_explicit = 1;
     }
-    int vol_max_pct = allow_volume_boost ? VOLUME_BOOST_MAX_PCT : 100;
+    vol_max_pct = allow_volume_boost ? VOLUME_BOOST_MAX_PCT : 100;
     is->audio_volume_max = allow_volume_boost
         ? (FFP_MIX_MAXVOLUME * VOLUME_BOOST_MAX_PCT + 50) / 100
         : FFP_MIX_MAXVOLUME;
