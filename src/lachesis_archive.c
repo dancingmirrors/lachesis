@@ -262,10 +262,13 @@ static int64_t archive_seek(void *opaque, int64_t offset, int whence) {
         while (io->pos < target) {
             int want = (int)FFMIN((int64_t)sizeof(discard), target - io->pos);
             la_ssize_t r = archive_read_data(io->arch, discard, want);
-            if (r <= 0 || archive_interrupted(io)) {
+            if (r <= 0) {
                 return -1;
             }
             io->pos += r;
+            if (archive_interrupted(io)) {
+                return -1;
+            }
         }
     }
 

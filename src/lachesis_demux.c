@@ -1056,8 +1056,11 @@ int read_thread(void *arg) {
         is->archive_avio = archive_entry_open_avio(is->archive_path, is->entry_name,
                                                    &archive_interrupt);
         if (!is->archive_avio) {
-            log_warn("Could not open archive entry '%s' in '%s'!\n",
-                     is->entry_name, is->archive_path);
+            if (is->abort_request) {
+            } else {
+                log_warn("Could not open archive entry '%s' in '%s'!\n",
+                         is->entry_name, is->archive_path);
+            }
             ret = -1;
             goto fail;
         }
@@ -1183,7 +1186,6 @@ int read_thread(void *arg) {
                 print_error(is->filename, err);
                 playlist_warn_unsafe_disabled(is->filename, 1);
             } else {
-                log_verbose("Open of '%s' aborted: %s\n", is->filename, av_err2str(err));
             }
             ret = -1;
             goto fail;
