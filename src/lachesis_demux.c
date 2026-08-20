@@ -64,7 +64,7 @@
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
 #define MIN_FRAMES 25
 
-#define HWACCEL_EXTRA_FRAMES (VIDEO_PICTURE_QUEUE_SIZE + 3)
+#define HWACCEL_EXTRA_FRAMES 6
 
 static double read_ahead_secs = 1.0;
 static int64_t max_queue_bytes = MAX_QUEUE_SIZE;

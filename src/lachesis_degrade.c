@@ -59,15 +59,14 @@
 #define DEGRADE_JUDDER_WINDOW_US (2 * 1000000)
 
 #define CATCHUP_MAX_FREEZE_SECS 0.25
-#define CONTENT_SKIP_LAND_MARGIN 0.1
-#define CATCHUP_BEHIND_SECS 5.0
-#define CATCHUP_COOLDOWN_US (5 * 1000000)
+#define CONTENT_SKIP_LAND_MARGIN 0.08
+#define CATCHUP_COOLDOWN_US (4 * 1000000)
 
-#define CONTENT_SKIP_MIN_LAG 0.5
-#define CONTENT_SKIP_MAX_JUMP 4.0
+#define CONTENT_SKIP_MIN_LAG 2.0
+#define CONTENT_SKIP_MAX_JUMP 2.0
 #define CONTENT_SKIP_SCAN_MAX 2048
-#define CONTENT_SKIP_HURRY_SECS 0.2
-#define CONTENT_SKIP_HURRY_COOLDOWN_US (20 * 1000)
+#define CONTENT_SKIP_HURRY_SECS 0.1
+#define CONTENT_SKIP_HURRY_COOLDOWN_US (10 * 1000)
 
 static int degrade_floor(void) {
     return fast ? DEGRADE_NONREF : DEGRADE_NONE;
@@ -276,12 +275,8 @@ static void degrade_content_skip(VideoState *is, double lag) {
     if (dropped <= 0.0) {
         /* XXX: Nothing to land on in what we have buffered. */
         double v = get_clock(&is->vidclk);
-
-        double behind =
-            skip_to_keyframe ? CONTENT_SKIP_MIN_LAG : CATCHUP_BEHIND_SECS;
-
         if (is->audio_st && get_master_sync_type(is) == AV_SYNC_AUDIO_MASTER &&
-            !isnan(v) && m - v > behind) {
+            !isnan(v) && m - v > CONTENT_SKIP_MIN_LAG) {
             stream_seek(is, (int64_t)(m * AV_TIME_BASE),
                         (int64_t)((m - v) * AV_TIME_BASE), 0);
         }

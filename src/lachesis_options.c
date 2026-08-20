@@ -73,7 +73,6 @@ int startup_volume = 100;
 int av_sync_type = AV_SYNC_AUDIO_MASTER;
 int av_sync_type_explicit = 0;
 int fast = 0;
-int skip_to_keyframe = 0;
 int no_edit_list = 0;
 int64_t start_time = AV_NOPTS_VALUE;
 int64_t play_duration = AV_NOPTS_VALUE;
@@ -553,7 +552,6 @@ const OptionDef options[] = {
     {"edit-list", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_edit_list}, "whether to honor edit lists (auto, off)", "mode"},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type (audio, video, ext)", "type"},
     {"fast", OPT_TYPE_BOOL, 0, {&fast}, "permanently degraded decoding (drops frames)"},
-    {"skip-to-keyframe", OPT_TYPE_BOOL, 0, {&skip_to_keyframe}, "skip the video forward to keyframes instead of slowing down (drops content)"},
     {"no-shader-cache", OPT_TYPE_BOOL, 0, {&no_shader_cache}, "disable caching compiled shaders on disk"},
     {"shader-cache-dir", OPT_TYPE_STRING, 0, {&shader_cache_dir}, "directory for the shader cache", "dir"},
     {"keep-open", OPT_TYPE_BOOL, 0, {&keep_open}, "keep the window open at the end of the playlist"},
@@ -796,7 +794,6 @@ static const struct {
     {"vn", "video_unscaled", OPT_DISABLES},
     {"vn", "vcodec", OPT_DISABLES},
     {"vn", "fast", OPT_DISABLES},
-    {"vn", "skip-to-keyframe", OPT_DISABLES},
     {"vn", "max-texture-size", OPT_DISABLES},
     {"vn", "hwaccel", OPT_DISABLES},
     {"vn", "hwaccel-codecs", OPT_DISABLES},
