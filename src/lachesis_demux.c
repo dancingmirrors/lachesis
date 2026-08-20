@@ -405,8 +405,8 @@ static int component_open(VideoState *is, int stream_index) {
         if (fast) {
             avctx->flags2 |= AV_CODEC_FLAG2_FAST;
         }
-        if (is->decode_degraded) {
-            apply_degraded_decode(avctx);
+        if (is->degrade_level > DEGRADE_NONE) {
+            apply_degraded_decode(avctx, is->degrade_level);
         }
     }
 

@@ -71,6 +71,7 @@ typedef struct RenderParams {
     int still_image;
     int disable_linear_scaling;
     int skip_anti_aliasing;
+    int cheapest;
     int deinterlace;
     int second_field;
     AVFrame *prev_frame;

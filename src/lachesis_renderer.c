@@ -3200,7 +3200,7 @@ static struct pl_render_params base_render_params(const RendererContext *ctx,
                                                   const RenderParams *params,
                                                   const ImageState *image,
                                                   struct pl_color_adjustment *adjustment) {
-    int cheapest = ctx->benchmark;
+    int cheapest = ctx->benchmark || params->cheapest;
 
     return (struct pl_render_params){
         .upscaler = pick_upscaler(ctx, params, image),

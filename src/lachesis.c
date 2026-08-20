@@ -90,6 +90,7 @@
 #include "lachesis_alloc.h"
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
+#include "lachesis_degrade.h"
 #include "lachesis_deinterlace.h"
 #include "lachesis_demux.h"
 #include "lachesis_equalizer.h"
@@ -200,17 +201,12 @@ fail:
 }
 #endif
 
-#define DECODE_BEHIND_LATCH_FRAMES 20
-#define DECODE_RECOVER_FRAMES 120
-#define CATCHUP_BEHIND_SECS 1.0
-#define CATCHUP_COOLDOWN_US (18 * 1000000)
 #define EXACT_SEEK_SLACK 0.005
 #define EXACT_SEEK_MAX_RUNUP 30.0
 #define EXACT_SEEK_BACKOFF 0.5
 #define EXTERNAL_CLOCK_MIN_FRAMES 2
 #define EXTERNAL_CLOCK_MAX_FRAMES 10
 
-#define AV_SYNC_THRESHOLD_MIN 0.04
 #define AV_SYNC_THRESHOLD_MAX 0.1
 
 #define AV_SYNC_SLEW_GAIN 0.1
@@ -910,6 +906,7 @@ static void video_image_display(VideoState *is) {
     is->render_params.still_image = is->is_still_image;
     is->render_params.disable_linear_scaling = is->render_low_quality;
     is->render_params.skip_anti_aliasing = is->render_low_quality;
+    is->render_params.cheapest = is->render_low_quality;
     is->render_params.rotate = video_rotate;
     is->last_render_serial = vp->serial;
 
@@ -973,6 +970,7 @@ static void stream_component_close(VideoState *is, int stream_index) {
     case AVMEDIA_TYPE_VIDEO:
         decoder_abort(&is->viddec, &is->pictq);
         decoder_destroy(&is->viddec);
+        degrade_reset(is);
         break;
     case AVMEDIA_TYPE_SUBTITLE:
         decoder_abort(&is->subdec, &is->subpq);
@@ -2396,6 +2394,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
 
 static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double duration, int64_t pos, int serial) {
     static uint64_t next_frame_id = 1;
+    int64_t stall_t0 = av_gettime_relative();
     Frame *vp;
 
 #if defined(DEBUG_SYNC)
@@ -2406,6 +2405,7 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     if (!(vp = frame_queue_peek_writable(&is->pictq))) {
         return -1;
     }
+    degrade_note_stall(is, av_gettime_relative() - stall_t0);
 
     vp->sar = src_frame->sample_aspect_ratio;
 
@@ -2431,40 +2431,6 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     frame_queue_push(&is->pictq);
 
     return 0;
-}
-
-void apply_degraded_decode(AVCodecContext *avctx) {
-    avctx->skip_loop_filter = AVDISCARD_ALL;
-    avctx->skip_frame = AVDISCARD_NONREF;
-}
-static void enable_degraded_decode(VideoState *is) {
-    if (is->decode_degraded) {
-        return;
-    }
-    is->decode_degraded = 1;
-    is->render_low_quality = 1;
-    if (is->viddec.avctx) {
-        apply_degraded_decode(is->viddec.avctx);
-    }
-    if (fast || !is->degraded_warned) {
-        is->degraded_warned = 1;
-        log_warn("Degraded decoding engaged. Quality will suffer.\n");
-    }
-}
-
-static void disable_degraded_decode(VideoState *is) {
-    if (!is->decode_degraded || fast) {
-        return;
-    }
-    is->decode_degraded = 0;
-    is->render_low_quality = 0;
-    is->decode_behind_streak = 0;
-    is->decode_recover_streak = 0;
-    if (is->viddec.avctx) {
-        is->viddec.avctx->skip_loop_filter = AVDISCARD_DEFAULT;
-        is->viddec.avctx->skip_frame = AVDISCARD_DEFAULT;
-    }
-    log_verbose("Degraded decoding disengaged.\n");
 }
 
 static void hwframe_download_inplace(AVFrame *frame) {
@@ -2553,69 +2519,12 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
             ? (int64_t)(span_us / playback_speed)
             : span_us;
 
-        if (had_packets) {
-            if (budget_us > 0 && decode_us > budget_us) {
-                if (is->decode_behind_streak < DECODE_BEHIND_LATCH_FRAMES) {
-                    is->decode_behind_streak++;
-                }
-            } else if (is->decode_behind_streak > 0) {
-                is->decode_behind_streak--;
-            }
-            if (!fast) {
-                if (is->decode_behind_streak >= DECODE_BEHIND_LATCH_FRAMES) {
-                    enable_degraded_decode(is);
-                } else if (is->decode_degraded) {
-                    double m = get_master_clock(is);
-                    double v = get_clock(&is->vidclk);
-                    int have_headroom = budget_us > 0 && decode_us * 3 < budget_us;
-                    int in_sync = isnan(m) || isnan(v) ||
-                        fabs(m - v) < AV_SYNC_THRESHOLD_MAX;
-                    if (have_headroom && in_sync) {
-                        if (++is->decode_recover_streak >= DECODE_RECOVER_FRAMES) {
-                            disable_degraded_decode(is);
-                        }
-                    } else {
-                        is->decode_recover_streak = 0;
-                    }
-                }
-            }
-            int decode_too_slow = fast
-                ? is->decode_behind_streak >= DECODE_BEHIND_LATCH_FRAMES
-                : is->decode_degraded;
-            if (decode_too_slow && skip_to_keyframe && !av_sync_type_explicit &&
-                is->audio_st && is->av_sync_type == AV_SYNC_AUDIO_MASTER) {
-                double m = get_master_clock(is);
-                double v = get_clock(&is->vidclk);
-                int64_t now = av_gettime_relative();
-                if (!isnan(m) && !isnan(v) && m - v > CATCHUP_BEHIND_SECS &&
-                    !is->seek_req &&
-                    now - is->last_catchup_us > CATCHUP_COOLDOWN_US) {
-                    is->last_catchup_us = now;
-                    log_warn(
-                        "Video decoder can't keep up (%.1f ms/frame versus %.1f ms "
-                        "real time). Taking evasive maneuvers.\n",
-                        decode_us / 1000.0, budget_us / 1000.0);
-                    stream_seek(is, (int64_t)(m * AV_TIME_BASE),
-                                (int64_t)((m - v) * AV_TIME_BASE), 0);
-                }
-            }
-        }
+        degrade_frame(is, dpts, decode_us, budget_us, interval_us,
+                      had_packets);
 
-        if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
-            if (frame->pts != AV_NOPTS_VALUE) {
-                double diff = dpts - get_master_clock(is);
-                double slack = interval_us > 0 ? interval_us / 1000000.0
-                                               : AV_SYNC_THRESHOLD_MIN;
-                if (!isnan(diff) && fabs(diff) < AV_NOSYNC_THRESHOLD &&
-                    diff - is->frame_last_filter_delay * playback_speed < -slack &&
-                    is->viddec.pkt_serial == is->vidclk.serial &&
-                    is->videoq.nb_packets &&
-                    frame_queue_nb_remaining(&is->pictq) > 0) {
-                    is->frame_drops_early++;
-                    av_frame_unref(frame);
-                    got_picture = 0;
-                }
-            }
+        if (degrade_drop_late_frame(is, dpts, interval_us)) {
+            av_frame_unref(frame);
+            got_picture = 0;
         }
     }
 
@@ -2930,6 +2839,7 @@ static VideoState *stream_open(const char *filename,
     is->pictq_last_serial = -1;
     is->decode_span_pts = NAN;
     is->decode_span_serial = -1;
+
     is->last_av_diff = NAN;
     is->start_playhead = NAN;
     exact_seek_cancel(is);
@@ -2952,9 +2862,7 @@ static VideoState *stream_open(const char *filename,
     is->av_sync_type = av_sync_type;
     is->begin_paused = pause_next_stream;
     pause_next_stream = 0;
-    if (fast) {
-        enable_degraded_decode(is);
-    }
+    degrade_init(is);
     is->read_tid = SDL_CreateThread(read_thread, "read_thread", is);
     if (!is->read_tid) {
     fail:

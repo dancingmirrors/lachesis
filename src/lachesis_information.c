@@ -44,7 +44,7 @@ static char audio_device_format_line[96] = "";
 static char audio_passthrough_line[96] = "";
 static char media_info_vout_line[128] = "";
 
-static char playback_stats_cached[768] = "";
+static char playback_stats_cached[1024] = "";
 static int64_t playback_stats_next_refresh_us = 0;
 
 static const char *media_info_renderer(void) {
@@ -331,9 +331,10 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
 
         snprintf(cached, cached_size,
                  "Dropped frames: %d (early %d, late %d)\n%s\n%s\n"
+                 "Decoding: %s\n"
                  "Interpolation: %s\nDeinterlacing: %s\nSupersampling: %s\n%s",
                  early + late, early, late, sync_line, disp_line,
-                 interpolate_status(), deinterlace_status(is),
+                 degrade_status(is), interpolate_status(), deinterlace_status(is),
                  supersample_status(supersample_level,
                                     playback_stats_supersample(is)),
                  timing);

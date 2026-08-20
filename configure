@@ -180,6 +180,7 @@ add_sources(
     "src/lachesis_ass.c",
     "src/lachesis_audio.c",
     "src/lachesis_deinterlace.c",
+    "src/lachesis_degrade.c",
     "src/lachesis_delete.c",
     "src/lachesis_demux.c",
     "src/lachesis_equalizer.c",

@@ -552,7 +552,7 @@ const OptionDef options[] = {
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
     {"edit-list", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_edit_list}, "whether to honor edit lists (auto, off)", "mode"},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type (audio, video, ext)", "type"},
-    {"fast", OPT_TYPE_BOOL, 0, {&fast}, "decode degraded from the start instead of waiting to fall behind (drops frames)"},
+    {"fast", OPT_TYPE_BOOL, 0, {&fast}, "permanently degraded decoding (drops frames)"},
     {"skip-to-keyframe", OPT_TYPE_BOOL, 0, {&skip_to_keyframe}, "skip the video forward to keyframes instead of slowing down (drops content)"},
     {"no-shader-cache", OPT_TYPE_BOOL, 0, {&no_shader_cache}, "disable caching compiled shaders on disk"},
     {"shader-cache-dir", OPT_TYPE_STRING, 0, {&shader_cache_dir}, "directory for the shader cache", "dir"},

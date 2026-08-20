@@ -47,6 +47,7 @@
 #define VOLUME_BOOST_MAX_PCT 300
 /* No A/V sync correction is done if below this threshold. */
 #define AV_NOSYNC_THRESHOLD 10.0
+#define AV_SYNC_THRESHOLD_MIN 0.04
 /* Number of audio samples over which the audio difference average is computed. */
 #define AUDIO_DIFF_AVG_NB 20
 
@@ -65,6 +66,13 @@ typedef struct PacketQueue {
     SDL_Mutex *mutex;
     SDL_Condition *cond;
 } PacketQueue;
+
+#define DEGRADE_NONE 0
+#define DEGRADE_RENDER 1
+#define DEGRADE_FILTER 2
+#define DEGRADE_NONREF 3
+#define DEGRADE_SKIP 4
+#define DEGRADE_MAX DEGRADE_SKIP
 
 #define VIDEO_PICTURE_QUEUE_SIZE 3
 #define SUBPICTURE_QUEUE_SIZE 16
@@ -224,12 +232,33 @@ typedef struct VideoState {
     int audclk_drift_valid;
     int frame_drops_early;
     int frame_drops_late;
-    int decode_behind_streak;
-    int decode_recover_streak;
     double decode_span_pts;
     int decode_span_serial;
-    int decode_degraded;
-    int degraded_warned;
+    int degrade_level;
+    int degrade_episodes;
+    int degrade_relapses[DEGRADE_MAX + 1];
+    int degrade_left_level;
+    int64_t degrade_left_us;
+    int degrade_warned;
+    int64_t degrade_changed_us;
+    int64_t degrade_late_since_us;
+    int64_t degrade_calm_since_us;
+    double catchup_kept_time;
+    double decode_cost;
+    int64_t cost_decode_us;
+    int64_t cost_budget_us;
+    /* How long the video thread spent parked on a full picture queue. */
+    int64_t stall_us;
+    int64_t stall_mark_us;
+    int64_t stall_fold_us;
+    double stall_frac;
+    int degrade_judder_base;
+    int64_t degrade_judder_us;
+    double degrade_judder_rate;
+    int degrade_serial;
+    int64_t degrade_serial_us;
+    int64_t last_content_skip_us;
+    int content_skips;
     int64_t last_catchup_us;
     int render_low_quality;
 
@@ -368,7 +397,8 @@ void decoder_destroy(Decoder *d);
 void decoder_abort(Decoder *d, FrameQueue *fq);
 int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub);
 int video_thread(void *arg);
-void apply_degraded_decode(AVCodecContext *avctx);
+void apply_degraded_decode(AVCodecContext *avctx, int level);
+const char *degrade_status(const VideoState *is);
 int note_window_pixel_size(int w, int h);
 void update_screen_size(void);
 int video_adopt_window_size(VideoState *is);
