@@ -48,9 +48,9 @@ jobs:
 
           set -x
 
-          git clone --depth 1 --branch release-3.2.0 https://github.com/libsdl-org/SDL.git
-          #git clone --depth 1 https://github.com/libsdl-org/SDL.git
+          git clone --depth 100 https://github.com/libsdl-org/SDL.git
           cd SDL
+          git reset --hard b669ac244e10fbab4734c7389151f7a4e8ac725f
           mkdir build
           cd build
           cmake .. -DCMAKE_INSTALL_PREFIX=/usr/local
