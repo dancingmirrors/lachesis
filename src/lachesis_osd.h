@@ -35,6 +35,7 @@ void osd_uninit(void);
 const char *osd_font_name(void);
 
 void osd_prepare(VideoState *is);
+unsigned osd_surface_generation(void);
 
 void osd_show_status(void);
 void osd_show_seek(void);

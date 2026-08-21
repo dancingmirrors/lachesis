@@ -449,9 +449,10 @@ void alloc_track_report(void) {
     SDL_UnlockMutex(alloc_mutex);
 
     if (live) {
-        fprintf(stderr, "LEAK: %zu allocations amounting to %s were never freed "
-                        "(%" PRIu64 " allocations, peak %s):\n",
-                live, total, nallocs, peak);
+        fprintf(stderr, "LEAK: %zu allocation%s amounting to %s were never "
+                        "freed (%" PRIu64 " allocation%s, peak %s):\n",
+                live, live == 1 ? "" : "s", total, nallocs,
+                nallocs == 1 ? "" : "s", peak);
 
         if (!completed) {
             fprintf(stderr, "LEAK: the teardown did not finish "

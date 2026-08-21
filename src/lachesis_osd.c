@@ -1031,7 +1031,10 @@ static int osd_subtitle_overlay(VideoState *is, int cw, int ch,
         ov->surf;
 }
 
-/* Composite the OSD into a surface for the renderer to blend as an overlay. */
+unsigned osd_surface_generation(void) {
+    return osd_generation;
+}
+
 void osd_prepare(VideoState *is) {
     SubtitleOverlay ov = {0};
     int have_ov;
@@ -1057,6 +1060,7 @@ void osd_prepare(VideoState *is) {
     is->render_params.osd_width = osd_surface->w;
     is->render_params.osd_height = osd_surface->h;
     is->render_params.osd_stride = osd_surface->pitch;
+    is->render_params.osd_generation = osd_generation;
     is->osd_state = osd_state(is);
 }
 

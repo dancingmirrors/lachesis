@@ -252,6 +252,8 @@ typedef struct RendererContext {
 
     pl_tex osd_tex;
     pl_tex sub_tex;
+    unsigned osd_tex_generation;
+    unsigned sub_tex_generation;
 
     AVFrame *blank_frame;
 
@@ -401,6 +403,8 @@ static int add_device_extension(const AVDictionary *opt,
 
     return av_dict_set(dict, dev_ext_key, ext_list, AV_DICT_DONT_STRDUP_VAL);
 }
+
+static int allow_software_gpu = 1;
 
 static const char *select_device(const AVDictionary *opt) {
     const AVDictionaryEntry *entry;
@@ -874,7 +878,7 @@ static int create_vk_by_placebo(Renderer *renderer,
                                                .instance = ctx->placebo_instance->instance,
                                                .get_proc_addr = ctx->placebo_instance->get_proc_addr,
                                                .surface = ctx->vk_surface,
-                                               .allow_software = true,
+                                               .allow_software = allow_software_gpu,
                                                .opt_extensions = opt_exts,
                                                .num_opt_extensions = num_opt_exts,
                                                .features = present_timing ? vkpresent_device_features() : NULL,
@@ -1321,7 +1325,7 @@ static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                                        pl_opengl_params(
                                            .get_proc_addr = gl_get_proc_addr,
                                            .debug = enable_debug(opt),
-                                           .allow_software = true,
+                                           .allow_software = allow_software_gpu,
                                            .max_glsl_version = max_glsl,
                                            .egl_display = egl_display, ));
     if (!ctx->placebo_gl && egl_display) {
@@ -1330,7 +1334,7 @@ static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                                            pl_opengl_params(
                                                .get_proc_addr = gl_get_proc_addr,
                                                .debug = enable_debug(opt),
-                                               .allow_software = true,
+                                               .allow_software = allow_software_gpu,
                                                .max_glsl_version = max_glsl, ));
     }
     /* clang-format on */
@@ -2770,7 +2774,12 @@ static View360Viewport clip_360_viewport(struct pl_frame *target) {
 }
 
 static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
-                             int w, int h, int stride) {
+                             int w, int h, int stride, unsigned generation,
+                             unsigned *held) {
+    if (*slot && (int)(*slot)->params.w == w && (int)(*slot)->params.h == h &&
+        generation && *held == generation) {
+        return *slot;
+    }
     if (!*slot || (int)(*slot)->params.w != w || (int)(*slot)->params.h != h) {
         pl_fmt fmt = pl_find_named_fmt(ctx->gpu, "rgba8");
         pl_tex_destroy(ctx->gpu, slot);
@@ -2794,8 +2803,10 @@ static pl_tex overlay_upload(RendererContext *ctx, pl_tex *slot, void *pixels,
                                      .ptr = pixels,
                                      .row_pitch = stride,
                                  })) {
+        *held = 0;
         return NULL;
     }
+    *held = generation;
 
     return *slot;
 }
@@ -2886,7 +2897,8 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     if (params->sub_pixels && params->sub_width > 0 && params->sub_height > 0) {
         pl_tex tex = overlay_upload(ctx, &ctx->sub_tex, params->sub_pixels,
                                     params->sub_width, params->sub_height,
-                                    params->sub_stride);
+                                    params->sub_stride, params->sub_generation,
+                                    &ctx->sub_tex_generation);
         if (tex) {
             parts[num_overlays] = (struct pl_overlay_part){
                 .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->sub_width, .y1 = (float)params->sub_height},
@@ -2912,7 +2924,8 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
     if (params->osd_pixels && params->osd_width > 0 && params->osd_height > 0) {
         pl_tex tex = overlay_upload(ctx, &ctx->osd_tex, params->osd_pixels,
                                     params->osd_width, params->osd_height,
-                                    params->osd_stride);
+                                    params->osd_stride, params->osd_generation,
+                                    &ctx->osd_tex_generation);
         if (tex) {
             parts[num_overlays] = (struct pl_overlay_part){
                 .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
@@ -3323,6 +3336,13 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
             goto done;
         }
         mapped_image = true;
+    }
+
+    if (ctx->benchmark || params->cheapest) {
+        pl_frame.film_grain.type = PL_FILM_GRAIN_NONE;
+        for (int i = 1; i < num_mix; i++) {
+            mix_images[i].film_grain.type = PL_FILM_GRAIN_NONE;
+        }
     }
 
     pl_color_space_from_avframe(&hint, frame);
@@ -3979,22 +3999,32 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
 
     log_verbose("SDL video driver: %s.\n", driver ? driver : "none");
 
-    for (size_t i = 0; i < num; i++) {
-        enum RendererApi api = order[i];
-        int attempts = api_num_attempts(api, params->opt);
+    for (int pass = 0; pass < 2; pass++) {
+        int hardware_only = pass == 0 && num > 1;
 
-        for (int attempt = 0; attempt < attempts; attempt++) {
-            int ret = renderer_try(params, api, attempt, window, out, why,
-                                   why_size);
+        allow_software_gpu = !hardware_only;
+        why[0] = '\0';
 
-            if (ret >= 0) {
-                return 0;
+        for (size_t i = 0; i < num; i++) {
+            enum RendererApi api = order[i];
+            int attempts = api_num_attempts(api, params->opt);
+
+            for (int attempt = 0; attempt < attempts; attempt++) {
+                int ret = renderer_try(params, api, attempt, window, out, why,
+                                       why_size);
+
+                if (ret >= 0) {
+                    return 0;
+                }
+                last = ret;
             }
-            last = ret;
+            if (i + 1 < num) {
+                log_verbose("The %s renderer is unavailable. Trying %s.\n",
+                            api_label(api), api_label(order[i + 1]));
+            }
         }
-        if (i + 1 < num) {
-            log_verbose("The %s renderer is unavailable. Trying %s.\n",
-                        api_label(api), api_label(order[i + 1]));
+        if (!hardware_only) {
+            break;
         }
     }
 

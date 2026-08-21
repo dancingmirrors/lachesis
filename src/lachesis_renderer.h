@@ -64,10 +64,12 @@ typedef struct RenderParams {
     int osd_width;
     int osd_height;
     int osd_stride;
+    unsigned osd_generation;
     void *sub_pixels;
     int sub_width;
     int sub_height;
     int sub_stride;
+    unsigned sub_generation;
     int still_image;
     int disable_linear_scaling;
     int skip_anti_aliasing;

@@ -337,8 +337,9 @@ int subtitles_track_open(AVCodecContext *avctx) {
         ass_track->Kerning = 1;
         ass_track_set_feature(ass_track, ASS_FEATURE_WRAP_UNICODE, 1);
         subtitles_style_locked(1.0);
-        log_verbose("libass: %d converted as %s.\n",
-                    ass_track->n_styles, osd_font_name());
+        log_verbose("libass: %d style%s converted as %s.\n",
+                    ass_track->n_styles, ass_track->n_styles == 1 ? "" : "s",
+                    osd_font_name());
     }
 
     ass_surface_stale = 1;
@@ -694,7 +695,8 @@ static int sub_read_thread(void *arg) {
         }
 
         if (!sent_eof &&
-            stream_has_enough_packets(is->subtitle_st, is->sub_ext_stream, &is->subtitleq)) {
+            stream_has_enough_packets(is, is->subtitle_st, is->sub_ext_stream,
+                                      &is->subtitleq)) {
             SDL_Delay(10);
             continue;
         }

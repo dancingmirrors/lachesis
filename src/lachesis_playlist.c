@@ -460,8 +460,10 @@ static void parser_skip(PlaylistParser *p, const char *why, const char *what) {
 
 static void parser_summarize(const PlaylistParser *p) {
     if (p->warnings > UNSAFE_MAX_WARNINGS) {
-        log_warn("%s: %d further entries were skipped.\n",
-                 p->name, p->warnings - UNSAFE_MAX_WARNINGS);
+        int n = p->warnings - UNSAFE_MAX_WARNINGS;
+
+        log_warn("%s: %d further %s skipped.\n", p->name, n,
+                 n == 1 ? "entry was" : "entries were");
     }
 }
 
@@ -1442,7 +1444,8 @@ static int playlist_parse(const PlaylistFormat *fmt, const char *name, char *buf
     parser_summarize(&p);
 
     if (p.count) {
-        log_verbose("%s: %d entries in the %s playlist.\n", name, p.count, fmt->name);
+        log_verbose("%s: %d %s in the %s playlist.\n", name, p.count,
+                    p.count == 1 ? "entry" : "entries", fmt->name);
     }
 
     return p.count ? 0 : AVERROR_INVALIDDATA;

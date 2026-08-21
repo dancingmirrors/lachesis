@@ -256,6 +256,7 @@ typedef struct VideoState {
     int64_t degrade_judder_us;
     double degrade_judder_rate;
     int degrade_serial;
+    int degrade_deaf;
     int64_t degrade_serial_us;
     int64_t last_content_skip_us;
     int content_skips;
@@ -275,6 +276,7 @@ typedef struct VideoState {
     uint8_t *sub_rgba;
     int sub_rgba_w;
     int sub_rgba_h;
+    unsigned sub_rgba_generation;
 
     int subtitle_stream;
     AVStream *subtitle_st;
@@ -390,7 +392,8 @@ int packet_queue_put(PacketQueue *q, AVPacket *pkt);
 int packet_queue_put_nullpacket(PacketQueue *q, AVPacket *pkt, int stream_index);
 int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial);
 void packet_queue_flush(PacketQueue *q);
-int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue);
+int stream_has_enough_packets(const VideoState *is, AVStream *st, int stream_id,
+                              PacketQueue *queue);
 int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_Condition *empty_queue_cond);
 int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void *arg);
 void decoder_destroy(Decoder *d);

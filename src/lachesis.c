@@ -45,6 +45,7 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
 #include <libavutil/fifo.h>
+#include <libavutil/film_grain_params.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
@@ -845,6 +846,7 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
         sp->width = plane_w;
         sp->height = plane_h;
         sp->uploaded = 1;
+        is->sub_rgba_generation++;
     }
 
     if (!is->sub_rgba) {
@@ -854,6 +856,7 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
     is->render_params.sub_width = is->sub_rgba_w;
     is->render_params.sub_height = is->sub_rgba_h;
     is->render_params.sub_stride = is->sub_rgba_w * 4;
+    is->render_params.sub_generation = is->sub_rgba_generation;
 }
 
 static void video_update_target_rect(VideoState *is) {
@@ -2590,6 +2593,28 @@ int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void *
     return 0;
 }
 
+static void drop_resized_film_grain(AVFrame *frame) {
+    static int warned = 0;
+    const AVFrameSideData *sd =
+        av_frame_get_side_data(frame, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
+    const AVFilmGrainParams *fgp;
+
+    if (!sd) {
+        return;
+    }
+    fgp = (const AVFilmGrainParams *)sd->data;
+    if (fgp->width <= 0 || fgp->height <= 0 ||
+        (fgp->width == frame->width && fgp->height == frame->height)) {
+        return;
+    }
+    av_frame_remove_side_data(frame, AV_FRAME_DATA_FILM_GRAIN_PARAMS);
+    if (!warned) {
+        warned = 1;
+        log_verbose("Dropping film grain because the filters resized %dx%d to %dx%d.\n",
+                    fgp->width, fgp->height, frame->width, frame->height);
+    }
+}
+
 int video_thread(void *arg) {
     VideoState *is = arg;
     AVFrame *frame = av_frame_alloc();
@@ -2732,6 +2757,8 @@ int video_thread(void *arg) {
                              av_err2str(crop_ret));
                 }
             }
+
+            drop_resized_film_grain(frame);
 
             if (report_out_pending) {
                 report_out_pending = 0;

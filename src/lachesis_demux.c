@@ -52,6 +52,7 @@
 #include "lachesis_alloc.h"
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
+#include "lachesis_degrade.h"
 #include "lachesis_demux.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -63,6 +64,7 @@
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
 #define MIN_FRAMES 25
+#define CATCHUP_READ_AHEAD_SECS 10.0
 
 #define HWACCEL_EXTRA_FRAMES 6
 
@@ -405,6 +407,9 @@ static int component_open(VideoState *is, int stream_index) {
         if (fast) {
             avctx->flags2 |= AV_CODEC_FLAG2_FAST;
         }
+        if (!display_disable) {
+            avctx->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
+        }
         if (is->degrade_level > DEGRADE_NONE) {
             apply_degraded_decode(avctx, is->degrade_level);
         }
@@ -609,11 +614,18 @@ static int input_can_reopen(const AVFormatContext *ic) {
     return ic->pb && (ic->pb->seekable & AVIO_SEEKABLE_NORMAL);
 }
 
-int stream_has_enough_packets(AVStream *st, int stream_id, PacketQueue *queue) {
+int stream_has_enough_packets(const VideoState *is, AVStream *st, int stream_id,
+                              PacketQueue *queue) {
+    double want = read_ahead_secs;
+
+    if (is && degrade_wants_read_ahead(is) && want < CATCHUP_READ_AHEAD_SECS) {
+        want = CATCHUP_READ_AHEAD_SECS;
+    }
+
     return stream_id < 0 ||
         queue->abort_request ||
         (st->disposition & AV_DISPOSITION_ATTACHED_PIC) ||
-        ((queue->nb_packets > MIN_FRAMES && (!queue->duration)) || (av_q2d(st->time_base) * queue->duration > read_ahead_secs));
+        ((queue->nb_packets > MIN_FRAMES && (!queue->duration)) || (av_q2d(st->time_base) * queue->duration > want));
 }
 
 static int is_realtime(AVFormatContext *s) {
@@ -960,7 +972,7 @@ static int audio_read_thread(void *arg) {
         }
 
         if (!sent_eof && !is->realtime &&
-            stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq)) {
+            stream_has_enough_packets(is, is->audio_st, is->audio_stream, &is->audioq)) {
             SDL_Delay(10);
             continue;
         }
@@ -1564,9 +1576,9 @@ int read_thread(void *arg) {
 
         if (!is->realtime &&
             (is->audioq.size + is->videoq.size + is->subtitleq.size > max_queue_bytes ||
-             (stream_has_enough_packets(is->audio_st, is->audio_stream, &is->audioq) &&
-              stream_has_enough_packets(is->video_st, is->video_stream, &is->videoq) &&
-              stream_has_enough_packets(is->subtitle_st, is->subtitle_stream, &is->subtitleq)))) {
+             (stream_has_enough_packets(is, is->audio_st, is->audio_stream, &is->audioq) &&
+              stream_has_enough_packets(is, is->video_st, is->video_stream, &is->videoq) &&
+              stream_has_enough_packets(is, is->subtitle_st, is->subtitle_stream, &is->subtitleq)))) {
             SDL_LockMutex(wait_mutex);
             SDL_WaitConditionTimeout(is->continue_read_thread, wait_mutex, 10);
             SDL_UnlockMutex(wait_mutex);

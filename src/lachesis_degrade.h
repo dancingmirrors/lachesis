@@ -35,6 +35,7 @@ void degrade_frame(VideoState *is, double dpts, int64_t decode_us,
                    int64_t budget_us, int64_t interval_us, int had_packets);
 
 int degrade_can_catch_up(const VideoState *is, double now);
+int degrade_wants_read_ahead(const VideoState *is);
 int degrade_drop_late_frame(VideoState *is, double dpts, int64_t interval_us);
 
 const char *degrade_status(const VideoState *is);

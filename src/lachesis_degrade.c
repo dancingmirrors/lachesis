@@ -40,11 +40,11 @@
 #define DEGRADE_PANIC_STEP_SECS 0.2
 #define DEGRADE_PANIC_COOLDOWN_US (500 * 1000)
 
-/* XXX: Figure out a reliable heuristic? */
 #define DEGRADE_RECOVER_SECS 30.0
 #define DEGRADE_SETTLE_US (1 * 1000000)
 #define DEGRADE_SANITY_SECS 60.0
 #define DEGRADE_CALM_STALL 0.20
+#define DEGRADE_CALM_HEADROOM 0.8
 
 #define DEGRADE_RECOVER_MAX_SECS 600.0
 #define DEGRADE_EPISODES_MAX 4
@@ -65,11 +65,62 @@
 #define CONTENT_SKIP_MIN_LAG 2.0
 #define CONTENT_SKIP_MAX_JUMP 2.0
 #define CONTENT_SKIP_SCAN_MAX 2048
-#define CONTENT_SKIP_HURRY_SECS 0.1
-#define CONTENT_SKIP_HURRY_COOLDOWN_US (10 * 1000)
 
 static int degrade_floor(void) {
     return fast ? DEGRADE_NONREF : DEGRADE_NONE;
+}
+
+static int decoder_is_deaf(const AVCodecContext *avctx) {
+    if (!avctx) {
+        return 0;
+    }
+    switch (avctx->codec_id) {
+    case AV_CODEC_ID_AV1:
+    case AV_CODEC_ID_VP9:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int degrade_decoder_listens(const VideoState *is) {
+    return !is->degrade_deaf;
+}
+
+static int degrade_step_up(const VideoState *is, int level) {
+    int next = level + 1;
+
+    if ((next == DEGRADE_FILTER || next == DEGRADE_NONREF) &&
+        !degrade_decoder_listens(is)) {
+        next = DEGRADE_SKIP;
+    }
+
+    return next;
+}
+
+static double degrade_step_down_cost(const VideoState *is, int level) {
+    if (!degrade_decoder_listens(is)) {
+        return 1.0;
+    }
+    switch (level) {
+    case DEGRADE_NONREF:
+        return 2.0;
+    case DEGRADE_FILTER:
+        return 1.25;
+    default:
+        return 1.0;
+    }
+}
+
+static int degrade_step_down(const VideoState *is, int level) {
+    int next = level - 1;
+
+    if ((next == DEGRADE_FILTER || next == DEGRADE_NONREF) &&
+        !degrade_decoder_listens(is)) {
+        next = DEGRADE_RENDER;
+    }
+
+    return next;
 }
 
 static double packet_queue_skip_to_keyframe(PacketQueue *q, AVRational tb,
@@ -110,7 +161,6 @@ static double packet_queue_skip_to_keyframe(PacketQueue *q, AVRational tb,
         if (i > 0 && (pkt1.pkt->flags & AV_PKT_FLAG_KEY)) {
             best = pts;
             target = i;
-            break;
         }
     }
     for (size_t i = 0; i < target; i++) {
@@ -163,7 +213,8 @@ const char *degrade_status(const VideoState *is) {
                       is->decode_cost * 100.0, is->stall_frac * 100.0);
     }
     if (is->content_skips && n > 0 && (size_t)n < sizeof(line)) {
-        snprintf(line + n, sizeof(line) - n, ", %d skips", is->content_skips);
+        snprintf(line + n, sizeof(line) - n, ", %d skip%s", is->content_skips,
+                 is->content_skips == 1 ? "" : "s");
     }
 
     return line;
@@ -204,7 +255,7 @@ static void degrade_set_level(VideoState *is, int level) {
             is->degrade_warned = 1;
             log_warn("Degraded decoding engaged. Quality will suffer.\n");
         }
-        if (level > degrade_floor()) {
+        if (is->degrade_level == degrade_floor() && level > degrade_floor()) {
             is->degrade_episodes++;
         }
         if (level == is->degrade_left_level &&
@@ -252,14 +303,10 @@ static void degrade_content_skip(VideoState *is, double lag) {
     int64_t now = av_gettime_relative();
     double m, dropped;
 
-    int hurry = lag > CONTENT_SKIP_HURRY_SECS;
-    int64_t cooldown =
-        hurry ? CONTENT_SKIP_HURRY_COOLDOWN_US : CATCHUP_COOLDOWN_US;
-
     if (is->degrade_level < DEGRADE_SKIP || is->paused || is->step ||
         is->seek_req || is->viddec.pkt_serial != is->videoq.serial ||
         lag < CONTENT_SKIP_MIN_LAG ||
-        now - is->last_content_skip_us < cooldown) {
+        now - is->last_content_skip_us < CATCHUP_COOLDOWN_US) {
         return;
     }
     m = get_master_clock(is);
@@ -270,16 +317,10 @@ static void degrade_content_skip(VideoState *is, double lag) {
 
     dropped = packet_queue_skip_to_keyframe(&is->videoq,
                                             is->video_st->time_base,
-                                            m - CONTENT_SKIP_LAND_MARGIN,
+                                            m + CONTENT_SKIP_LAND_MARGIN,
                                             FFMAX(CONTENT_SKIP_MAX_JUMP, lag));
     if (dropped <= 0.0) {
-        /* XXX: Nothing to land on in what we have buffered. */
-        double v = get_clock(&is->vidclk);
-        if (is->audio_st && get_master_sync_type(is) == AV_SYNC_AUDIO_MASTER &&
-            !isnan(v) && m - v > CONTENT_SKIP_MIN_LAG) {
-            stream_seek(is, (int64_t)(m * AV_TIME_BASE),
-                        (int64_t)((m - v) * AV_TIME_BASE), 0);
-        }
+        /* Nothing to land on in what we have buffered. */
         return;
     }
 
@@ -320,7 +361,8 @@ static void degrade_update(VideoState *is, double dpts,
     late = lag > DEGRADE_LATE_SECS || is->decode_cost > 1.0 || judder;
     calm = !judder && lag < DEGRADE_LATE_SECS / 2 &&
         is->stall_frac > DEGRADE_CALM_STALL && is->decode_cost >= 0.0 &&
-        is->decode_cost * (2 + is->degrade_level) < 1.0;
+        is->decode_cost * degrade_step_down_cost(is, is->degrade_level) <
+            DEGRADE_CALM_HEADROOM;
     panic = lag > DEGRADE_PANIC_SECS;
 
     if (late) {
@@ -328,7 +370,8 @@ static void degrade_update(VideoState *is, double dpts,
         if (!is->degrade_late_since_us) {
             is->degrade_late_since_us = now;
         }
-        int hurried = panic && is->degrade_level + 1 < DEGRADE_SKIP;
+        int next = degrade_step_up(is, is->degrade_level);
+        int hurried = panic && next < DEGRADE_SKIP;
         double need = hurried ? DEGRADE_PANIC_STEP_SECS : DEGRADE_STEP_SECS;
         int64_t cooldown =
             hurried ? DEGRADE_PANIC_COOLDOWN_US : DEGRADE_STEP_COOLDOWN_US;
@@ -336,9 +379,8 @@ static void degrade_update(VideoState *is, double dpts,
         if (is->degrade_level < DEGRADE_MAX &&
             now - is->degrade_late_since_us >= (int64_t)(need * 1000000.0) &&
             now - is->degrade_changed_us >= cooldown &&
-            (is->degrade_level + 1 < DEGRADE_SKIP ||
-             lag >= CONTENT_SKIP_MIN_LAG)) {
-            degrade_set_level(is, is->degrade_level + 1);
+            (next < DEGRADE_SKIP || lag >= CONTENT_SKIP_MIN_LAG)) {
+            degrade_set_level(is, next);
         }
     } else if (calm) {
         is->degrade_late_since_us = 0;
@@ -349,7 +391,7 @@ static void degrade_update(VideoState *is, double dpts,
             now - is->degrade_calm_since_us >= degrade_recover_us(is) &&
             (is->degrade_level != DEGRADE_RENDER ||
              degrade_render_fits(interval_us))) {
-            degrade_set_level(is, is->degrade_level - 1);
+            degrade_set_level(is, degrade_step_down(is, is->degrade_level));
         }
     } else {
         is->degrade_late_since_us = 0;
@@ -383,6 +425,7 @@ void degrade_reset(VideoState *is) {
     is->degrade_left_level = -1;
     is->degrade_warned = 0;
     is->degrade_serial = -1;
+    is->degrade_deaf = 0;
     is->decode_cost = -1.0;
     is->cost_decode_us = 0;
     is->cost_budget_us = 0;
@@ -392,6 +435,11 @@ void degrade_reset(VideoState *is) {
 
 void degrade_note_stall(VideoState *is, int64_t stall_us) {
     is->stall_us += stall_us;
+}
+
+int degrade_wants_read_ahead(const VideoState *is) {
+    return is->video_st &&
+        degrade_step_up(is, is->degrade_level) >= DEGRADE_SKIP;
 }
 
 int degrade_can_catch_up(const VideoState *is, double now) {
@@ -407,6 +455,7 @@ void degrade_frame(VideoState *is, double dpts, int64_t decode_us,
     if (is->viddec.pkt_serial != is->degrade_serial) {
         is->degrade_serial = is->viddec.pkt_serial;
         is->degrade_serial_us = now;
+        is->degrade_deaf = decoder_is_deaf(is->viddec.avctx);
         is->decode_cost = -1.0;
         is->cost_decode_us = 0;
         is->cost_budget_us = 0;
