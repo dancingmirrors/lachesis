@@ -529,6 +529,8 @@ static void drop_submitted(void) {
 static int waiter_thread(void *unused) {
     (void)unused;
 
+    thread_set_priority(SDL_THREAD_PRIORITY_HIGH, "present waiter");
+
     for (;;) {
         VkSwapchainKHR swapchain;
         uint64_t generation;

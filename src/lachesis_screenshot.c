@@ -38,6 +38,7 @@
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/rational.h>
+#include <libavutil/time.h>
 #include <libswscale/swscale.h>
 
 #include <SDL3/SDL.h>
@@ -68,10 +69,13 @@ static int screenshot_abspath(const char *path, char *out, size_t out_size) {
 }
 
 static int next_screenshot_path(char *out, size_t out_size) {
-    for (int i = 1; i <= 9999; i++) {
+    static int next_index = 1;
+
+    for (; next_index <= 9999; next_index++) {
         struct stat st;
-        snprintf(out, out_size, "lachesis-%04d.png", i);
+        snprintf(out, out_size, "lachesis-%04d.png", next_index);
         if (stat(out, &st) != 0) {
+            next_index++;
             return 0;
         }
     }
@@ -208,6 +212,183 @@ end:
     return ret;
 }
 
+#define SCREENSHOT_PATH_MAX 4078
+#define SCREENSHOT_DRAIN_TIMEOUT_US (5 * 1000000)
+
+typedef struct ScreenshotJob {
+    struct ScreenshotJob *next;
+    AVFrame *frame;
+    uint8_t bg[3];
+    int ret;
+    char path[SCREENSHOT_PATH_MAX];
+} ScreenshotJob;
+
+static SDL_Thread *screenshot_tid;
+static SDL_Mutex *screenshot_lock;
+static SDL_Condition *screenshot_cond;
+static ScreenshotJob *screenshot_head;
+static ScreenshotJob *screenshot_tail;
+static int screenshot_quit;
+static int screenshot_shut_down;
+static SDL_AtomicInt screenshot_thread_done;
+
+static void screenshot_job_free(ScreenshotJob *job) {
+    if (!job) {
+        return;
+    }
+    av_frame_free(&job->frame);
+    av_free(job);
+}
+
+static void screenshot_finish(const char *path, int ret);
+
+static void screenshot_post(ScreenshotJob *job) {
+    SDL_Event event;
+
+    SDL_zero(event);
+    event.type = FF_SCREENSHOT_EVENT;
+    event.user.data1 = job;
+    if (!SDL_PushEvent(&event)) {
+        SDL_ClearError();
+        screenshot_job_free(job);
+    }
+}
+
+void screenshot_report(const SDL_Event *event) {
+    ScreenshotJob *job = event->user.data1;
+
+    if (!job) {
+        return;
+    }
+    screenshot_finish(job->path, job->ret);
+    screenshot_job_free(job);
+}
+
+static int screenshot_thread(void *unused) {
+    (void)unused;
+
+    thread_set_priority(SDL_THREAD_PRIORITY_LOW, "screenshot encoder");
+
+    for (;;) {
+        ScreenshotJob *job;
+
+        SDL_LockMutex(screenshot_lock);
+        while (!screenshot_quit && !screenshot_head) {
+            SDL_WaitCondition(screenshot_cond, screenshot_lock);
+        }
+        job = screenshot_head;
+        if (!job) {
+            SDL_UnlockMutex(screenshot_lock);
+            break;
+        }
+        screenshot_head = job->next;
+        if (!screenshot_head) {
+            screenshot_tail = NULL;
+        }
+        SDL_UnlockMutex(screenshot_lock);
+
+        job->ret = encode_png(job->path, job->frame, job->bg);
+        av_frame_free(&job->frame);
+        screenshot_post(job);
+    }
+
+    SDL_SetAtomicInt(&screenshot_thread_done, 1);
+
+    return 0;
+}
+
+static int screenshot_thread_start(void) {
+    if (screenshot_tid) {
+        return 1;
+    }
+    if (screenshot_shut_down) {
+        return 0;
+    }
+    if (!screenshot_lock && !(screenshot_lock = SDL_CreateMutex())) {
+        return 0;
+    }
+    if (!screenshot_cond && !(screenshot_cond = SDL_CreateCondition())) {
+        return 0;
+    }
+    screenshot_tid = SDL_CreateThread(screenshot_thread, "screenshot", NULL);
+
+    return screenshot_tid != NULL;
+}
+
+static int screenshot_submit(const char *path, AVFrame *frame,
+                             const uint8_t bg[3]) {
+    ScreenshotJob *job;
+
+    if (!screenshot_thread_start()) {
+        return 0;
+    }
+    job = av_mallocz(sizeof(*job));
+    if (!job) {
+        return 0;
+    }
+    snprintf(job->path, sizeof(job->path), "%s", path);
+    job->frame = frame;
+    memcpy(job->bg, bg, sizeof(job->bg));
+
+    SDL_LockMutex(screenshot_lock);
+    if (screenshot_tail) {
+        screenshot_tail->next = job;
+    } else {
+        screenshot_head = job;
+    }
+    screenshot_tail = job;
+    SDL_SignalCondition(screenshot_cond);
+    SDL_UnlockMutex(screenshot_lock);
+
+    return 1;
+}
+
+int screenshot_shutdown(void) {
+    int64_t deadline;
+    SDL_Event event;
+    int joined = 1;
+
+    if (!screenshot_tid) {
+        screenshot_shut_down = 1;
+        return 1;
+    }
+
+    SDL_LockMutex(screenshot_lock);
+    screenshot_quit = 1;
+    screenshot_shut_down = 1;
+    SDL_SignalCondition(screenshot_cond);
+    SDL_UnlockMutex(screenshot_lock);
+
+    deadline = av_gettime_relative() + SCREENSHOT_DRAIN_TIMEOUT_US;
+    while (!SDL_GetAtomicInt(&screenshot_thread_done)) {
+        if (av_gettime_relative() >= deadline) {
+            log_warn("Giving up on a screenshot that is still encoding.\n");
+            SDL_DetachThread(screenshot_tid);
+            joined = 0;
+            break;
+        }
+        SDL_Delay(1);
+    }
+    if (joined) {
+        SDL_WaitThread(screenshot_tid, NULL);
+    }
+    screenshot_tid = NULL;
+
+    while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, FF_SCREENSHOT_EVENT,
+                          FF_SCREENSHOT_EVENT) > 0) {
+        screenshot_report(&event);
+    }
+
+    if (joined) {
+        SDL_DestroyCondition(screenshot_cond);
+        screenshot_cond = NULL;
+        SDL_DestroyMutex(screenshot_lock);
+        screenshot_lock = NULL;
+    }
+
+    return joined;
+}
+
 /* Flatten to opaque black or -video_bg. */
 static void screenshot_bg_color(VideoState *is, uint8_t bg[3]) {
     if (is->render_params.video_background_type == VIDEO_BACKGROUND_COLOR) {
@@ -267,22 +448,20 @@ static AVFrame *frame_to_cpu(AVFrame *frame) {
     return sw;
 }
 
-static int screenshot_window(VideoState *is, const char *path) {
+static AVFrame *screenshot_window_frame(VideoState *is) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
     int w = 0, h = 0;
     int ret;
-    uint8_t bg[3];
 
-    screenshot_bg_color(is, bg);
     SDL_GetWindowSizeInPixels(window, &w, &h);
     if (w <= 0 || h <= 0) {
-        return AVERROR(EINVAL);
+        return NULL;
     }
 
     AVFrame *rgba = av_frame_alloc();
 
     if (!rgba) {
-        return AVERROR(ENOMEM);
+        return NULL;
     }
     rgba->format = AV_PIX_FMT_RGBA;
     rgba->width = w;
@@ -290,7 +469,7 @@ static int screenshot_window(VideoState *is, const char *path) {
     ret = av_frame_get_buffer(rgba, 0);
     if (ret < 0) {
         av_frame_free(&rgba);
-        return ret;
+        return NULL;
     }
     video_prepare_overlays(is);
     is->render_params.rotate = video_rotate;
@@ -298,17 +477,19 @@ static int screenshot_window(VideoState *is, const char *path) {
     deinterlace_prepare(is, vp);
     ret = renderer_capture(renderer, vp->frame, &is->render_params,
                            w, h, rgba->data[0], rgba->linesize[0]);
-    if (ret >= 0) {
-        ret = encode_png(path, rgba, bg);
+    if (ret < 0) {
+        av_frame_free(&rgba);
+        return NULL;
     }
-    av_frame_free(&rgba);
 
-    return ret;
+    return rgba;
 }
 
 void take_screenshot(VideoState *is, int capture_window) {
     Frame *vp;
-    char path[4078];
+    char path[SCREENSHOT_PATH_MAX];
+    AVFrame *shot;
+    uint8_t bg[3];
     int ret;
 
     if (!is) {
@@ -319,30 +500,34 @@ void take_screenshot(VideoState *is, int capture_window) {
         log_warn("No video frame to capture.\n");
         return;
     }
+
+    screenshot_bg_color(is, bg);
+    shot = capture_window ? screenshot_window_frame(is) : frame_to_cpu(vp->frame);
+    if (!shot) {
+        log_warn("Couldn't read back the video frame.\n");
+        return;
+    }
     if (next_screenshot_path(path, sizeof(path)) < 0) {
         log_warn("Couldn't find a free screenshot filename.\n");
+        av_frame_free(&shot);
         return;
     }
 
-    if (capture_window) {
-        ret = screenshot_window(is, path);
-    } else {
-        uint8_t bg[3];
-        AVFrame *cpu = frame_to_cpu(vp->frame);
-        if (!cpu) {
-            log_warn("Couldn't read back the video frame.\n");
-            return;
-        }
-        screenshot_bg_color(is, bg);
-        ret = encode_png(path, cpu, bg);
-        av_frame_free(&cpu);
+    if (screenshot_submit(path, shot, bg)) {
+        return;
     }
 
+    ret = encode_png(path, shot, bg);
+    av_frame_free(&shot);
+    screenshot_finish(path, ret);
+}
+
+static void screenshot_finish(const char *path, int ret) {
     if (ret < 0) {
         log_warn("Failed to write screenshot %s.\n", path);
         osd_show_message("Failed to save screenshot");
     } else {
-        char abspath[4078];
+        char abspath[SCREENSHOT_PATH_MAX];
         const char *shown = path;
         if (screenshot_abspath(path, abspath, sizeof(abspath)) == 0) {
             log_info("Saved screenshot %s\n", abspath);

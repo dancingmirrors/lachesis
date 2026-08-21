@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -57,6 +58,8 @@ static SDL_Mutex *ass_lock;
 
 static int ass_frame_w, ass_frame_h;
 static int ass_storage_w, ass_storage_h;
+static int ass_origin_x, ass_origin_y;
+static int ass_canvas_w, ass_canvas_h;
 
 static int ass_track_converted;
 static double ass_style_scale = 1.0;
@@ -67,6 +70,17 @@ static SDL_Surface *ass_surface;
 static int ass_surface_x, ass_surface_y;
 static int ass_surface_stale;
 static unsigned ass_generation;
+
+static unsigned ass_events_serial = 1;
+static unsigned ass_visible_serial;
+static long long ass_visible_from, ass_visible_until;
+static int ass_visible_cached;
+static int ass_visible_valid;
+
+static void ass_events_changed_locked(void) {
+    ass_events_serial++;
+    ass_visible_valid = 0;
+}
 
 static void ass_engine_uninit_locked(void) {
     if (ass_track) {
@@ -85,8 +99,11 @@ static void ass_engine_uninit_locked(void) {
     }
     ass_frame_w = ass_frame_h = 0;
     ass_storage_w = ass_storage_h = 0;
+    ass_origin_x = ass_origin_y = 0;
+    ass_canvas_w = ass_canvas_h = 0;
     ass_track_converted = 0;
     ass_style_scale = 1.0;
+    ass_events_changed_locked();
 }
 
 static int ass_engine_init_locked(void) {
@@ -284,6 +301,9 @@ static int subtitles_feed(const AVSubtitle *sub, double pts) {
             }
         }
     }
+    if (consumed) {
+        ass_events_changed_locked();
+    }
     SDL_UnlockMutex(ass_lock);
 
     return consumed;
@@ -344,6 +364,7 @@ int subtitles_track_open(AVCodecContext *avctx) {
 
     ass_surface_stale = 1;
     ass_generation++;
+    ass_events_changed_locked();
 
     SDL_UnlockMutex(ass_lock);
 
@@ -363,6 +384,7 @@ void subtitles_track_close(void) {
     ass_style_scale = 1.0;
     ass_surface_stale = 1;
     ass_generation++;
+    ass_events_changed_locked();
     SDL_UnlockMutex(ass_lock);
 }
 
@@ -375,6 +397,7 @@ void subtitles_track_flush(void) {
         ass_flush_events(ass_track);
     }
     ass_text_readorder = 0;
+    ass_events_changed_locked();
     SDL_UnlockMutex(ass_lock);
 }
 
@@ -420,6 +443,7 @@ int subtitles_track_attached(void) {
 
 int subtitles_visible_at(double now) {
     long long now_ms;
+    long long from = LLONG_MIN, until = LLONG_MAX;
     int visible = 0;
 
     if (!ass_lock || isnan(now)) {
@@ -429,16 +453,36 @@ int subtitles_visible_at(double now) {
     now_ms = (long long)(now * 1000.0);
 
     SDL_LockMutex(ass_lock);
+    if (ass_visible_valid && ass_visible_serial == ass_events_serial &&
+        now_ms >= ass_visible_from && now_ms < ass_visible_until) {
+        visible = ass_visible_cached;
+        SDL_UnlockMutex(ass_lock);
+
+        return visible;
+    }
+
     if (ass_track) {
         for (int i = 0; i < ass_track->n_events; i++) {
             const ASS_Event *e = &ass_track->events[i];
+            long long edges[2] = {e->Start, e->Start + e->Duration};
 
-            if (now_ms >= e->Start && now_ms < e->Start + e->Duration) {
+            if (now_ms >= edges[0] && now_ms < edges[1]) {
                 visible = 1;
-                break;
+            }
+            for (int j = 0; j < 2; j++) {
+                if (edges[j] <= now_ms) {
+                    from = FFMAX(from, edges[j]);
+                } else {
+                    until = FFMIN(until, edges[j]);
+                }
             }
         }
     }
+    ass_visible_serial = ass_events_serial;
+    ass_visible_from = from;
+    ass_visible_until = until;
+    ass_visible_cached = visible;
+    ass_visible_valid = 1;
     SDL_UnlockMutex(ass_lock);
 
     return visible;
@@ -481,10 +525,28 @@ static ASS_Image *ass_fit_locked(long long now_ms, int frame_w, int frame_h,
     return img;
 }
 
+static void ass_clip_to_canvas(LassBounds *b) {
+    if (ass_canvas_w <= 0 || ass_canvas_h <= 0) {
+        return;
+    }
+    b->x0 = FFMAX(b->x0, -ass_origin_x);
+    b->y0 = FFMAX(b->y0, -ass_origin_y);
+    b->x1 = FFMIN(b->x1, ass_canvas_w - ass_origin_x);
+    b->y1 = FFMIN(b->y1, ass_canvas_h - ass_origin_y);
+}
+
 static int ass_composite_locked(ASS_Image *img, int frame_w, int frame_h) {
     LassBounds b;
 
     if (!lass_bounds(img, frame_w, frame_h, &b)) {
+        if (ass_surface) {
+            SDL_DestroySurface(ass_surface);
+            ass_surface = NULL;
+        }
+        return 0;
+    }
+    ass_clip_to_canvas(&b);
+    if (b.x1 <= b.x0 || b.y1 <= b.y0) {
         if (ass_surface) {
             SDL_DestroySurface(ass_surface);
             ass_surface = NULL;
@@ -496,7 +558,7 @@ static int ass_composite_locked(ASS_Image *img, int frame_w, int frame_h) {
         SDL_DestroySurface(ass_surface);
     }
     ass_surface = SDL_CreateSurface(b.x1 - b.x0, b.y1 - b.y0,
-                                    SDL_PIXELFORMAT_ARGB8888);
+                                    SDL_PIXELFORMAT_RGBA32);
     if (!ass_surface) {
         return 0;
     }
@@ -572,6 +634,14 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
         ass_set_storage_size(ass_renderer, storage_w, storage_h);
         geometry_changed = 1;
     }
+    if (ass_origin_x != origin_x || ass_origin_y != origin_y ||
+        ass_canvas_w != canvas_w || ass_canvas_h != canvas_h) {
+        ass_origin_x = origin_x;
+        ass_origin_y = origin_y;
+        ass_canvas_w = canvas_w;
+        ass_canvas_h = canvas_h;
+        geometry_changed = 1;
+    }
     if (geometry_changed) {
         log_verbose("libass: frame %dx%d, storage %dx%d.\n", frame_w,
                     frame_h, storage_w, storage_h);
@@ -614,6 +684,8 @@ int subtitle_thread(void *arg) {
     Frame *sp;
     int got_subtitle;
     double pts;
+
+    thread_set_priority(SDL_THREAD_PRIORITY_NORMAL, "subtitle decoder");
 
     for (;;) {
         if (!(sp = frame_queue_peek_writable(&is->subpq))) {
@@ -671,6 +743,8 @@ static int sub_read_thread(void *arg) {
     AVFormatContext *ic = is->sub_ic;
     AVPacket *pkt = av_packet_alloc();
     int sent_eof = 0;
+
+    thread_set_priority(SDL_THREAD_PRIORITY_NORMAL, "subtitle reader");
 
     if (!pkt) {
         SDL_SetAtomicInt(&is->sub_read_thread_done, 1);

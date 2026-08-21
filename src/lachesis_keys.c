@@ -840,6 +840,9 @@ void event_loop(VideoState **pis) {
         case FF_RENDER_FAULT_EVENT:
             render_fault_fallback(pis);
             break;
+        case FF_SCREENSHOT_EVENT:
+            screenshot_report(&event);
+            break;
         default:
             break;
         }

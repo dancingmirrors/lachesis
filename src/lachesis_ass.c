@@ -290,56 +290,6 @@ void lass_blend(SDL_Surface *dst, const ASS_Image *img, int x, int y) {
     }
 }
 
-void lass_blit(SDL_Surface *dst, SDL_Surface *src, int x, int y) {
-    LassShift ds, ss;
-
-    if (!dst || !src || !lass_shifts(dst, &ds) || !lass_shifts(src, &ss)) {
-        return;
-    }
-
-    for (int sy = 0; sy < src->h; sy++) {
-        int dy = y + sy;
-        const uint32_t *sp;
-        uint32_t *dp;
-
-        if (dy < 0 || dy >= dst->h) {
-            continue;
-        }
-        sp = (const uint32_t *)((const unsigned char *)src->pixels +
-                                (size_t)sy * (size_t)src->pitch);
-        dp = (uint32_t *)((unsigned char *)dst->pixels +
-                          (size_t)dy * (size_t)dst->pitch);
-
-        for (int sx = 0; sx < src->w; sx++) {
-            uint32_t s = sp[sx];
-            unsigned a = (s >> ss.a) & 0xFF;
-            unsigned inv = 255 - a;
-            uint32_t d;
-            unsigned dr, dg, db, da;
-
-            if (!a) {
-                continue;
-            }
-            if (x + sx < 0 || x + sx >= dst->w) {
-                continue;
-            }
-            d = dp[x + sx];
-            da = (d >> ds.a) & 0xFF;
-            dr = (d >> ds.r) & 0xFF;
-            dg = (d >> ds.g) & 0xFF;
-            db = (d >> ds.b) & 0xFF;
-
-            dr = ((s >> ss.r) & 0xFF) + (dr * inv + 127) / 255;
-            dg = ((s >> ss.g) & 0xFF) + (dg * inv + 127) / 255;
-            db = ((s >> ss.b) & 0xFF) + (db * inv + 127) / 255;
-            da = a + (da * inv + 127) / 255;
-
-            dp[x + sx] = (FFMIN(da, 255u) << ds.a) | (FFMIN(dr, 255u) << ds.r) |
-                (FFMIN(dg, 255u) << ds.g) | (FFMIN(db, 255u) << ds.b);
-        }
-    }
-}
-
 size_t lass_escape(char *out, size_t outsz, const char *text) {
     size_t o = 0, boundary = 0;
     int run = 0;

@@ -108,6 +108,7 @@
 #include "lachesis_present.h"
 #include "lachesis_rc.h"
 #include "lachesis_renderer.h"
+#include "lachesis_screenshot.h"
 #include "lachesis_subtitles.h"
 #include "lachesis_terminal.h"
 #include "lachesis_view360.h"
@@ -282,6 +283,14 @@ double playback_speed = 1.0;
 
 #define PLAYBACK_SPEED_MIN 0.2
 #define PLAYBACK_SPEED_MAX 2.0
+
+void thread_set_priority(SDL_ThreadPriority priority, const char *who) {
+    if (SDL_SetCurrentThreadPriority(priority)) {
+        return;
+    }
+    log_verbose("Couldn't set the %s thread priority: %s\n", who, SDL_GetError());
+    SDL_ClearError();
+}
 
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     MyAVPacketList pkt1;
@@ -761,6 +770,8 @@ void calculate_display_rect(SDL_Rect *rect,
     rect->h = FFMAX((int)height, 1);
 }
 
+static unsigned sub_rgba_generation;
+
 static void prepare_subtitles(VideoState *is, Frame *vp) {
     Frame *sp;
     int plane_w, plane_h, max_dim;
@@ -846,7 +857,7 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
         sp->width = plane_w;
         sp->height = plane_h;
         sp->uploaded = 1;
-        is->sub_rgba_generation++;
+        sub_rgba_generation++;
     }
 
     if (!is->sub_rgba) {
@@ -856,7 +867,7 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
     is->render_params.sub_width = is->sub_rgba_w;
     is->render_params.sub_height = is->sub_rgba_h;
     is->render_params.sub_stride = is->sub_rgba_w * 4;
-    is->render_params.sub_generation = is->sub_rgba_generation;
+    is->render_params.sub_generation = sub_rgba_generation;
 }
 
 static void video_update_target_rect(VideoState *is) {
@@ -887,6 +898,7 @@ static void video_update_target_rect(VideoState *is) {
 void video_prepare_overlays(VideoState *is) {
     is->render_params.osd_pixels = NULL;
     is->render_params.sub_pixels = NULL;
+    is->render_params.text_sub_pixels = NULL;
     is->render_params.next_frame = NULL;
     /* This thread owns the composited subtitle surface, so it frees it. */
     subtitles_reap();
@@ -1203,12 +1215,15 @@ static volatile sig_atomic_t quit_signal_polled;
 
 av_noreturn void do_exit(VideoState *is) {
     int status = quit_signal ? 123 : exit_status;
+    int abandoned;
 
     quit_signal_polled = 0;
 
     if (is) {
         stream_close(is);
     }
+    abandoned = !screenshot_shutdown();
+    abandoned |= reader_abandoned;
     if (renderer) {
         renderer_destroy(renderer);
         av_freep(&renderer);
@@ -1216,7 +1231,7 @@ av_noreturn void do_exit(VideoState *is) {
     if (window) {
         SDL_DestroyWindow(window);
     }
-    if (reader_abandoned) {
+    if (abandoned) {
         terminal_restore_now();
         alloc_track_report();
         _Exit(status);
@@ -2643,6 +2658,8 @@ int video_thread(void *arg) {
         return AVERROR(ENOMEM);
     }
 
+    thread_set_priority(SDL_THREAD_PRIORITY_NORMAL, "video decoder");
+
     for (;;) {
         ret = get_video_frame(is, frame);
         if (ret < 0) {
@@ -3613,6 +3630,10 @@ int main(int argc, char **argv) {
     }
 
     SDL_SetEventEnabled(SDL_EVENT_USER, false);
+
+    if (!display_disable) {
+        thread_set_priority(SDL_THREAD_PRIORITY_HIGH, "display");
+    }
 
     terminal_input_init();
 

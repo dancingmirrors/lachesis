@@ -113,9 +113,6 @@ static int osd_ev_count;
 static char osd_ev_prev[OSD_EVENT_BUF];
 static size_t osd_ev_prev_len;
 static int osd_prev_canvas_w, osd_prev_canvas_h;
-static unsigned osd_prev_sub_generation;
-static int osd_prev_sub_x, osd_prev_sub_y, osd_prev_sub_used;
-static int osd_prev_full_canvas;
 static int osd_force_rebuild = 1;
 
 static SDL_Surface *osd_surface;
@@ -911,7 +908,7 @@ static int osd_surface_ensure(int w, int h, SDL_PixelFormat format) {
     return 1;
 }
 
-static int osd_composite(VideoState *is, int cw, int ch, int full_canvas,
+static int osd_composite(VideoState *is, int cw, int ch,
                          const SubtitleOverlay *ov) {
     ASS_Image *img;
     LassBounds b;
@@ -925,26 +922,19 @@ static int osd_composite(VideoState *is, int cw, int ch, int full_canvas,
 
     osd_build(is, ch, ov && ov->surf ? ov->y : -1.0);
 
+    if (!osd_ev_count) {
+        if (osd_surface_valid) {
+            osd_surface_valid = 0;
+            osd_generation++;
+        }
+        osd_ev_prev_len = 0;
+        return 0;
+    }
+
     changed = osd_force_rebuild || !osd_surface_valid ||
         osd_prev_canvas_w != cw || osd_prev_canvas_h != ch ||
-        osd_prev_full_canvas != full_canvas ||
         osd_ev_prev_len != osd_ev_len ||
         memcmp(osd_ev_prev, osd_ev_buf, osd_ev_len) != 0;
-
-    if (full_canvas) {
-        int used = ov && ov->surf;
-
-        if (osd_prev_sub_used != used ||
-            (used && (osd_prev_sub_generation != ov->generation || osd_prev_sub_x != ov->x || osd_prev_sub_y != ov->y))) {
-            changed = 1;
-        }
-        osd_prev_sub_used = used;
-        if (used) {
-            osd_prev_sub_generation = ov->generation;
-            osd_prev_sub_x = ov->x;
-            osd_prev_sub_y = ov->y;
-        }
-    }
 
     if (!changed) {
         return osd_surface_valid;
@@ -953,40 +943,23 @@ static int osd_composite(VideoState *is, int cw, int ch, int full_canvas,
     osd_force_rebuild = 0;
     osd_prev_canvas_w = cw;
     osd_prev_canvas_h = ch;
-    osd_prev_full_canvas = full_canvas;
     osd_ev_prev_len = osd_ev_len;
     memcpy(osd_ev_prev, osd_ev_buf, osd_ev_len);
     osd_surface_valid = 0;
     osd_generation++;
 
     img = osd_render(cw, ch);
-
-    if (full_canvas) {
-        if (!img && !(ov && ov->surf)) {
-            return 0;
-        }
-        if (!osd_surface_ensure(cw, ch, SDL_PIXELFORMAT_ABGR8888)) {
-            return 0;
-        }
-        if (ov && ov->surf) {
-            lass_blit(osd_surface, ov->surf, ov->x, ov->y);
-        }
-        lass_blend(osd_surface, img, 0, 0);
-        osd_surface_x = 0;
-        osd_surface_y = 0;
-    } else {
-        if (!img || !lass_bounds(img, cw, ch, &b)) {
-            return 0;
-        }
-        if (!osd_surface_ensure(b.x1 - b.x0, b.y1 - b.y0,
-                                SDL_PIXELFORMAT_ARGB8888)) {
-            return 0;
-        }
-        lass_blend(osd_surface, img, b.x0, b.y0);
-        osd_surface_x = b.x0;
-        osd_surface_y = b.y0;
+    if (!img || !lass_bounds(img, cw, ch, &b)) {
+        return 0;
     }
-
+    /* Byte order R, G, B, A, which is what the overlay upload wants. */
+    if (!osd_surface_ensure(b.x1 - b.x0, b.y1 - b.y0,
+                            SDL_PIXELFORMAT_RGBA32)) {
+        return 0;
+    }
+    lass_blend(osd_surface, img, b.x0, b.y0);
+    osd_surface_x = b.x0;
+    osd_surface_y = b.y0;
     osd_surface_valid = 1;
 
     return 1;
@@ -1052,15 +1025,28 @@ void osd_prepare(VideoState *is) {
     }
 
     have_ov = osd_subtitle_overlay(is, cw, ch, &ov);
-    if (!osd_composite(is, cw, ch, 1, have_ov ? &ov : NULL)) {
+    if (have_ov) {
+        is->render_params.text_sub_pixels = ov.surf->pixels;
+        is->render_params.text_sub_width = ov.surf->w;
+        is->render_params.text_sub_height = ov.surf->h;
+        is->render_params.text_sub_stride = ov.surf->pitch;
+        is->render_params.text_sub_x = ov.x;
+        is->render_params.text_sub_y = ov.y;
+        is->render_params.text_sub_generation = ov.generation;
+    }
+
+    if (osd_composite(is, cw, ch, have_ov ? &ov : NULL)) {
+        is->render_params.osd_pixels = osd_surface->pixels;
+        is->render_params.osd_width = osd_surface->w;
+        is->render_params.osd_height = osd_surface->h;
+        is->render_params.osd_stride = osd_surface->pitch;
+        is->render_params.osd_x = osd_surface_x;
+        is->render_params.osd_y = osd_surface_y;
+        is->render_params.osd_generation = osd_generation;
+    } else if (!have_ov) {
         return;
     }
 
-    is->render_params.osd_pixels = osd_surface->pixels;
-    is->render_params.osd_width = osd_surface->w;
-    is->render_params.osd_height = osd_surface->h;
-    is->render_params.osd_stride = osd_surface->pitch;
-    is->render_params.osd_generation = osd_generation;
     is->osd_state = osd_state(is);
 }
 

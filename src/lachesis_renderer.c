@@ -107,7 +107,7 @@
 #endif
 #define LACHESIS_SHADER_CACHE_LIMIT (64u << 20)
 
-#define LACHESIS_MAX_OVERLAYS 2
+#define LACHESIS_MAX_OVERLAYS 3
 #define LACHESIS_MAX_HOOKS 2
 
 #define LACHESIS_D3D11_VIEW_POOLS 6
@@ -254,8 +254,10 @@ typedef struct RendererContext {
 
     pl_tex osd_tex;
     pl_tex sub_tex;
+    pl_tex text_sub_tex;
     unsigned osd_tex_generation;
     unsigned sub_tex_generation;
+    unsigned text_sub_tex_generation;
 
     AVFrame *blank_frame;
 
@@ -2921,15 +2923,52 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         }
     }
 
+    if (params->text_sub_pixels && params->text_sub_width > 0 &&
+        params->text_sub_height > 0) {
+        pl_tex tex = overlay_upload(ctx, &ctx->text_sub_tex,
+                                    params->text_sub_pixels,
+                                    params->text_sub_width,
+                                    params->text_sub_height,
+                                    params->text_sub_stride,
+                                    params->text_sub_generation,
+                                    &ctx->text_sub_tex_generation);
+        if (tex) {
+            float x = (float)params->text_sub_x;
+            float y = (float)params->text_sub_y;
+
+            parts[num_overlays] = (struct pl_overlay_part){
+                .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->text_sub_width, .y1 = (float)params->text_sub_height},
+                .dst = {.x0 = x, .y0 = y, .x1 = x + params->text_sub_width, .y1 = y + params->text_sub_height},
+            };
+            overlays[num_overlays] = (struct pl_overlay){
+                .tex = tex,
+                .mode = PL_OVERLAY_NORMAL,
+                .coords = PL_OVERLAY_COORDS_DST_FRAME,
+                .repr = {
+                    .sys = PL_COLOR_SYSTEM_RGB,
+                    .levels = PL_COLOR_LEVELS_FULL,
+                    .alpha = PL_ALPHA_PREMULTIPLIED,
+                },
+                .color = pl_color_space_srgb,
+                .parts = &parts[num_overlays],
+                .num_parts = 1,
+            };
+            num_overlays++;
+        }
+    }
+
     if (params->osd_pixels && params->osd_width > 0 && params->osd_height > 0) {
         pl_tex tex = overlay_upload(ctx, &ctx->osd_tex, params->osd_pixels,
                                     params->osd_width, params->osd_height,
                                     params->osd_stride, params->osd_generation,
                                     &ctx->osd_tex_generation);
         if (tex) {
+            float x = (float)params->osd_x;
+            float y = (float)params->osd_y;
+
             parts[num_overlays] = (struct pl_overlay_part){
                 .src = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
-                .dst = {.x0 = 0, .y0 = 0, .x1 = (float)params->osd_width, .y1 = (float)params->osd_height},
+                .dst = {.x0 = x, .y0 = y, .x1 = x + params->osd_width, .y1 = y + params->osd_height},
             };
             overlays[num_overlays] = (struct pl_overlay){
                 .tex = tex,
@@ -3769,6 +3808,7 @@ static void destroy(Renderer *renderer) {
 #endif
         pl_tex_destroy(ctx->gpu, &ctx->osd_tex);
         pl_tex_destroy(ctx->gpu, &ctx->sub_tex);
+        pl_tex_destroy(ctx->gpu, &ctx->text_sub_tex);
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->prev_tex); i++) {
             pl_tex_destroy(ctx->gpu, &ctx->prev_tex[i]);
             pl_tex_destroy(ctx->gpu, &ctx->next_tex[i]);

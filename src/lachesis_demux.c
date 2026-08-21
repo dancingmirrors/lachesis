@@ -938,6 +938,8 @@ static int audio_read_thread(void *arg) {
     AVPacket *pkt = av_packet_alloc();
     int sent_eof = 0;
 
+    thread_set_priority(SDL_THREAD_PRIORITY_NORMAL, "audio reader");
+
     if (!pkt) {
         SDL_SetAtomicInt(&is->audio_read_thread_done, 1);
         return AVERROR(ENOMEM);
@@ -1035,6 +1037,8 @@ int read_thread(void *arg) {
     AVDictionary *base_opts = NULL;
     AVFormatContext *kept_ic = NULL;
     int edit_list_fell_back = 0;
+
+    thread_set_priority(SDL_THREAD_PRIORITY_NORMAL, "reader");
 
     log_interrupt_begin(decode_interrupt_cb, is);
 

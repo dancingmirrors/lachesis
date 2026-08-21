@@ -276,7 +276,6 @@ typedef struct VideoState {
     uint8_t *sub_rgba;
     int sub_rgba_w;
     int sub_rgba_h;
-    unsigned sub_rgba_generation;
 
     int subtitle_stream;
     AVStream *subtitle_st;
@@ -448,12 +447,15 @@ int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
 
 void video_prepare_overlays(VideoState *is);
 
+void thread_set_priority(SDL_ThreadPriority priority, const char *who);
+
 void calculate_display_rect(SDL_Rect *rect,
                             int scr_xleft, int scr_ytop, int scr_width, int scr_height,
                             int pic_width, int pic_height, AVRational pic_sar);
 
 #define FF_QUIT_EVENT (SDL_EVENT_USER + 2)
 #define FF_RENDER_FAULT_EVENT (SDL_EVENT_USER + 3)
+#define FF_SCREENSHOT_EVENT (SDL_EVENT_USER + 4)
 
 #define FF_QUIT_REASON_EOF 0
 #define FF_QUIT_REASON_ERROR 1

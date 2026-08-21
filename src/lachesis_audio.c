@@ -675,6 +675,8 @@ int audio_thread(void *arg) {
     AVRational tb;
     int ret = 0;
 
+    thread_set_priority(SDL_THREAD_PRIORITY_HIGH, "audio decoder");
+
     if (spdif.active) {
         return spdif_audio_thread(is);
     }
