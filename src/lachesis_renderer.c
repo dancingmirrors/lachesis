@@ -121,6 +121,8 @@
 #define LACHESIS_CAN_ITERATE_LIBS 1
 #endif
 
+static int allow_software_gpu = 1;
+
 struct Renderer {
     const AVClass *class;
 
@@ -403,8 +405,6 @@ static int add_device_extension(const AVDictionary *opt,
 
     return av_dict_set(dict, dev_ext_key, ext_list, AV_DICT_DONT_STRDUP_VAL);
 }
-
-static int allow_software_gpu = 1;
 
 static const char *select_device(const AVDictionary *opt) {
     const AVDictionaryEntry *entry;
