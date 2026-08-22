@@ -214,7 +214,7 @@ static int opt_scale(void *optctx av_unused, const char *opt av_unused,
     }
     if (!scale_filter_set(arg)) {
         log_dead("Unknown scaler '%s'. "
-                 "Try -scale help.\n",
+                 "Try -scaler help.\n",
                  arg);
         return AVERROR(EINVAL);
     }
@@ -383,7 +383,7 @@ static int opt_video_bg(void *optctx av_unused, const char *opt av_unused,
     uint8_t rgba[4];
 
     if (parse_video_background(arg, rgba) < 0) {
-        log_dead("-video_bg must be none, tiles, or a color.\n");
+        log_dead("-video-bg must be none, tiles, or a color.\n");
         return AVERROR(EINVAL);
     }
 
@@ -561,7 +561,7 @@ const OptionDef options[] = {
     {"ss", OPT_TYPE_TIME, 0, {&start_time}, "seek to a given position in seconds", "pos"},
     {"start", OPT_TYPE_TIME, 0, {&start_time}, "seek to a given position in seconds", "pos"},
     {"t", OPT_TYPE_TIME, 0, {&play_duration}, "play this duration of the input in seconds", "duration"},
-    {"seek_interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
+    {"seek-interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
     {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)"},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to always keep the window on top"},
@@ -582,7 +582,7 @@ const OptionDef options[] = {
     {"loop", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_loop}, "set the number of times each playlist entry is played (0 or implied is forever)", "count", "0", "1", arg_is_number},
     {"cache-secs", OPT_TYPE_FLOAT, 0, {&opt_cache_secs}, "stream readahead in seconds (-1 = auto: 30 for network, 1 for local)", "seconds"},
     {"cache-size", OPT_TYPE_INT, 0, {&opt_cache_size_mb}, "max readahead buffer in MB (-1 = auto: 128 for network, 15 for local)", "MB"},
-    {"window_title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
+    {"window-title", OPT_TYPE_STRING, 0, {&window_title}, "override the window title", "window title"},
     {"vf", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_add_vfilter}, "set video filters (pass more than once to cycle between them with W)", "filter_graph"},
     {"af", OPT_TYPE_STRING, 0, {&afilters_opt}, "set audio filters", "filter_graph"},
     {"audio-spdif", OPT_TYPE_STRING, OPT_ARG_OPTIONAL | OPT_STRICT_VALUE, {&audio_spdif_opt}, "a list of ac3, eac3, dts, dts-hd, truehd, mp1, mp2, mp3, aac, or all separated by ',' (or implied all)", "codecs", "all", "", arg_is_spdif_codecs},
@@ -601,13 +601,13 @@ const OptionDef options[] = {
     {"icc-profile", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_profile}, "ICC profile passed to libplacebo", "path"},
     {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises"},
     {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports"},
-    {"video_bg", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_video_bg}, "set the video background for transparent content (none, tiles, or a color)", "color"},
+    {"video-bg", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_video_bg}, "set the video background for transparent content (none, tiles, or a color)", "color"},
     {"hwaccel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none, or off", "method"},
     {"no-hwaccel", OPT_TYPE_BOOL, 0, {&no_hwaccel}, "disable hardware accelerated decoding (force software)"},
     {"hwaccel-codecs", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel_codecs}, "a list of codecs allowed to use hwaccel separated by ',', or all, with '-' before a name to exclude it (default all)", "codecs"},
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
     {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
-    {"video_fill", OPT_TYPE_BOOL, 0, {&video_fill}, "scale video to fill the window"},
+    {"video-fill", OPT_TYPE_BOOL, 0, {&video_fill}, "scale video to fill the window"},
     {"360-sbs", OPT_TYPE_BOOL, 0, {&enable_360sbs}, "enable 360\xc2\xb0 equirectangular projection for side-by-side video"},
     {"360-tb", OPT_TYPE_BOOL, 0, {&enable_360tb}, "enable 360\xc2\xb0 equirectangular projection for top-bottom video"},
     {"360-eq", OPT_TYPE_BOOL, 0, {&enable_360eq}, "enable 360\xc2\xb0 spherical projection for side-by-side video"},
@@ -622,7 +622,7 @@ const OptionDef options[] = {
     {"interpolate", OPT_TYPE_BOOL, 0, {&frame_interpolation}, "oversample interpolation"},
     {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF"},
     {"supersample", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_supersample}, "sharpen and deband video (off, light, medium, strong, or implied medium)", "level", "medium", "off", arg_is_supersample},
-    {"scale", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_scale}, "set the scaler (or help)", "filter"},
+    {"scaler", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_scale}, "set the scaler (or help)", "filter"},
     {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,
@@ -817,9 +817,9 @@ static const struct {
     {"vn", "deinterlace", OPT_DISABLES},
     {"vn", "interpolate", OPT_DISABLES},
     {"vn", "supersample", OPT_DISABLES},
-    {"vn", "scale", OPT_DISABLES},
-    {"vn", "video_bg", OPT_DISABLES},
-    {"vn", "video_fill", OPT_DISABLES},
+    {"vn", "scaler", OPT_DISABLES},
+    {"vn", "video-bg", OPT_DISABLES},
+    {"vn", "video-fill", OPT_DISABLES},
     {"vn", "vcodec", OPT_DISABLES},
     {"vn", "slow", OPT_DISABLES},
     {"vn", "max-texture-size", OPT_DISABLES},
@@ -844,7 +844,7 @@ static const struct {
     {"nodisp", "windowed", OPT_DISABLES},
     {"nodisp", "autofit", OPT_DISABLES},
     {"nodisp", "alwaysontop", OPT_DISABLES},
-    {"nodisp", "window_title", OPT_DISABLES},
+    {"nodisp", "window-title", OPT_DISABLES},
     {"nodisp", "delete", OPT_DISABLES},
     {"nodisp", "icc-profile", OPT_DISABLES},
     {"nodisp", "icc-auto", OPT_DISABLES},

@@ -389,7 +389,7 @@ int screenshot_shutdown(void) {
     return joined;
 }
 
-/* Flatten to opaque black or -video_bg. */
+/* Flatten to opaque black or -video-bg. */
 static void screenshot_bg_color(VideoState *is, uint8_t bg[3]) {
     if (is->render_params.video_background_type == VIDEO_BACKGROUND_COLOR) {
         bg[0] = is->render_params.video_background_color[0];
