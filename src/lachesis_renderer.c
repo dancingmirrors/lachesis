@@ -236,6 +236,7 @@ typedef struct RendererContext {
     float sbs360_roll;
     float sbs360_hfov;
     enum View360Layout sbs360_layout;
+    enum View360Projection sbs360_projection;
 
     const struct pl_hook *supersample_hook;
     enum SupersampleLevel supersample_level;
@@ -2878,7 +2879,8 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
                                ctx->sbs360_pitch, ctx->sbs360_roll,
                                ctx->sbs360_hfov, ctx->sbs360_layout,
-                               (int)rotation * 90, &viewport);
+                               ctx->sbs360_projection, (int)rotation * 90,
+                               &viewport);
         hooks[num_hooks++] = ctx->sbs360_hook;
     }
 
@@ -4109,7 +4111,8 @@ int renderer_refresh_display_info(Renderer *renderer, SDL_Window *window) {
     return icc_load_display(ctx, window) | hdr_refresh(ctx, window);
 }
 
-int renderer_enable_360(Renderer *renderer, enum View360Layout layout) {
+int renderer_enable_360(Renderer *renderer, enum View360Layout layout,
+                        enum View360Projection projection) {
     RendererContext *ctx = (RendererContext *)renderer;
     int enable = layout != VIEW360_LAYOUT_OFF;
 
@@ -4130,6 +4133,7 @@ int renderer_enable_360(Renderer *renderer, enum View360Layout layout) {
     }
     ctx->sbs360_enabled = enable;
     ctx->sbs360_layout = layout;
+    ctx->sbs360_projection = projection;
 
     return 0;
 }

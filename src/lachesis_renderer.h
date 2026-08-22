@@ -157,7 +157,8 @@ int renderer_refresh_display_info(Renderer *renderer, SDL_Window *window);
 
 void renderer_destroy(Renderer *renderer);
 
-int renderer_enable_360(Renderer *renderer, enum View360Layout layout);
+int renderer_enable_360(Renderer *renderer, enum View360Layout layout,
+                        enum View360Projection projection);
 void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll, float hfov);
 
 int renderer_set_supersample(Renderer *renderer, enum SupersampleLevel level);

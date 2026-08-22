@@ -117,6 +117,8 @@ int max_texture_size = 0;
 int video_unscaled = 0;
 int enable_360sbs = 0;
 int enable_360tb = 0;
+int enable_360eq = 0;
+int enable_360eqtb = 0;
 int is_fullscreen = 1;
 int start_windowed = 0;
 float autofit_larger = 0.85f;
@@ -591,6 +593,8 @@ const OptionDef options[] = {
     {"video_unscaled", OPT_TYPE_BOOL, 0, {&video_unscaled}, "scale video to fill the window"},
     {"360-sbs", OPT_TYPE_BOOL, 0, {&enable_360sbs}, "enable 360\xc2\xb0 equirectangular projection for side-by-side video"},
     {"360-tb", OPT_TYPE_BOOL, 0, {&enable_360tb}, "enable 360\xc2\xb0 equirectangular projection for top-bottom video"},
+    {"360-eq", OPT_TYPE_BOOL, 0, {&enable_360eq}, "enable 360\xc2\xb0 spherical projection for side-by-side video"},
+    {"360-eq-tb", OPT_TYPE_BOOL, 0, {&enable_360eqtb}, "enable 360\xc2\xb0 spherical projection for top-bottom video"},
     {"no-ytdl", OPT_TYPE_BOOL, 0, {&ytdl_disable}, "disable yt-dlp integration"},
     {"ytdl-path", OPT_TYPE_STRING, 0, {&ytdl_path}, "path to the yt-dlp binary", "path"},
     {"ytdl-format", OPT_TYPE_STRING, 0, {&ytdl_format}, "yt-dlp format selection string", "format"},
@@ -779,6 +783,11 @@ static const struct {
     enum OptionRelation how;
 } option_relations[] = {
     {"360-sbs", "360-tb", OPT_CONFLICTS_WITH},
+    {"360-sbs", "360-eq", OPT_CONFLICTS_WITH},
+    {"360-sbs", "360-eq-tb", OPT_CONFLICTS_WITH},
+    {"360-tb", "360-eq", OPT_CONFLICTS_WITH},
+    {"360-tb", "360-eq-tb", OPT_CONFLICTS_WITH},
+    {"360-eq", "360-eq-tb", OPT_CONFLICTS_WITH},
 
     {"nodisp", "vn", OPT_IMPLIES},
     {"benchmark", "an", OPT_IMPLIES},
@@ -800,6 +809,8 @@ static const struct {
     {"vn", "hwaccel-max-size", OPT_DISABLES},
     {"vn", "360-sbs", OPT_DISABLES},
     {"vn", "360-tb", OPT_DISABLES},
+    {"vn", "360-eq", OPT_DISABLES},
+    {"vn", "360-eq-tb", OPT_DISABLES},
 
     {"an", "af", OPT_DISABLES},
     {"an", "volume", OPT_DISABLES},

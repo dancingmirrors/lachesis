@@ -160,6 +160,8 @@ extern int max_texture_size;
 extern int video_unscaled;
 extern int enable_360sbs;
 extern int enable_360tb;
+extern int enable_360eq;
+extern int enable_360eqtb;
 extern int is_fullscreen;
 extern int start_windowed;
 

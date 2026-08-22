@@ -250,6 +250,7 @@ int frame_interpolation = 0;
 int fatal_error_pending = 0;
 int exit_status = 0;
 enum View360Layout view360_layout = VIEW360_LAYOUT_OFF;
+enum View360Projection view360_projection = VIEW360_PROJECTION_PANINI;
 float sbs360_yaw = 0.0f;
 float sbs360_pitch = VIEW360_DEFAULT_PITCH;
 float sbs360_roll = 0.0f;
@@ -259,7 +260,7 @@ void sbs360_reset_view(void) {
     sbs360_yaw = view360_default_yaw(view360_layout);
     sbs360_pitch = VIEW360_DEFAULT_PITCH;
     sbs360_roll = 0.0f;
-    sbs360_hfov = VIEW360_DEFAULT_HFOV;
+    sbs360_hfov = view360_default_hfov(view360_projection);
 }
 
 SDL_Window *window;
@@ -3052,7 +3053,8 @@ static void open_renderer(enum RendererApi api) {
                    driver ? driver : "none", why);
     }
 
-    if (view360_enabled() && renderer_enable_360(renderer, view360_layout) < 0) {
+    if (view360_enabled() &&
+        renderer_enable_360(renderer, view360_layout, view360_projection) < 0) {
         fatal_quit("Failed to enable the 360° shader!\n");
     }
 
@@ -3667,8 +3669,13 @@ int main(int argc, char **argv) {
     if (!display_disable) {
         SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
         init_default_window_size();
-        if (enable_360sbs || enable_360tb) {
-            view360_layout = enable_360tb ? VIEW360_LAYOUT_TB : VIEW360_LAYOUT_FULL;
+        if (enable_360sbs || enable_360tb || enable_360eq || enable_360eqtb) {
+            view360_projection = (enable_360eq || enable_360eqtb)
+                ? VIEW360_PROJECTION_SPHERE
+                : VIEW360_PROJECTION_PANINI;
+            view360_layout = (enable_360tb || enable_360eqtb)
+                ? VIEW360_LAYOUT_TB
+                : VIEW360_LAYOUT_FULL;
             sbs360_reset_view();
         }
 

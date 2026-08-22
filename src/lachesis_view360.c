@@ -1,5 +1,6 @@
 /*
  * Copyright © 2026 dancingmirrors@icloud.com
+ * Based on code © 2026 the VLC authors.
  *
  * This file is part of lachesis.
  *
@@ -69,6 +70,13 @@ static const char view360_shader[] =
     "//!MAXIMUM 1.0\n"
     "0.0\n"
     "\n"
+    "//!PARAM sphere\n"
+    "//!DESC Projection (0 = panini, 1 = sphere)\n"
+    "//!TYPE DYNAMIC float\n"
+    "//!MINIMUM 0.0\n"
+    "//!MAXIMUM 1.0\n"
+    "0.0\n"
+    "\n"
     "//!PARAM rot\n"
     "//!DESC Source rotation in quarter turns\n"
     "//!TYPE DYNAMIC float\n"
@@ -113,7 +121,7 @@ static const char view360_shader[] =
     "\n"
     "//!HOOK MAIN\n"
     "//!BIND HOOKED\n"
-    "//!DESC 360 Panini projection with zoom-coupled vertical fit\n"
+    "//!DESC 360 Panini/sphere projection with zoom-coupled vertical fit\n"
     "//!WIDTH OUTPUT.w\n"
     "//!HEIGHT OUTPUT.h\n"
     "\n"
@@ -123,6 +131,9 @@ static const char view360_shader[] =
     "#define D_HI " AV_STRINGIFY(VIEW360_PANINI_HI) "\n"
     "#define VC_LO " AV_STRINGIFY(VIEW360_VC_LO) "\n"
     "#define VC_HI " AV_STRINGIFY(VIEW360_VC_HI) "\n"
+    "\n"
+    "#define SPH_MAX " AV_STRINGIFY(VIEW360_SPHERE_HFOV_MAX) "\n"
+    "#define SPH_PULLBACK " AV_STRINGIFY(VIEW360_SPHERE_HFOV_PULLBACK) "\n"
     "\n"
     "vec3 view_ray(vec2 ndc, float aspect) {\n"
     "    float hfov_rad = hfov * (PI / 180.0);\n"
@@ -149,13 +160,37 @@ static const char view360_shader[] =
     "    return vec3(costh * sphi, sinth, costh * cphi);\n"
     "}\n"
     "\n"
+    "vec3 sphere_ray(vec2 ndc, float aspect) {\n"
+    "    float tx = tan(min(hfov, SPH_MAX) * (PI / 360.0));\n"
+    "    float ty = tx / aspect;\n"
+    "\n"
+    "    float tt   = tx * tx + ty * ty;\n"
+    "    float dmax = sqrt((1.0 + tt) / tt);\n"
+    "\n"
+    "    float ramp = (hfov - SPH_PULLBACK) / (SPH_MAX - SPH_PULLBACK);\n"
+    "    float dist = dmax * clamp(ramp, 0.0, 1.0);\n"
+    "\n"
+    "    vec3 d = normalize(vec3(ndc.x * tx, ndc.y * ty, 1.0));\n"
+    "\n"
+    "    float b = d.z * dist;\n"
+    "    float c = dist * dist - 1.0;\n"
+    "    float t = b + sqrt(max(b * b - c, 0.0));\n"
+    "\n"
+    "    return normalize(d * t - vec3(0.0, 0.0, dist));\n"
+    "}\n"
+    "\n"
     "vec4 hook() {\n"
     "    vec2 view  = vec2(view_off_x, view_off_y) +\n"
     "                 HOOKED_pos * vec2(view_scale_x, view_scale_y);\n"
     "    vec2 ndc   = view * 2.0 - 1.0;\n"
     "    ndc.y      = -ndc.y;\n"
     "\n"
-    "    vec3 ray = view_ray(ndc, view_aspect);\n"
+    "    vec3 ray;\n"
+    "    if (sphere > 0.5) {\n"
+    "        ray = sphere_ray(ndc, view_aspect);\n"
+    "    } else {\n"
+    "        ray = view_ray(ndc, view_aspect);\n"
+    "    }\n"
     "\n"
     "    float r  = roll * (PI / 180.0);\n"
     "    float cr = cos(r), sr = sin(r);\n"
@@ -212,8 +247,10 @@ void view360_pl_hook_destroy(const struct pl_hook **hook) {
 
 void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
                             float roll, float hfov, enum View360Layout layout,
-                            int rotate, const View360Viewport *viewport) {
+                            enum View360Projection projection, int rotate,
+                            const View360Viewport *viewport) {
     float tb = layout == VIEW360_LAYOUT_TB ? 1.0f : 0.0f;
+    float sphere = projection == VIEW360_PROJECTION_SPHERE ? 1.0f : 0.0f;
 
     for (int i = 0; i < hook->num_parameters; i++) {
         const struct pl_hook_par *par = &hook->parameters[i];
@@ -231,6 +268,9 @@ void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
         }
         if (!strcmp(par->name, "tb")) {
             par->data->f = tb;
+        }
+        if (!strcmp(par->name, "sphere")) {
+            par->data->f = sphere;
         }
         if (!strcmp(par->name, "rot")) {
             par->data->f = (float)(rotate / 90);

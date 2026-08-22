@@ -617,14 +617,16 @@ void event_loop(VideoState **pis) {
             case SDLK_EQUALS:
             case SDLK_KP_PLUS:
                 if (sbs360_active(cur_stream)) {
-                    sbs360_hfov = FFMAX(sbs360_hfov - 10.0f, 10.0f);
+                    sbs360_hfov =
+                        view360_clamp_hfov(view360_projection, sbs360_hfov - 10.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
             case SDLK_MINUS:
             case SDLK_KP_MINUS:
                 if (sbs360_active(cur_stream)) {
-                    sbs360_hfov = FFMIN(sbs360_hfov + 10.0f, 180.0f);
+                    sbs360_hfov =
+                        view360_clamp_hfov(view360_projection, sbs360_hfov + 10.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
@@ -649,13 +651,16 @@ void event_loop(VideoState **pis) {
                 if (refuse_without_video(cur_stream)) {
                     break;
                 }
-                view360_layout = view360_layout_next(view360_layout);
-                osd_show_message("360: %s", view360_layout_name(view360_layout));
+                view360_mode_next(&view360_layout, &view360_projection);
+                osd_show_message(
+                    "360: %s",
+                    view360_mode_name(view360_layout, view360_projection));
                 if (view360_enabled()) {
                     sbs360_reset_view();
                 }
                 if (renderer) {
-                    renderer_enable_360(renderer, view360_layout);
+                    renderer_enable_360(renderer, view360_layout,
+                                        view360_projection);
                 }
                 cur_stream->force_refresh = 1;
                 break;
