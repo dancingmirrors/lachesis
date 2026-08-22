@@ -69,12 +69,11 @@ typedef struct PacketQueue {
 
 #define DEGRADE_NONE 0
 #define DEGRADE_RENDER 1
-#define DEGRADE_FILTER 2
-#define DEGRADE_NONREF 3
-#define DEGRADE_SKIP 4
+#define DEGRADE_CHEAP 2
+#define DEGRADE_SKIP 3
 #define DEGRADE_MAX DEGRADE_SKIP
 
-#define VIDEO_PICTURE_QUEUE_SIZE 16
+#define VIDEO_PICTURE_QUEUE_SIZE 3
 #define SUBPICTURE_QUEUE_SIZE 16
 #define SAMPLE_QUEUE_SIZE 9
 #define FRAME_QUEUE_SIZE FFMAX(SAMPLE_QUEUE_SIZE, FFMAX(VIDEO_PICTURE_QUEUE_SIZE, SUBPICTURE_QUEUE_SIZE))
@@ -237,10 +236,10 @@ typedef struct VideoState {
     int degrade_level;
     int degrade_episodes;
     int degrade_relapses[DEGRADE_MAX + 1];
-    int degrade_left_level;
-    int64_t degrade_left_us;
+    int64_t degrade_left_us[DEGRADE_MAX + 1];
     int degrade_warned;
     int64_t degrade_changed_us;
+    int64_t degrade_read_ahead_us;
     int64_t degrade_late_since_us;
     int64_t degrade_calm_since_us;
     double catchup_kept_time;
@@ -259,6 +258,9 @@ typedef struct VideoState {
     int degrade_deaf;
     int64_t degrade_serial_us;
     int64_t last_content_skip_us;
+    double content_skip_pts;
+    int content_skip_serial;
+    int64_t content_skip_until_us;
     int content_skips;
     int64_t last_catchup_us;
     int render_low_quality;

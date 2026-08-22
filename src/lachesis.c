@@ -2286,7 +2286,8 @@ static void video_refresh(void *opaque, double *remaining_time) {
             lastvp = frame_queue_peek_last(&is->pictq);
             vp = frame_queue_peek(&is->pictq);
 
-            if (vp->serial != is->videoq.serial) {
+            if (vp->serial != is->videoq.serial ||
+                degrade_stale_frame(is, vp->pts, vp->serial)) {
                 deinterlace_retire_frame(is);
                 frame_queue_next(&is->pictq);
                 goto retry;

@@ -64,7 +64,6 @@
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
 #define MIN_FRAMES 25
-#define CATCHUP_READ_AHEAD_SECS 10.0
 
 #define HWACCEL_EXTRA_FRAMES 6
 
@@ -616,11 +615,8 @@ static int input_can_reopen(const AVFormatContext *ic) {
 
 int stream_has_enough_packets(const VideoState *is, AVStream *st, int stream_id,
                               PacketQueue *queue) {
-    double want = read_ahead_secs;
-
-    if (is && degrade_wants_read_ahead(is) && want < CATCHUP_READ_AHEAD_SECS) {
-        want = CATCHUP_READ_AHEAD_SECS;
-    }
+    double want = is ? degrade_read_ahead_secs(is, read_ahead_secs)
+                     : read_ahead_secs;
 
     return stream_id < 0 ||
         queue->abort_request ||
