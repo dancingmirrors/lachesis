@@ -115,7 +115,7 @@ extern int alwaysontop;
 extern int startup_volume;
 extern int av_sync_type;
 extern int av_sync_type_explicit;
-extern int fast;
+extern int slow;
 extern int no_edit_list;
 extern int64_t start_time;
 extern int64_t play_duration;

@@ -403,9 +403,6 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        if (fast) {
-            avctx->flags2 |= AV_CODEC_FLAG2_FAST;
-        }
         if (!display_disable) {
             avctx->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
         }

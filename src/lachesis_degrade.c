@@ -74,8 +74,8 @@
 #define CONTENT_SKIP_RETIRE_US (2 * 1000000)
 #define CONTENT_SKIP_SCAN_MAX 2048
 
-static int degrade_floor(void) {
-    return fast ? DEGRADE_CHEAP : DEGRADE_NONE;
+static int degrade_ceiling(void) {
+    return slow ? DEGRADE_NONE : DEGRADE_MAX;
 }
 
 static int decoder_is_deaf(const AVCodecContext *avctx) {
@@ -215,8 +215,13 @@ static const char *degrade_level_name(int level) {
 
 const char *degrade_status(const VideoState *is) {
     static char line[192];
-    int n = snprintf(line, sizeof(line), "%s",
-                     degrade_level_name(is->degrade_level));
+    int n;
+
+    if (slow) {
+        return "full quality";
+    }
+    n = snprintf(line, sizeof(line), "%s",
+                 degrade_level_name(is->degrade_level));
 
     if (is->decode_cost >= 0.0 && n > 0 && (size_t)n < sizeof(line)) {
         n += snprintf(line + n, sizeof(line) - n,
@@ -257,7 +262,7 @@ static int degrade_render_fits(int64_t interval_us) {
 }
 
 static void degrade_set_level(VideoState *is, int level) {
-    level = av_clip(level, degrade_floor(), DEGRADE_MAX);
+    level = av_clip(level, DEGRADE_NONE, degrade_ceiling());
     if (level == is->degrade_level) {
         return;
     }
@@ -267,7 +272,7 @@ static void degrade_set_level(VideoState *is, int level) {
             is->degrade_warned = 1;
             log_warn("Degraded decoding engaged. Quality will suffer.\n");
         }
-        if (is->degrade_level == degrade_floor() && level > degrade_floor()) {
+        if (is->degrade_level == DEGRADE_NONE) {
             is->degrade_episodes++;
         }
         if (is->degrade_left_us[level] &&
@@ -415,7 +420,7 @@ static void degrade_update(VideoState *is, double dpts,
         if (!is->degrade_calm_since_us) {
             is->degrade_calm_since_us = now;
         }
-        if (is->degrade_level > degrade_floor() &&
+        if (is->degrade_level > DEGRADE_NONE &&
             now - is->degrade_calm_since_us >= degrade_recover_us(is) &&
             (is->degrade_level != DEGRADE_RENDER ||
              degrade_render_fits(interval_us))) {
@@ -440,14 +445,11 @@ void degrade_init(VideoState *is) {
     is->content_skip_pts = NAN;
     is->decode_cost = -1.0;
     is->stall_mark_us = is->degrade_serial_us = av_gettime_relative();
-    if (degrade_floor() != DEGRADE_NONE) {
-        degrade_set_level(is, degrade_floor());
-    }
 }
 
 void degrade_reset(VideoState *is) {
-    is->degrade_level = degrade_floor();
-    is->render_low_quality = is->degrade_level >= DEGRADE_RENDER;
+    is->degrade_level = DEGRADE_NONE;
+    is->render_low_quality = 0;
     is->degrade_episodes = 0;
     memset(is->degrade_relapses, 0, sizeof(is->degrade_relapses));
     memset(is->degrade_left_us, 0, sizeof(is->degrade_left_us));
@@ -465,6 +467,9 @@ void degrade_reset(VideoState *is) {
 }
 
 void degrade_note_stall(VideoState *is, int64_t stall_us) {
+    if (slow) {
+        return;
+    }
     is->stall_us += stall_us;
 }
 
@@ -472,7 +477,7 @@ double degrade_read_ahead_secs(const VideoState *is, double base) {
     double ramp;
     int64_t held;
 
-    if (!is->video_st || !is->degrade_read_ahead_us ||
+    if (slow || !is->video_st || !is->degrade_read_ahead_us ||
         degrade_step_up(is, is->degrade_level) < DEGRADE_SKIP) {
         return base;
     }
@@ -485,6 +490,10 @@ double degrade_read_ahead_secs(const VideoState *is, double base) {
 
 int degrade_stale_frame(VideoState *is, double pts, int serial) {
     int stale = 0;
+
+    if (slow) {
+        return 0;
+    }
 
     SDL_LockMutex(is->pictq.mutex);
     if (!isnan(is->content_skip_pts)) {
@@ -504,13 +513,19 @@ int degrade_stale_frame(VideoState *is, double pts, int serial) {
 }
 
 int degrade_can_catch_up(const VideoState *is, double now) {
-    return is->decode_cost >= 0.0 && is->decode_cost < DEGRADE_CATCHUP_COST &&
+    return !slow && is->decode_cost >= 0.0 &&
+        is->decode_cost < DEGRADE_CATCHUP_COST &&
         now - is->catchup_kept_time < CATCHUP_MAX_FREEZE_SECS;
 }
 
 void degrade_frame(VideoState *is, double dpts, int64_t decode_us,
                    int64_t budget_us, int64_t interval_us, int had_packets) {
-    int64_t now = av_gettime_relative();
+    int64_t now;
+
+    if (slow) {
+        return;
+    }
+    now = av_gettime_relative();
 
     /* A seek invalidates every measurement, but not the verdict. */
     if (is->viddec.pkt_serial != is->degrade_serial) {
