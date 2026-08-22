@@ -1288,7 +1288,7 @@ int read_thread(void *arg) {
              (!strncmp(is->filename, "http://", 7) ||
               !strncmp(is->filename, "https://", 8)));
         read_ahead_secs = opt_cache_secs > 0.0f
-            ? opt_cache_secs
+            ? (double)opt_cache_secs
             : (network ? 30.0 : 1.0);
         max_queue_bytes = opt_cache_size_mb > 0
             ? (int64_t)opt_cache_size_mb * 1024 * 1024
@@ -1517,7 +1517,7 @@ int read_thread(void *arg) {
                     exact_seek_cancel(is);
                 }
                 if (seek_flags & AVSEEK_FLAG_BYTE) {
-                    set_clock(&is->extclk, NAN, 0);
+                    set_clock(&is->extclk, LACHESIS_NAN, 0);
                 } else {
                     set_clock(&is->extclk, seek_exact_pts / (double)AV_TIME_BASE, 0);
                     is->observed_pos = seek_exact_pts / (double)AV_TIME_BASE -

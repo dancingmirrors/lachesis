@@ -137,11 +137,11 @@ static double packet_queue_skip_to_keyframe(PacketQueue *q, AVRational tb,
                                             double land_before,
                                             double max_jump, double *land) {
     MyAVPacketList pkt1;
-    double head = NAN, best = NAN;
+    double head = LACHESIS_NAN, best = LACHESIS_NAN;
     double dropped = 0.0;
     size_t n, target = 0;
 
-    *land = NAN;
+    *land = LACHESIS_NAN;
 
     SDL_LockMutex(q->mutex);
     n = av_fifo_can_read(q->pkt_list);
@@ -319,7 +319,7 @@ static void degrade_meters(VideoState *is, int64_t now) {
 
 static void degrade_content_skip(VideoState *is, double lag) {
     int64_t now = av_gettime_relative();
-    double m, dropped, land = NAN;
+    double m, dropped, land = LACHESIS_NAN;
 
     if (is->degrade_level < DEGRADE_SKIP || is->paused || is->step ||
         is->seek_req || is->viddec.pkt_serial != is->videoq.serial ||
@@ -348,7 +348,7 @@ static void degrade_content_skip(VideoState *is, double lag) {
         av_packet_unref(is->viddec.pkt);
     }
     avcodec_flush_buffers(is->viddec.avctx);
-    is->decode_span_pts = NAN;
+    is->decode_span_pts = LACHESIS_NAN;
     is->content_skips++;
 
     SDL_LockMutex(is->pictq.mutex);
@@ -442,7 +442,7 @@ unknown:
 
 void degrade_init(VideoState *is) {
     is->degrade_serial = -1;
-    is->content_skip_pts = NAN;
+    is->content_skip_pts = LACHESIS_NAN;
     is->decode_cost = -1.0;
     is->stall_mark_us = is->degrade_serial_us = av_gettime_relative();
 }
@@ -457,7 +457,7 @@ void degrade_reset(VideoState *is) {
     is->degrade_serial = -1;
     is->degrade_deaf = 0;
     is->degrade_read_ahead_us = 0;
-    is->content_skip_pts = NAN;
+    is->content_skip_pts = LACHESIS_NAN;
     degrade_note_read_ahead(is, is->degrade_level, av_gettime_relative());
     is->decode_cost = -1.0;
     is->cost_decode_us = 0;
@@ -499,12 +499,12 @@ int degrade_stale_frame(VideoState *is, double pts, int serial) {
     if (!isnan(is->content_skip_pts)) {
         if (serial != is->content_skip_serial ||
             av_gettime_relative() > is->content_skip_until_us) {
-            is->content_skip_pts = NAN;
+            is->content_skip_pts = LACHESIS_NAN;
         } else if (isnan(pts)) {
         } else if (pts < is->content_skip_pts) {
             stale = 1;
         } else {
-            is->content_skip_pts = NAN;
+            is->content_skip_pts = LACHESIS_NAN;
         }
     }
     SDL_UnlockMutex(is->pictq.mutex);

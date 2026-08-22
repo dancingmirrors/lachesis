@@ -154,7 +154,7 @@ void present_update_display_mode(void) {
             if (mode->refresh_rate_numerator > 0 && mode->refresh_rate_denominator > 0) {
                 hz = (double)mode->refresh_rate_numerator / mode->refresh_rate_denominator;
             } else if (mode->refresh_rate > 0) {
-                hz = mode->refresh_rate;
+                hz = (double)mode->refresh_rate;
             }
         }
     }
@@ -356,14 +356,14 @@ static double phase_anchor(double now_sec) {
     double anchor;
 
     if (pres.snap_disabled || pres.last_blocked_done_us <= 0) {
-        return NAN;
+        return LACHESIS_NAN;
     }
     if (pres.unsynced && pres.source == PRESENT_SOURCE_SWAP) {
-        return NAN;
+        return LACHESIS_NAN;
     }
     anchor = pres.last_blocked_done_us / 1e6;
 
-    return now_sec - anchor > PRESENT_ANCHOR_STALE_US / 1e6 ? NAN : anchor;
+    return now_sec - anchor > PRESENT_ANCHOR_STALE_US / 1e6 ? LACHESIS_NAN : anchor;
 }
 
 double present_next_vsync(double now_sec, int *phase_locked) {
@@ -374,7 +374,7 @@ double present_next_vsync(double now_sec, int *phase_locked) {
         *phase_locked = 0;
     }
     if (vsync <= 0) {
-        return NAN;
+        return LACHESIS_NAN;
     }
 
     anchor = phase_anchor(now_sec);

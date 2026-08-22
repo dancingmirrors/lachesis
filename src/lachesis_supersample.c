@@ -154,7 +154,7 @@ const char *supersample_status(enum SupersampleLevel level,
         snprintf(status, sizeof(status), "%s, %s", name, reason);
     } else {
         snprintf(status, sizeof(status), "%s, RCAS %.2f", name,
-                 supersample_strength(level));
+                 (double)supersample_strength(level));
     }
 
     return status;

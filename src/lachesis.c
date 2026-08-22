@@ -273,8 +273,8 @@ static int render_fail_streak;
 static int render_ever_ok;
 static int render_fault_event_sent;
 
-double ab_loop_a = NAN;
-double ab_loop_b = NAN;
+double ab_loop_a = LACHESIS_NAN;
+double ab_loop_b = LACHESIS_NAN;
 
 int ab_loop_defining(void) {
     return !isnan(ab_loop_a) && isnan(ab_loop_b);
@@ -788,7 +788,7 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
     }
     sp = frame_queue_peek(&is->subpq);
     if (sp->sub.format != 0 ||
-        vp->pts < sp->pts + ((float)sp->sub.start_display_time / 1000)) {
+        vp->pts < sp->pts + (sp->sub.start_display_time / 1000.0)) {
         return;
     }
 
@@ -1603,7 +1603,7 @@ static double clock_rate(const Clock *c) {
 
 double get_clock(Clock *c) {
     if (*c->queue_serial != c->serial) {
-        return NAN;
+        return LACHESIS_NAN;
     }
     if (c->paused) {
         return c->pts;
@@ -1634,7 +1634,7 @@ static void init_clock(Clock *c, int *queue_serial) {
     c->speed = 1.0;
     c->paused = 0;
     c->queue_serial = queue_serial;
-    set_clock(c, NAN, -1);
+    set_clock(c, LACHESIS_NAN, -1);
 }
 
 void sync_clock_to_slave(Clock *c, Clock *slave) {
@@ -1733,7 +1733,7 @@ double playhead_elapsed(const VideoState *is, double pos) {
     double length = playhead_length(is);
 
     if (isnan(pos)) {
-        return NAN;
+        return LACHESIS_NAN;
     }
     pos -= playhead_origin(is);
     if (pos < 0.0) {
@@ -1795,7 +1795,7 @@ double effective_playhead(VideoState *is) {
     double pos = get_master_clock(is);
 
     if (isnan(pos) || get_master_sync_type(is) == AV_SYNC_EXTERNAL_CLOCK) {
-        double decoded = is->audio_st ? get_clock(&is->audclk) : NAN;
+        double decoded = is->audio_st ? get_clock(&is->audclk) : LACHESIS_NAN;
 
         if (isnan(decoded) && video_stream_advances(is)) {
             decoded = get_clock(&is->vidclk);
@@ -1841,14 +1841,14 @@ static void check_external_clock_speed(VideoState *is) {
 }
 
 void exact_seek_cancel(VideoState *is) {
-    is->exact_seek_pts = NAN;
+    is->exact_seek_pts = LACHESIS_NAN;
     is->exact_seek_video_serial = -1;
     is->exact_seek_audio_serial = -1;
 }
 
 static double stream_start_seconds(const AVStream *st) {
     if (!st || st->start_time == AV_NOPTS_VALUE) {
-        return NAN;
+        return LACHESIS_NAN;
     }
 
     return st->start_time * av_q2d(st->time_base);
@@ -1858,17 +1858,17 @@ double aligned_start_pts(VideoState *is) {
     double video_start, audio_start, lead;
 
     if (is->audio_ic || !is->audio_st || !video_stream_advances(is)) {
-        return NAN;
+        return LACHESIS_NAN;
     }
     video_start = stream_start_seconds(is->video_st);
     audio_start = stream_start_seconds(is->audio_st);
     if (isnan(video_start) || isnan(audio_start)) {
-        return NAN;
+        return LACHESIS_NAN;
     }
 
     lead = video_start - audio_start;
     if (lead <= AV_SYNC_THRESHOLD_MAX || lead >= AV_NOSYNC_THRESHOLD) {
-        return NAN;
+        return LACHESIS_NAN;
     }
 
     return video_start;
@@ -2031,8 +2031,8 @@ static void ab_loop_fmt_time(double t, char *buf, size_t size) {
 }
 
 static void ab_loop_reset(void) {
-    ab_loop_a = NAN;
-    ab_loop_b = NAN;
+    ab_loop_a = LACHESIS_NAN;
+    ab_loop_b = LACHESIS_NAN;
 }
 
 void ab_loop_toggle(VideoState *is) {
@@ -2179,7 +2179,7 @@ static double compute_target_delay(double delay, VideoState *is) {
 
     if (get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) {
         diff = get_clock(&is->vidclk) - get_master_clock(is);
-        is->last_av_diff = isnan(diff) ? NAN : -diff;
+        is->last_av_diff = isnan(diff) ? LACHESIS_NAN : -diff;
         if (!isnan(diff) && fabs(diff) < is->max_frame_duration) {
             if (fabs(diff) <= AV_SYNC_THRESHOLD_MAX) {
                 double base = delay > 0 ? delay : AV_SYNC_THRESHOLD_MIN;
@@ -2194,7 +2194,7 @@ static double compute_target_delay(double delay, VideoState *is) {
             }
         }
     } else {
-        is->last_av_diff = NAN;
+        is->last_av_diff = LACHESIS_NAN;
     }
 
     return delay;
@@ -2371,11 +2371,11 @@ static void video_refresh(void *opaque, double *remaining_time) {
                     /* clang-format off */
                     if (sp->serial != is->subtitleq.serial ||
                         (is->vidclk.pts >
-                         (sp->pts + ((float)sp->sub.end_display_time / 1000))) ||
+                         (sp->pts + (sp->sub.end_display_time / 1000.0))) ||
                         (sp2 &&
                          is->vidclk.pts >
                              (sp2->pts +
-                              ((float)sp2->sub.start_display_time / 1000)))) {
+                              (sp2->sub.start_display_time / 1000.0)))) {
                         /* clang-format on */
                         frame_queue_next(&is->subpq);
                     } else {
@@ -2503,7 +2503,7 @@ static int get_video_frame(VideoState *is, AVFrame *frame) {
     }
 
     if (got_picture) {
-        double dpts = NAN;
+        double dpts = LACHESIS_NAN;
         int64_t decode_us = av_gettime_relative() - decode_t0 - is->viddec.wait_us;
         if (decode_us < 0) {
             decode_us = 0;
@@ -2793,7 +2793,7 @@ int video_thread(void *arg) {
             }
             tb = av_buffersink_get_time_base(filt_out);
             duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);
-            pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
+            pts = (frame->pts == AV_NOPTS_VALUE) ? LACHESIS_NAN : frame->pts * av_q2d(tb);
             ret = queue_picture(is, frame, pts, duration, fd ? fd->pkt_pos : -1, is->viddec.pkt_serial);
             av_frame_unref(frame);
             if (is->videoq.serial != is->viddec.pkt_serial) {
@@ -2826,7 +2826,7 @@ static VideoState *stream_open(const char *filename,
     }
     video_adopt_window_size(is);
     is->last_render_serial = -1;
-    is->observed_pos = NAN;
+    is->observed_pos = LACHESIS_NAN;
     SDL_SetAtomicInt(&is->seek_by_bytes, -1);
     is->last_video_stream = is->video_stream = -1;
     is->last_audio_stream = is->audio_stream = -1;
@@ -2878,16 +2878,16 @@ static VideoState *stream_open(const char *filename,
     init_clock(&is->audclk, &is->audioq.serial);
     init_clock(&is->extclk, &is->extclk.serial);
     is->audio_clock_serial = -1;
-    is->exact_seek_backoff_target = NAN;
-    is->audio_catchup_pts = NAN;
+    is->exact_seek_backoff_target = LACHESIS_NAN;
+    is->audio_catchup_pts = LACHESIS_NAN;
     is->audio_catchup_serial = -1;
     is->audio_catchup_checked_serial = -1;
     is->pictq_last_serial = -1;
-    is->decode_span_pts = NAN;
+    is->decode_span_pts = LACHESIS_NAN;
     is->decode_span_serial = -1;
 
-    is->last_av_diff = NAN;
-    is->start_playhead = NAN;
+    is->last_av_diff = LACHESIS_NAN;
+    is->start_playhead = LACHESIS_NAN;
     exact_seek_cancel(is);
     if (video_background) {
         int type = parse_video_background(
@@ -3073,7 +3073,7 @@ static void open_renderer(enum RendererApi api) {
 }
 
 void render_fault_fallback(VideoState **pis) {
-    double resume_at = NAN;
+    double resume_at = LACHESIS_NAN;
     int keep_paused;
 
     if (!renderer) {
@@ -3291,7 +3291,7 @@ void playlist_switch(VideoState **pis, int new_pos) {
 int playlist_close_current(VideoState **pis, double *resume_at) {
     VideoState *is = *pis;
 
-    *resume_at = NAN;
+    *resume_at = LACHESIS_NAN;
     if (!is) {
         return 1;
     }

@@ -141,7 +141,7 @@ int interpolate_frames(VideoState *is, Frame *vp, RenderMixFrame *mix,
     *vsync_duration = (float)vsync_norm;
 
     interp.blend_share +=
-        ((mix[1].ts > 0.0f && mix[1].ts < vsync_norm ? 1.0 : 0.0) -
+        ((mix[1].ts > 0.0f && (double)mix[1].ts < vsync_norm ? 1.0 : 0.0) -
          interp.blend_share) /
         FFMIN(++interp.blends_counted, BLEND_SHARE_WINDOW);
     interp.state = INTERP_ON;

@@ -40,6 +40,7 @@
 
 #include <SDL3/SDL.h>
 
+#include "lachesis_math.h"
 #include "lachesis_playlist.h"
 #include "lachesis_renderer.h"
 

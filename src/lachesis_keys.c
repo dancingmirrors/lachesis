@@ -500,14 +500,14 @@ void event_loop(VideoState **pis) {
                     seek_relative_exact(cur_stream, -SEEK_EXACT_STEP, 1);
                     break;
                 }
-                incr = seek_interval ? -seek_interval : -5.0;
+                incr = seek_interval ? -(double)seek_interval : -5.0;
                 goto do_seek;
             case SDLK_RIGHT:
                 if (event.key.mod & SDL_KMOD_SHIFT) {
                     seek_relative_exact(cur_stream, SEEK_EXACT_STEP, 1);
                     break;
                 }
-                incr = seek_interval ? seek_interval : 5.0;
+                incr = seek_interval ? (double)seek_interval : 5.0;
                 goto do_seek;
             case SDLK_UP:
                 incr = 60.0;
@@ -742,12 +742,12 @@ void event_loop(VideoState **pis) {
                 if (event.button.button != SDL_BUTTON_RIGHT) {
                     break;
                 }
-                x = event.button.x;
+                x = (double)event.button.x;
             } else {
                 if (!(event.motion.state & SDL_BUTTON_RMASK)) {
                     break;
                 }
-                x = event.motion.x;
+                x = (double)event.motion.x;
             }
             if (!demuxer_ready(cur_stream) || cur_stream->width <= 0) {
                 break;
@@ -786,7 +786,7 @@ void event_loop(VideoState **pis) {
             }
             wheel_bank -= (float)notches;
 
-            incr = seek_interval ? seek_interval : 5.0;
+            incr = seek_interval ? (double)seek_interval : 5.0;
             seek_relative(cur_stream, incr * notches);
             break;
         }

@@ -1027,13 +1027,13 @@ static int write_option(void *optctx, const OptionDef *po, const char *opt,
             return ret;
         }
     } else if (po->type == OPT_TYPE_FLOAT) {
-        ret = parse_number(opt, arg, OPT_TYPE_FLOAT, -INFINITY, INFINITY, &num);
+        ret = parse_number(opt, arg, OPT_TYPE_FLOAT, -LACHESIS_INF, LACHESIS_INF, &num);
         if (ret < 0) {
             return ret;
         }
         *(float *)dst = num;
     } else if (po->type == OPT_TYPE_DOUBLE) {
-        ret = parse_number(opt, arg, OPT_TYPE_DOUBLE, -INFINITY, INFINITY, &num);
+        ret = parse_number(opt, arg, OPT_TYPE_DOUBLE, -LACHESIS_INF, LACHESIS_INF, &num);
         if (ret < 0) {
             return ret;
         }

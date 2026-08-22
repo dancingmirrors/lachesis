@@ -44,6 +44,7 @@ class _G:
     exe_format = "elf"
     console_wrapper = None
     cflags = []
+    final_cflags = []
     ldflags = []
     config_h = ""
     config_mak = ""
@@ -141,14 +142,26 @@ def normalize_list_arg(val):
 
 def push_build_flags():
     _G.state_stack.append(
-        (_G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak, _G.programs.copy())
+        (
+            _G.cflags[:],
+            _G.final_cflags[:],
+            _G.ldflags[:],
+            _G.config_h,
+            _G.config_mak,
+            _G.programs.copy(),
+        )
     )
 
 
 def pop_build_flags_discard():
-    _G.cflags[:], _G.ldflags[:], _G.config_h, _G.config_mak, _G.programs = (
-        _G.state_stack.pop()
-    )
+    (
+        _G.cflags[:],
+        _G.final_cflags[:],
+        _G.ldflags[:],
+        _G.config_h,
+        _G.config_mak,
+        _G.programs,
+    ) = _G.state_stack.pop()
 
 
 def pop_build_flags_merge():
@@ -378,6 +391,18 @@ def check_cc(
     return True
 
 
+def check_cflags(*flags, final=False):
+    keep = len(_G.cflags)
+    if not check_cc(flags=["-Werror"] + list(flags)):
+        return False
+    del _G.cflags[keep:]
+    if final:
+        add_final_cflags(*flags)
+    else:
+        add_cflags(*flags)
+    return True
+
+
 # Some linkers accept unsupported options.
 def check_ldflags(*flags, fatal_warnings=False):
     test_flags = list(flags)
@@ -464,6 +489,10 @@ def dep_enabled(*deps):
 
 def add_cflags(*fl):
     _G.cflags += list(fl)
+
+
+def add_final_cflags(*fl):
+    _G.final_cflags += list(fl)
 
 
 def add_ldflags(*fl):
@@ -678,10 +707,11 @@ def finish():
     add_config_mak_var("ROOT", _G.root_dir)
     add_config_mak_var("EXESUF", ".exe" if _G.exe_format == "pe" else "")
     _G.config_mak += "\n"
-    _G.config_mak += "CFLAGS = %s %s %s\n" % (
+    _G.config_mak += "CFLAGS = %s %s %s %s\n" % (
         " ".join(_G.cflags),
         os.environ.get("CPPFLAGS", ""),
         os.environ.get("CFLAGS", ""),
+        " ".join(_G.final_cflags),
     )
     _G.config_mak += "LDFLAGS = %s %s\n" % (
         " ".join(_G.ldflags),
@@ -705,6 +735,8 @@ def finish():
         + os.environ.get("CPPFLAGS", "")
         + " "
         + os.environ.get("CFLAGS", "")
+        + " "
+        + " ".join(_G.final_cflags)
     ).strip()
     ldflags_str = (" ".join(_G.ldflags) + " " + os.environ.get("LDFLAGS", "")).strip()
     wrapper_ldflags_str = ("-mconsole " + os.environ.get("LDFLAGS", "")).strip()

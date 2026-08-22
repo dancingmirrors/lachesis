@@ -2151,7 +2151,8 @@ static int hdr_refresh(RendererContext *ctx, SDL_Window *window) {
     if (!(max_luma >= 100.0f) || max_luma > 100000.0f) {
         if (!ctx->hdr_warned) {
             ctx->hdr_warned = 1;
-            log_warn("Ignoring an implausible display peak of %.1f cd/m².\n", max_luma);
+            log_warn("Ignoring an implausible display peak of %.1f cd/m².\n",
+                     (double)max_luma);
         }
         goto done;
     }
@@ -2164,7 +2165,8 @@ done:
     ctx->display_hdr = hdr;
     ctx->have_display_hdr = hdr.max_luma > 0;
     if (ctx->have_display_hdr) {
-        log_verbose("The display reports a peak of %.1f cd/m².\n", hdr.max_luma);
+        log_verbose("The display reports a peak of %.1f cd/m².\n",
+                    (double)hdr.max_luma);
     } else {
         log_verbose("The display no longer reports HDR metadata.\n");
     }

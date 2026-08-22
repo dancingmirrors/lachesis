@@ -606,7 +606,7 @@ static int spdif_queue_packet(VideoState *is, AVPacket *pkt) {
     }
     memcpy(frame->data[0], spdif.burst, (size_t)nb_samples * spdif.frame_bytes);
 
-    af->pts = pts == AV_NOPTS_VALUE ? NAN : pts * av_q2d(tb);
+    af->pts = pts == AV_NOPTS_VALUE ? LACHESIS_NAN : pts * av_q2d(tb);
     af->pos = pos;
     af->serial = is->auddec.pkt_serial;
     af->duration = av_q2d((AVRational){nb_samples, spdif.rate});
@@ -668,7 +668,7 @@ int audio_thread(void *arg) {
     Frame *af;
     int last_serial = -1;
     int last_speed_serial = audio_speed_serial;
-    double atempo_base_pts = NAN;
+    double atempo_base_pts = LACHESIS_NAN;
     double graph_speed = playback_speed;
     int reconfigure;
     int got_frame = 0;
@@ -694,7 +694,7 @@ int audio_thread(void *arg) {
         if (got_frame && frame->sample_rate > 0 &&
             exact_seek_drop_audio(is,
                                   frame->pts == AV_NOPTS_VALUE
-                                      ? NAN
+                                      ? LACHESIS_NAN
                                       : frame->pts / (double)frame->sample_rate,
                                   frame->nb_samples / (double)frame->sample_rate)) {
             av_frame_unref(frame);
@@ -722,7 +722,7 @@ int audio_thread(void *arg) {
                 is->audio_filter_src.freq = frame->sample_rate;
                 last_serial = is->auddec.pkt_serial;
                 last_speed_serial = audio_speed_serial;
-                atempo_base_pts = NAN;
+                atempo_base_pts = LACHESIS_NAN;
                 graph_speed = playback_speed;
 
                 if ((ret = configure_audio_filters(is, afilters_opt, 1)) < 0) {
@@ -741,7 +741,7 @@ int audio_thread(void *arg) {
                     goto the_end;
                 }
 
-                af->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
+                af->pts = (frame->pts == AV_NOPTS_VALUE) ? LACHESIS_NAN : frame->pts * av_q2d(tb);
                 af->pos = fd ? fd->pkt_pos : -1;
                 af->serial = is->auddec.pkt_serial;
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
@@ -933,7 +933,7 @@ static int audio_decode_frame(VideoState *is) {
     if (!isnan(af->pts)) {
         is->audio_clock = af->pts + af->duration;
     } else {
-        is->audio_clock = NAN;
+        is->audio_clock = LACHESIS_NAN;
     }
     is->audio_clock_serial = af->serial;
 #ifdef DEBUG

@@ -36,6 +36,11 @@ add_cflags(
     "-fno-strict-aliasing",
 )
 
+check(
+    desc="-Wdouble-promotion",
+    fn=lambda: check_cflags("-Wdouble-promotion"),
+)
+
 import platform as _platform  # noqa: E402
 
 _system = _platform.system()
@@ -46,10 +51,26 @@ check(
     "-optimize",
     desc="optimization",
     fn=lambda: chain(
-        add_cflags("-O3", "-fno-signed-zeros", "-fno-trapping-math"), True
+        add_cflags("-O3", "-ffast-math", "-fno-signed-zeros", "-fno-trapping-math"),
+        True,
     ),
 )
 check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
+
+check(
+    desc="-fno-finite-math-only",
+    fn=lambda: check_cflags("-fno-finite-math-only", final=True),
+)
+check(
+    "builtin_nan*",
+    desc="__builtin_nan",
+    fn=lambda: check_cc(
+        decl=[
+            'double lachesis_nan(void) { return __builtin_nan(""); }',
+            "double lachesis_inf(void) { return __builtin_inf(); }",
+        ]
+    ),
+)
 
 check(
     "Windows",
