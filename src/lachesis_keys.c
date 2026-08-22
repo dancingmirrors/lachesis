@@ -618,7 +618,7 @@ void event_loop(VideoState **pis) {
             case SDLK_KP_PLUS:
                 if (sbs360_active(cur_stream)) {
                     sbs360_hfov =
-                        view360_clamp_hfov(view360_projection, sbs360_hfov - 10.0f);
+                        view360_clamp_hfov(view360_projection, sbs360_hfov - 5.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
@@ -626,7 +626,7 @@ void event_loop(VideoState **pis) {
             case SDLK_KP_MINUS:
                 if (sbs360_active(cur_stream)) {
                     sbs360_hfov =
-                        view360_clamp_hfov(view360_projection, sbs360_hfov + 10.0f);
+                        view360_clamp_hfov(view360_projection, sbs360_hfov + 5.0f);
                     cur_stream->force_refresh = 1;
                 }
                 break;
