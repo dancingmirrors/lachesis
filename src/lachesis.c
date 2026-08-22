@@ -724,7 +724,7 @@ void calculate_display_rect(SDL_Rect *rect,
 
     aspect_ratio = av_mul_q(aspect_ratio, av_make_q(pic_width, pic_height));
 
-    if (!video_unscaled) {
+    if (!video_fill) {
         height = pic_height;
         width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
         if (width > scr_width || height > scr_height) {

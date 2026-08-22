@@ -115,7 +115,7 @@ int no_hwaccel = 0;
 const char *hwaccel_codecs = NULL;
 int hwaccel_max_size = 0;
 int max_texture_size = 0;
-int video_unscaled = 0;
+int video_fill = 0;
 int enable_360sbs = 0;
 int enable_360tb = 0;
 int enable_360eq = 0;
@@ -607,7 +607,7 @@ const OptionDef options[] = {
     {"hwaccel-codecs", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel_codecs}, "a list of codecs allowed to use hwaccel separated by ',', or all, with '-' before a name to exclude it (default all)", "codecs"},
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
     {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
-    {"video_unscaled", OPT_TYPE_BOOL, 0, {&video_unscaled}, "scale video to fill the window"},
+    {"video_fill", OPT_TYPE_BOOL, 0, {&video_fill}, "scale video to fill the window"},
     {"360-sbs", OPT_TYPE_BOOL, 0, {&enable_360sbs}, "enable 360\xc2\xb0 equirectangular projection for side-by-side video"},
     {"360-tb", OPT_TYPE_BOOL, 0, {&enable_360tb}, "enable 360\xc2\xb0 equirectangular projection for top-bottom video"},
     {"360-eq", OPT_TYPE_BOOL, 0, {&enable_360eq}, "enable 360\xc2\xb0 spherical projection for side-by-side video"},
@@ -819,7 +819,7 @@ static const struct {
     {"vn", "supersample", OPT_DISABLES},
     {"vn", "scale", OPT_DISABLES},
     {"vn", "video_bg", OPT_DISABLES},
-    {"vn", "video_unscaled", OPT_DISABLES},
+    {"vn", "video_fill", OPT_DISABLES},
     {"vn", "vcodec", OPT_DISABLES},
     {"vn", "slow", OPT_DISABLES},
     {"vn", "max-texture-size", OPT_DISABLES},
