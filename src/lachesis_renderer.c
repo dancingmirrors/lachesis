@@ -39,10 +39,7 @@
 #include <libplacebo/shaders/custom.h>
 #include <libplacebo/shaders/deinterlacing.h>
 #include <libplacebo/utils/frame_queue.h>
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wswitch"
 #include <libplacebo/utils/libav.h>
-#pragma GCC diagnostic pop
 
 #if LACHESIS_HAVE_VULKAN
 

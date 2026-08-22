@@ -415,6 +415,23 @@ def check_ldflags(*flags, fatal_warnings=False):
     return True
 
 
+def as_system_includes(flags):
+    out = []
+    i = 0
+    while i < len(flags):
+        f = flags[i]
+        if f == "-I" and i + 1 < len(flags):
+            path, i = flags[i + 1], i + 2
+        elif f.startswith("-I") and len(f) > 2:
+            path, i = f[2:], i + 1
+        else:
+            out.append(f)
+            i += 1
+            continue
+        out += ["-I" + path] if path == "/usr/include" else ["-isystem", path]
+    return out
+
+
 def check_pkg_config(*args):
     args = list(args)
     pkg = [get_program("PKG_CONFIG")]
@@ -424,7 +441,7 @@ def check_pkg_config(*args):
     ldflags = _run_process(pkg + ["--libs"] + args)
     if ldflags is None:
         return False
-    _G.cflags += cflags.split()
+    add_cflags(*as_system_includes(cflags.split()))
     _G.ldflags += ldflags.split()
     return True
 
@@ -513,6 +530,22 @@ def add_config_mak_var(name, val):
 
 def add_sources(*sources):
     _G.sources += list(sources)
+
+
+def dedup_isystem(flags):
+    seen = set()
+    out = []
+    i = 0
+    while i < len(flags):
+        if flags[i] == "-isystem" and i + 1 < len(flags):
+            if flags[i + 1] not in seen:
+                seen.add(flags[i + 1])
+                out += flags[i : i + 2]
+            i += 2
+            continue
+        out.append(flags[i])
+        i += 1
+    return out
 
 
 def dedup_ldflags(flags):
@@ -695,6 +728,7 @@ def finish():
     if fatal:
         die("Unknown feature was force-enabled.")
 
+    _G.cflags = dedup_isystem(_G.cflags)
     _G.ldflags = dedup_ldflags(_G.ldflags)
 
     add_config_h_define("CONFIGURATION", " ".join(sys.argv))
