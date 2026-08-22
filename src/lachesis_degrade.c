@@ -209,7 +209,7 @@ static const char *degrade_level_name(int level) {
     case DEGRADE_SKIP:
         return "3/3 hopeless";
     default:
-        return "full quality";
+        return "normal";
     }
 }
 
@@ -218,7 +218,7 @@ const char *degrade_status(const VideoState *is) {
     int n;
 
     if (slow) {
-        return "full quality";
+        return "normal";
     }
     n = snprintf(line, sizeof(line), "%s",
                  degrade_level_name(is->degrade_level));
@@ -578,7 +578,8 @@ int degrade_drop_late_frame(VideoState *is, double dpts, int64_t interval_us) {
             (frame_queue_nb_remaining(&is->pictq) > 0 ||
              degrade_can_catch_up(is, now))) {
             is->frame_drops_early++;
-            return 1;
+            /* Real voodoo here. */
+            return 0;
         }
     }
     is->catchup_kept_time = now;
