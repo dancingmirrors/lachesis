@@ -57,6 +57,7 @@
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_playlist.h"
+#include "lachesis_scale.h"
 
 const AVInputFormat *file_iformat;
 const char *window_title;
@@ -201,6 +202,22 @@ static int opt_supersample(void *optctx av_unused, const char *opt av_unused,
     }
 
     supersample_level = level;
+
+    return 0;
+}
+
+static int opt_scale(void *optctx av_unused, const char *opt av_unused,
+                     const char *arg) {
+    if (!strcmp(arg, "help")) {
+        scale_filter_list();
+        return AVERROR_EXIT;
+    }
+    if (!scale_filter_set(arg)) {
+        log_dead("Unknown scaler '%s'. "
+                 "Try -scale help.\n",
+                 arg);
+        return AVERROR(EINVAL);
+    }
 
     return 0;
 }
@@ -605,6 +622,7 @@ const OptionDef options[] = {
     {"interpolate", OPT_TYPE_BOOL, 0, {&frame_interpolation}, "oversample interpolation"},
     {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF"},
     {"supersample", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_supersample}, "sharpen and deband video (off, light, medium, strong, or implied medium)", "level", "medium", "off", arg_is_supersample},
+    {"scale", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_scale}, "set the scaler (or help)", "filter"},
     {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,
@@ -799,6 +817,7 @@ static const struct {
     {"vn", "deinterlace", OPT_DISABLES},
     {"vn", "interpolate", OPT_DISABLES},
     {"vn", "supersample", OPT_DISABLES},
+    {"vn", "scale", OPT_DISABLES},
     {"vn", "video_bg", OPT_DISABLES},
     {"vn", "video_unscaled", OPT_DISABLES},
     {"vn", "vcodec", OPT_DISABLES},
@@ -1042,7 +1061,7 @@ static int write_option(void *optctx, const OptionDef *po, const char *opt,
         av_assert0(po->type == OPT_TYPE_FUNC && po->u.func_arg);
         ret = po->u.func_arg(optctx, opt, arg);
         if (ret < 0) {
-            if (ret != AVERROR(EINVAL)) {
+            if (ret != AVERROR(EINVAL) && ret != AVERROR_EXIT) {
                 log_dead("Failed to set value '%s' for option '%s': %s.\n",
                          arg, opt, av_err2str(ret));
             }

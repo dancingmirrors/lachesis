@@ -28,6 +28,7 @@
 #include "lachesis_log.h"
 #include "lachesis_present.h"
 #include "lachesis_renderer.h"
+#include "lachesis_scale.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
 /* clang-format on */
@@ -3165,20 +3166,6 @@ static int map_frame_mix(RendererContext *ctx, const AVFrame *frame,
     return num;
 }
 
-static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx,
-                                                      const RenderParams *params,
-                                                      const ImageState *image) {
-    if (image->moving) {
-        return NULL;
-    }
-
-    if (ctx->benchmark || params->disable_linear_scaling || !params->still_image) {
-        return &pl_filter_bilinear;
-    }
-
-    return &pl_filter_catmull_rom;
-}
-
 static bool can_sample_polar(const RendererContext *ctx) {
 #if LACHESIS_HAVE_D3D11
     if (ctx->api.backend == RENDERER_API_D3D11) {
@@ -3190,16 +3177,56 @@ static bool can_sample_polar(const RendererContext *ctx) {
     return true;
 }
 
-static const struct pl_filter_config *pick_upscaler(const RendererContext *ctx,
-                                                    const RenderParams *params,
-                                                    const ImageState *image) {
-    const struct pl_filter_config *config = NULL;
+static const struct pl_filter_config *pick_scaler(const RendererContext *ctx,
+                                                  const RenderParams *params,
+                                                  enum pl_filter_usage usage) {
+    const struct pl_filter_config *config = scale_filter();
+
+    if (!config || ctx->benchmark || params->disable_linear_scaling) {
+        return NULL;
+    }
+    if (!(config->allowed & usage)) {
+        return NULL;
+    }
+    if (config->polar && !can_sample_polar(ctx)) {
+        return &pl_filter_lanczos;
+    }
+
+    return config;
+}
+
+static const struct pl_filter_config *pick_downscaler(const RendererContext *ctx,
+                                                      const RenderParams *params,
+                                                      const ImageState *image) {
+    const struct pl_filter_config *config;
 
     if (image->moving) {
         return NULL;
     }
 
-    if (supersample_active(ctx, params, image)) {
+    config = pick_scaler(ctx, params, PL_FILTER_DOWNSCALING);
+    if (config) {
+        return config;
+    }
+
+    if (ctx->benchmark || params->disable_linear_scaling || !params->still_image) {
+        return &pl_filter_bilinear;
+    }
+
+    return &pl_filter_catmull_rom;
+}
+
+static const struct pl_filter_config *pick_upscaler(const RendererContext *ctx,
+                                                    const RenderParams *params,
+                                                    const ImageState *image) {
+    const struct pl_filter_config *config;
+
+    if (image->moving) {
+        return NULL;
+    }
+
+    config = pick_scaler(ctx, params, PL_FILTER_UPSCALING);
+    if (!config && supersample_active(ctx, params, image)) {
         config = supersample_upscaler(ctx->supersample_level);
         if (config && config->polar && !can_sample_polar(ctx)) {
             config = &pl_filter_lanczos;
