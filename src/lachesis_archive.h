@@ -1,0 +1,38 @@
+/*
+ * Copyright © 2026 dancingmirrors@icloud.com
+ *
+ * This file is part of lachesis.
+ *
+ * lachesis is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * lachesis is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with lachesis; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#ifndef LACHESIS_ARCHIVE_H
+#define LACHESIS_ARCHIVE_H
+
+#include <libavformat/avio.h>
+
+int natural_name_cmp(const void *a, const void *b);
+
+int is_supported_archive(const char *path);
+int archive_list_entries(const char *archive_path, char ***out, int *count);
+
+void archive_free_entries(char **names, int count);
+
+AVIOContext *archive_entry_open_avio(const char *archive_path,
+                                     const char *entry_name,
+                                     const AVIOInterruptCB *interrupt);
+void archive_entry_close_avio(AVIOContext *avio);
+
+#endif // LACHESIS_ARCHIVE_H

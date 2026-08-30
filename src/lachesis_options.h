@@ -1,0 +1,199 @@
+/*
+ * Copyright © 2003 Fabrice Bellard
+ * Copyright © 2026 dancingmirrors@icloud.com
+ *
+ * This file is part of lachesis.
+ *
+ * lachesis is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * lachesis is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with lachesis; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#ifndef LACHESIS_OPTIONS_H
+#define LACHESIS_OPTIONS_H
+
+#include <stdint.h>
+
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+
+#include "lachesis_internal.h"
+
+extern const char program_name[];
+extern const int program_birth_year;
+
+enum OptionType {
+    OPT_TYPE_FUNC,
+    OPT_TYPE_BOOL,
+    OPT_TYPE_STRING,
+    OPT_TYPE_INT,
+    OPT_TYPE_INT64,
+    OPT_TYPE_FLOAT,
+    OPT_TYPE_DOUBLE,
+    OPT_TYPE_TIME,
+    OPT_TYPE_ALIAS,
+};
+
+#define OPT_FUNC_ARG (1 << 0)
+#define OPT_EXIT (1 << 1)
+#define OPT_CMDLINE_ONLY (1 << 2)
+#define OPT_ARG_OPTIONAL (1 << 3)
+#define OPT_STRICT_VALUE (1 << 4)
+
+typedef struct OptionDef {
+    const char *name;
+    enum OptionType type;
+    int flags;
+
+    union {
+        void *dst_ptr;
+        int (*func_arg)(void *, const char *, const char *);
+        const char *alias_of;
+    } u;
+    const char *help;
+    const char *argname;
+    const char *const *values;
+    const char *implied;
+    const char *implied_no;
+    int (*is_value)(const char *arg);
+} OptionDef;
+
+/* clang-format off */
+#define OPT_ALIAS(name, target) {name, OPT_TYPE_ALIAS, 0, {.alias_of = target}}
+/* clang-format on */
+
+int parse_number(const char *context, const char *numstr, enum OptionType type,
+                 double min, double max, double *dst);
+
+void validate_option_tables(const OptionDef *defs);
+void validate_option_relations(const OptionDef *defs);
+
+const char *option_name(const OptionDef *defs, const void *dst);
+const char *option_first_from_cmdline(const OptionDef *defs, const char *except);
+int option_given_on_cmdline(const OptionDef *defs, const char *name);
+
+void show_help_options(const OptionDef *defs);
+void show_help_default(void);
+
+int parse_options(void *optctx, int argc, char **argv, const OptionDef *defs,
+                  int (*parse_arg_function)(void *optctx, const char *));
+int parse_option(void *optctx, const char *opt, const char *arg,
+                 const OptionDef *defs);
+int parse_config_option(void *optctx, const char *opt, const char *arg,
+                        const OptionDef *defs, const char *src);
+void parse_loglevel(int argc, char **argv, const OptionDef *defs);
+void parse_quiet(int argc, char **argv, const OptionDef *defs);
+void parse_allow_unsafe(int argc, char **argv, const OptionDef *defs);
+void parse_all_files(int argc, char **argv, const OptionDef *defs);
+
+int opt_loglevel(void *optctx, const char *opt, const char *arg);
+int opt_quiet(void *optctx, const char *opt, const char *arg);
+
+/* clang-format off */
+#define CMDUTILS_COMMON_OPTIONS \
+    {"h", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"}, \
+    OPT_ALIAS("?", "h"), \
+    OPT_ALIAS("help", "h"), \
+    OPT_ALIAS("-help", "h"), \
+    {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set the logging level", "loglevel"},
+/* clang-format on */
+int opt_help(void *optctx, const char *opt, const char *arg);
+
+extern const OptionDef options[];
+
+int opt_version(void *optctx, const char *opt, const char *arg);
+
+extern const AVInputFormat *file_iformat;
+extern const char *window_title;
+extern char *window_title_auto;
+extern int audio_disable;
+extern int video_disable;
+extern int subtitle_disable;
+extern const char *wanted_stream_spec[AVMEDIA_TYPE_NB];
+extern float seek_interval;
+extern int display_disable;
+extern int benchmark;
+extern int alwaysontop;
+extern int window_resize;
+extern int startup_volume;
+extern int av_sync_type;
+extern int av_sync_type_explicit;
+extern int slow;
+extern int no_edit_list;
+extern int64_t start_time;
+extern int64_t play_duration;
+extern int64_t sub_offset;
+extern int keep_open;
+extern int archive_jump_last;
+extern int allow_unsafe;
+extern int all_files;
+extern int shuffle;
+extern int reverse_playlist;
+extern int start_paused;
+extern int loop;
+extern float opt_cache_secs;
+extern int opt_cache_size_mb;
+extern const char *audio_codec_name;
+extern const char *subtitle_codec_name;
+extern const char *video_codec_name;
+extern const char **vfilters_list;
+extern int nb_vfilters;
+extern char *afilters_opt;
+extern const char *audio_spdif_opt;
+extern int audio_spdif_force;
+extern int autorotate;
+extern int disable_autorotate;
+extern int video_rotate;
+extern enum RendererApi gpu_api;
+extern char *gpu_api_name;
+extern int no_vulkan;
+extern char *gpu_params;
+extern char *vulkan_swap_mode;
+extern int max_glsl_version;
+extern int no_shader_cache;
+extern char *shader_cache_dir;
+extern const char *icc_profile;
+extern int icc_auto;
+extern int no_display_hdr;
+extern char *video_background;
+extern const char *hwaccel;
+extern int no_hwaccel;
+extern const char *hwaccel_codecs;
+extern int hwaccel_max_size;
+extern int max_texture_size;
+extern int video_fill;
+extern int enable_360sbs;
+extern int enable_360tb;
+extern int enable_360eq;
+extern int enable_360eqtb;
+extern int is_fullscreen;
+extern int start_windowed;
+
+int parse_video_background(const char *value, uint8_t rgba[4]);
+
+#define AUTOFIT_MIN 0.05
+#define AUTOFIT_MAX 10.0
+extern float autofit_larger;
+
+extern int global_muted;
+extern int ytdl_disable;
+extern const char *ytdl_path;
+extern const char *ytdl_format;
+extern int allow_delete;
+extern int terminal_quit_disable;
+extern int allow_volume_boost;
+extern double display_fps_override;
+extern int no_vsync_snap;
+extern double fps_convert;
+
+#endif /* LACHESIS_OPTIONS_H */

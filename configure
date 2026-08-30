@@ -1,0 +1,238 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from configure_common import *  # noqa: E402,F401,F403
+
+begin()
+
+check(
+    desc="whether the compiler works",
+    fn=lambda: check_program("CC") and check_cc(link=[]),
+    required="C compiler: missing or broken",
+)
+check(
+    desc="pkg-config",
+    fn=lambda: check_program("PKG_CONFIG"),
+    required="pkg-config: missing or not in PATH",
+)
+
+check(
+    desc="C11 compiler",
+    fn=lambda: check_cc(flags="-std=c11"),
+    required=True,
+)
+
+add_cflags(
+    "-D_FILE_OFFSET_BITS=64",
+    "-Wall",
+    "-Werror=format-security",
+    "-Wextra",
+    "-Wnull-dereference",
+    "-Wshadow",
+    "-fno-math-errno",
+    "-fno-strict-aliasing",
+)
+
+check(
+    desc="-Wdouble-promotion",
+    fn=lambda: check_cflags("-Wdouble-promotion"),
+)
+check(
+    desc="-Wjump-misses-init",
+    fn=lambda: check_cflags("-Wjump-misses-init"),
+)
+check(
+    desc="-Wunreachable-code-aggressive",
+    fn=lambda: check_cflags("-Wunreachable-code-aggressive"),
+)
+
+import platform as _platform  # noqa: E402
+
+_system = _platform.system()
+if _system == "Linux":
+    add_cflags("-D_GNU_SOURCE")
+
+check(
+    "-optimize",
+    desc="optimization",
+    fn=lambda: check_cflags("-O3", "-fno-signed-zeros", "-fno-trapping-math"),
+)
+check("-debug-build", desc="-g", default=True, fn=lambda: chain(add_cflags("-g"), True))
+
+check(
+    "-ffast-math",
+    desc="-ffast-math",
+    deps="optimize",
+    fn=lambda: check_cflags("-ffast-math")
+    and check_cflags("-fno-finite-math-only", final=True),
+)
+check(
+    "builtins*",
+    desc="__builtin_nan and __builtin_inf",
+    fn=lambda: check_cc(
+        decl=[
+            'double lachesis_nan(void) { return __builtin_nan(""); }',
+            "double lachesis_inf(void) { return __builtin_inf(); }",
+        ]
+    ),
+)
+
+check(
+    "Windows",
+    fn=lambda: check_cc(
+        defined="_WIN32",
+        flags=[
+            "-D_WIN32_WINNT=0x0602",
+            "-DUNICODE",
+            "-DCOBJMACROS",
+            "-U__STRICT_ANSI__",
+            "-D__USE_MINGW_ANSI_STDIO=1",
+        ],
+        include="windows.h",
+        link=["-mwindows", "-lshell32", "-ladvapi32"],
+    )
+    and check_program("WINDRES")
+    and chain(set_exe_format("pe"), True),
+    sources="share/lachesis.rc",
+)
+check(
+    "macOS",
+    fn=lambda: check_cc(defined="__APPLE__") and chain(set_exe_format("macho"), True),
+)
+check("POSIX*", fn=lambda: check_cc(include="unistd.h", defined="_POSIX_VERSION"))
+check(
+    desc="development environment",
+    deps_any=["POSIX", "Windows"],
+    required="Unable to find a suitable environment",
+)
+
+check(
+    "-console-wrapper",
+    desc="lachesis.com",
+    deps="Windows",
+    fn=lambda: chain(set_console_wrapper("src/lachesis_console_wrapper.c"), True),
+)
+
+check(
+    "-increase-stack-size*",
+    desc="whether we can increase stack size via PT_GNU_STACK",
+    fn=lambda: check_ldflags("-Wl,-z,stack-size=524288", fatal_warnings=True),
+)
+
+check("libm", fn=lambda: check_cc(link="-lm"))
+check(
+    "pthreads",
+    deps_neg="Windows",
+    fn=lambda: check_cc(
+        link="-pthread", flags="-pthread", include="pthread.h", expr="pthread_self();"
+    ),
+)
+# Debian Trixie
+check(
+    desc="FFmpeg",
+    fn=lambda: check_pkg_config(
+        "libavutil      >= 59.39.100",
+        "libavcodec     >= 61.19.101",
+        "libavformat    >= 61.7.103",
+        "libswscale     >= 8.3.100",
+        "libavfilter    >= 10.5.100",
+        "libswresample  >= 5.3.100",
+    ),
+    required=True,
+)
+check(
+    "-libavdevice*",
+    desc="libavdevice",
+    fn=lambda: check_pkg_config("libavdevice >= 61.3.100"),
+)
+
+check(
+    desc="SDL3",
+    fn=lambda: check_pkg_config("sdl3 >= 3.2.0"),
+    required=True,
+)
+check(
+    "-libarchive*",
+    desc="libarchive",
+    fn=lambda: check_pkg_config("libarchive >= 3.4.0"),
+    required=True,
+)
+check(
+    desc="libass",
+    fn=lambda: check_pkg_config("libass >= 0.17.2"),
+    required=True,
+)
+
+check(
+    desc="libplacebo",
+    fn=lambda: check_pkg_config("libplacebo >= 7.349.0"),
+    required=True,
+)
+
+check(
+    "-vulkan*",
+    desc="Vulkan",
+    fn=lambda: check_pkg_config("vulkan")
+    and check_cc(include="vulkan/vulkan.h")
+    and check_cc(include="libplacebo/config.h", defined="PL_HAVE_VULKAN"),
+)
+
+check(
+    "-opengl*",
+    desc="OpenGL",
+    fn=lambda: check_cc(include="libplacebo/config.h", defined="PL_HAVE_OPENGL"),
+)
+
+check(
+    "-d3d11*",
+    desc="Direct3D 11",
+    deps="Windows",
+    fn=lambda: check_cc(include="libplacebo/config.h", defined="PL_HAVE_D3D11")
+    and check_cc(
+        include=["windows.h", "d3d11.h", "d3d10.h", "dxgi.h"], link="-ldxguid"
+    ),
+)
+
+check(
+    desc="a libplacebo GPU backend",
+    deps_any=["vulkan", "opengl", "d3d11"],
+    required="libplacebo: built without Vulkan, OpenGL, and Direct3D 11 support",
+)
+
+add_sources(
+    "src/lachesis.c",
+    "src/lachesis_alloc.c",
+    "src/lachesis_archive.c",
+    "src/lachesis_ass.c",
+    "src/lachesis_audio.c",
+    "src/lachesis_degrade.c",
+    "src/lachesis_deinterlace.c",
+    "src/lachesis_delete.c",
+    "src/lachesis_demux.c",
+    "src/lachesis_equalizer.c",
+    "src/lachesis_filters.c",
+    "src/lachesis_icon.c",
+    "src/lachesis_information.c",
+    "src/lachesis_interpolate.c",
+    "src/lachesis_keys.c",
+    "src/lachesis_log.c",
+    "src/lachesis_network.c",
+    "src/lachesis_options.c",
+    "src/lachesis_osd.c",
+    "src/lachesis_playlist.c",
+    "src/lachesis_present.c",
+    "src/lachesis_rc.c",
+    "src/lachesis_renderer.c",
+    "src/lachesis_scale.c",
+    "src/lachesis_screenshot.c",
+    "src/lachesis_single.c",
+    "src/lachesis_subtitles.c",
+    "src/lachesis_supersample.c",
+    "src/lachesis_terminal.c",
+    "src/lachesis_view360.c",
+)
+
+finish()

@@ -1,0 +1,76 @@
+name: lachesis NetBSD
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Install dependencies, build, run
+        uses: vmactions/netbsd-vm@v1
+        with:
+          release: "10.1"
+          usesh: true
+          prepare: |
+            set -ex
+
+            for s in xbase xcomp; do
+                ftp -o "/tmp/$s.tar.xz" \
+                    "https://cdn.netbsd.org/pub/NetBSD/NetBSD-$(uname -r)/$(uname -m)/binary/sets/$s.tar.xz" \
+                    || exit 1
+                xz -dc "/tmp/$s.tar.xz" | tar -xpf - -C / || exit 1
+            done
+
+            /usr/sbin/pkg_add MesaLib cmake ffmpeg8 git-base libarchive libass \
+            meson ninja-build pkgconf python313
+
+            ln -sf /usr/pkg/bin/python3.13 /usr/pkg/bin/python3
+            export PATH="/usr/pkg/bin:$PATH"
+
+            git clone --depth 1 https://github.com/libsdl-org/SDL.git /tmp/SDL
+            cmake -S /tmp/SDL -B /tmp/SDL/build \
+                  -DCMAKE_INSTALL_PREFIX=/usr/local -DCMAKE_BUILD_TYPE=Release \
+                  -DCMAKE_PREFIX_PATH="/usr/pkg;/usr/X11R7" \
+                  -DSDL_SHARED=ON -DSDL_OPENGL=ON -DSDL_OPENGLES=ON
+            cmake --build /tmp/SDL/build -j"$(sysctl -n hw.ncpu)"
+            cmake --install /tmp/SDL/build
+
+            git clone --depth 1 --recursive \
+                https://github.com/haasn/libplacebo.git /tmp/libplacebo
+            meson setup --prefix=/usr/local --libdir=lib -Ddemos=false \
+                  -Dvulkan=disabled -Dopengl=enabled \
+                  /tmp/libplacebo/build /tmp/libplacebo
+            ninja -C /tmp/libplacebo/build
+            ninja -C /tmp/libplacebo/build install
+
+          run: |
+            set -ex
+
+            git config --global --add safe.directory "$PWD"
+
+            export PATH="/usr/pkg/bin:$PATH"
+            export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/pkg/lib/ffmpeg8/pkgconfig:/usr/pkg/lib/pkgconfig:/usr/pkg/share/pkgconfig:/usr/X11R7/lib/pkgconfig
+            export LDFLAGS="-Wl,-rpath,/usr/local/lib -Wl,-rpath,/usr/pkg/lib/ffmpeg8 -Wl,-rpath,/usr/pkg/lib"
+            export LACHESIS_LEAK_REPORT=1
+
+            pkg-config --modversion libavutil libplacebo libarchive libass sdl3
+
+            CFLAGS="-Werror" ./configure || { cat build/config.log; exit 1; }
+            ninja -v -C build
+            ./build/lachesis -h
+            ./build/lachesis --version
+
+            ffmpeg8 -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v mpeg4 /tmp/test.mp4
+            #SDL_VIDEO_DRIVER=offscreen ./build/lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+            SDL_VIDEO_DRIVER=offscreen ./build/lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
