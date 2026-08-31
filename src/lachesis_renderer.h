@@ -172,6 +172,12 @@ int renderer_resize(Renderer *renderer, int width, int height);
 
 int renderer_refresh_display_info(Renderer *renderer, SDL_Window *window);
 
+void renderer_quiesce(Renderer *renderer);
+
+int renderer_release_frames(Renderer *renderer);
+
+void renderer_save_cache(Renderer *renderer);
+
 int renderer_destroy(Renderer *renderer);
 
 int renderer_enable_360(Renderer *renderer, enum View360Layout layout,

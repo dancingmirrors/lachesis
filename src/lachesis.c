@@ -1271,7 +1271,32 @@ static void stream_component_close(VideoState *is, int stream_index) {
 
 #define READER_JOIN_TIMEOUT_US (2 * 1000 * 1000)
 
-static int reader_abandoned;
+#define MAX_ABANDONED_STREAMS 8
+
+static VideoState *abandoned_streams[MAX_ABANDONED_STREAMS];
+static int num_abandoned_streams;
+static int abandoned_untracked;
+
+static int abandoned_threads_live(void) {
+    if (abandoned_untracked) {
+        return 1;
+    }
+    for (int i = 0; i < num_abandoned_streams; i++) {
+        VideoState *is = abandoned_streams[i];
+
+        if (is->read_tid && !SDL_GetAtomicInt(&is->read_thread_done)) {
+            return 1;
+        }
+        if (is->audio_read_tid && !SDL_GetAtomicInt(&is->audio_read_thread_done)) {
+            return 1;
+        }
+        if (is->sub_read_tid && !SDL_GetAtomicInt(&is->sub_read_thread_done)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
 
 #define PIPELINE_LOCK_TIMEOUT_US (2 * 1000 * 1000)
 #define ABANDON_LOCK_TIMEOUT_US (250 * 1000)
@@ -1330,6 +1355,7 @@ static void stream_abandon(VideoState *is) {
     SDL_SignalCondition(is->continue_read_thread);
 
     if (pipeline_lock(is, ABANDON_LOCK_TIMEOUT_US)) {
+        renderer_release_frames(renderer);
         if (is->audio_stream >= 0) {
             decoder_abort(&is->auddec, &is->sampq);
             audio_device_close();
@@ -1346,6 +1372,7 @@ static void stream_abandon(VideoState *is) {
         }
         SDL_UnlockMutex(is->pipeline_mutex);
     } else {
+        abandoned_untracked = 1;
     }
 
     if (is->read_tid) {
@@ -1357,7 +1384,11 @@ static void stream_abandon(VideoState *is) {
     if (is->sub_read_tid) {
         SDL_DetachThread(is->sub_read_tid);
     }
-    reader_abandoned = 1;
+    if (num_abandoned_streams < MAX_ABANDONED_STREAMS) {
+        abandoned_streams[num_abandoned_streams++] = is;
+    } else {
+        abandoned_untracked = 1;
+    }
 }
 
 static int stream_close(VideoState *is) {
@@ -1375,6 +1406,8 @@ static int stream_close(VideoState *is) {
         stream_abandon(is);
         return 0;
     }
+
+    renderer_release_frames(renderer);
 
     if (is->audio_stream >= 0) {
         if (is->audio_ic) {
@@ -1478,23 +1511,33 @@ av_noreturn void do_exit(VideoState *is) {
     quit_signal_polled = 0;
 
     single_shutdown();
+    if (renderer) {
+        renderer_quiesce(renderer);
+    }
     if (is) {
         stream_close(is);
     }
     abandoned = !screenshot_shutdown();
-    abandoned |= reader_abandoned;
+    abandoned |= abandoned_threads_live();
+
+    if (abandoned) {
+        renderer_save_cache(renderer);
+        terminal_restore_now();
+        alloc_track_report();
+        _Exit(status);
+    }
+
     if (renderer) {
         if (renderer_destroy(renderer)) {
             av_freep(&renderer);
         } else {
-            abandoned = 1;
             stranded_renderer = 1;
         }
     }
     if (window && !stranded_renderer) {
         SDL_DestroyWindow(window);
     }
-    if (abandoned) {
+    if (stranded_renderer) {
         terminal_restore_now();
         alloc_track_report();
         _Exit(status);
@@ -3574,11 +3617,18 @@ void render_fault_fallback(VideoState **pis) {
     }
 
     keep_paused = *pis && (*pis)->paused;
+    renderer_quiesce(renderer);
     if (*pis) {
         if (render_ever_ok && SDL_GetAtomicInt(&(*pis)->seek_by_bytes) <= 0) {
             resume_at = effective_playhead(*pis);
         }
-        stream_close(*pis);
+        if (!stream_close(*pis)) {
+            *pis = NULL;
+            log_dead("The %s renderer faulted while a stream could not be "
+                     "closed.\n",
+                     renderer_api_name(renderer));
+            do_exit(NULL);
+        }
         *pis = NULL;
     }
     SDL_FlushEvents(FF_QUIT_EVENT, FF_QUIT_EVENT);

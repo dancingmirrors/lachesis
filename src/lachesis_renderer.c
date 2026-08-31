@@ -35,6 +35,14 @@
 
 #include <limits.h>
 
+#if defined(_WIN32)
+#include <windows.h>
+#define LACHESIS_GETPID() GetCurrentProcessId()
+#else
+#include <unistd.h>
+#define LACHESIS_GETPID() getpid()
+#endif
+
 #include <libplacebo/config.h>
 #include <libplacebo/filters.h>
 #include <libplacebo/shaders/custom.h>
@@ -329,9 +337,14 @@ typedef struct RendererContext {
 
     AVFrame *blank_frame;
 
+    int quiesced;
+
 #if LACHESIS_HAVE_PL_CACHE
     pl_cache shader_cache;
     char *cache_path;
+    uint64_t cache_sig;
+    size_t cache_file_bytes;
+    int cache_dirty;
     int cache_saved;
 #endif
 
@@ -1245,6 +1258,8 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
 }
 
 static void vk_backend_destroy(RendererContext *ctx) {
+    vkpresent_disable();
+
     av_frame_free(&ctx->vk_frame);
     av_freep(&ctx->transfer_formats);
     av_hwframe_constraints_free(&ctx->constraints);
@@ -2096,25 +2111,71 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
 
     f = fopen(ctx->cache_path, "rb");
     if (f) {
-        pl_cache_load_file(ctx->shader_cache, f);
+        long size = -1;
+
+        if (!fseek(f, 0, SEEK_END)) {
+            size = ftell(f);
+        }
+        if (size < 0 || fseek(f, 0, SEEK_SET) ||
+            pl_cache_load_file(ctx->shader_cache, f) < 0) {
+            log_verbose("Replacing the shader cache at %s.\n",
+                        ctx->cache_path);
+            ctx->cache_dirty = 1;
+        } else {
+            ctx->cache_file_bytes = (size_t)size;
+        }
         fclose(f);
     }
+    ctx->cache_sig = pl_cache_signature(ctx->shader_cache);
 
     pl_gpu_set_cache(ctx->gpu, ctx->shader_cache);
 }
 
 static void cache_save(RendererContext *ctx) {
+    char *tmp_path;
+    size_t need;
     FILE *f;
+    int ok;
 
     if (!ctx->shader_cache || !ctx->cache_path || ctx->cache_saved) {
         return;
     }
     ctx->cache_saved = 1;
-    f = fopen(ctx->cache_path, "wb");
-    if (f) {
-        pl_cache_save_file(ctx->shader_cache, f);
-        fclose(f);
+
+    if (!ctx->cache_dirty &&
+        pl_cache_signature(ctx->shader_cache) == ctx->cache_sig &&
+        pl_cache_save(ctx->shader_cache, NULL, 0) == ctx->cache_file_bytes) {
+        return;
     }
+
+    need = strlen(ctx->cache_path) + sizeof(".12345678901234567890.tmp");
+    if (!(tmp_path = av_malloc(need))) {
+        return;
+    }
+    snprintf(tmp_path, need, "%s.%ju.tmp", ctx->cache_path,
+             (uintmax_t)LACHESIS_GETPID());
+
+    if (!(f = fopen(tmp_path, "wb"))) {
+        av_freep(&tmp_path);
+        return;
+    }
+    pl_cache_save_file(ctx->shader_cache, f);
+    ok = !ferror(f);
+    if (fclose(f) != 0) {
+        ok = 0;
+    }
+    if (ok) {
+#if defined(_WIN32)
+        ok = MoveFileExA(tmp_path, ctx->cache_path,
+                         MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+        ok = rename(tmp_path, ctx->cache_path) == 0;
+#endif
+    }
+    if (!ok) {
+        remove(tmp_path);
+    }
+    av_freep(&tmp_path);
 }
 #endif /* LACHESIS_HAVE_PL_CACHE */
 
@@ -3208,6 +3269,15 @@ static void release_mix_slots(RendererContext *ctx) {
     }
 }
 
+static void gpu_quiesce(RendererContext *ctx) {
+    if (!ctx->gpu) {
+        return;
+    }
+    pl_gpu_finish(ctx->gpu);
+    release_mix_slots(ctx);
+    pl_gpu_finish(ctx->gpu);
+}
+
 static void destroy_mix_slots(RendererContext *ctx) {
     for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->mix_slots); i++) {
         struct MixSlot *slot = &ctx->mix_slots[i];
@@ -3979,6 +4049,7 @@ static void destroy(Renderer *renderer) {
     av_freep(&ctx->icc_data);
 
     if (ctx->gpu) {
+        gpu_quiesce(ctx);
 #if LACHESIS_HAVE_PL_CACHE
         cache_save(ctx);
         pl_gpu_set_cache(ctx->gpu, NULL);
@@ -4029,6 +4100,7 @@ static int enable_360(RendererContext *ctx, enum View360Layout layout,
 #define VO_HANDOFF_WAIT_MS 8
 #define VO_WINDOW_WAIT_MS 60
 #define VO_BORROW_WAIT_MS 250
+#define VO_DRAIN_WAIT_MS 1000
 #define VO_CAPTURE_WAIT_MS 1000
 #define VO_STOP_WAIT_MS 500
 
@@ -4344,6 +4416,10 @@ static int vo_stop(RendererContext *ctx) {
 static int vo_borrow(RendererContext *ctx, int timeout_ms) {
     Vo *vo = &ctx->vo;
 
+    if (ctx->quiesced) {
+        return 0;
+    }
+
     if (!vo->thread) {
         return !vo->abandoned;
     }
@@ -4388,6 +4464,10 @@ static int vo_submit(RendererContext *ctx, AVFrame *frame, RenderParams *params,
     Vo *vo = &ctx->vo;
     int status;
     int ret;
+
+    if (ctx->quiesced) {
+        return AVERROR(EAGAIN);
+    }
 
     if (!vo->thread) {
         if (vo->abandoned) {
@@ -4953,6 +5033,46 @@ int renderer_resize(Renderer *renderer, int width, int height) {
     vo_release(ctx);
 
     return ret;
+}
+
+int renderer_release_frames(Renderer *renderer) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx || ctx->quiesced) {
+        return 1;
+    }
+    if (!vo_borrow(ctx, VO_DRAIN_WAIT_MS)) {
+        return 0;
+    }
+    gpu_quiesce(ctx);
+    vo_release(ctx);
+
+    return 1;
+}
+
+void renderer_save_cache(Renderer *renderer) {
+#if LACHESIS_HAVE_PL_CACHE
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (ctx) {
+        cache_save(ctx);
+    }
+#else
+    (void)renderer;
+#endif
+}
+
+void renderer_quiesce(Renderer *renderer) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx || ctx->quiesced) {
+        return;
+    }
+    if (!vo_stop(ctx)) {
+        return;
+    }
+    ctx->quiesced = 1;
+    gpu_quiesce(ctx);
 }
 
 int renderer_destroy(Renderer *renderer) {
