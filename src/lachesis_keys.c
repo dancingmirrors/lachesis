@@ -40,6 +40,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_keys.h"
 #include "lachesis_log.h"
+#include "lachesis_normalize.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_playlist.h"
@@ -716,6 +717,9 @@ void event_loop(VideoState **pis) {
                                         view360_projection);
                 }
                 cur_stream->force_refresh = 1;
+                break;
+            case SDLK_KP_6:
+                normalize_toggle(cur_stream);
                 break;
             default:
                 break;

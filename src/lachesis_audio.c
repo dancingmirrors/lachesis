@@ -53,6 +53,7 @@
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
+#include "lachesis_normalize.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 
@@ -1014,6 +1015,12 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     }
     if (spdif.active && is->muted) {
         memset(stream_start, 0, len_total);
+    } else if (!spdif.active && is->audio_tgt.fmt == AV_SAMPLE_FMT_S16 &&
+               is->audio_tgt.frame_size > 0) {
+        normalize_process((int16_t *)stream_start,
+                          len_total / is->audio_tgt.frame_size,
+                          is->audio_tgt.ch_layout.nb_channels,
+                          is->audio_tgt.freq, &is->audio_tgt.ch_layout);
     }
     is->audio_write_buf_size = is->audio_buf_size - is->audio_buf_index;
     if (!isnan(is->audio_clock) && is->audio_buf && !is->paused) {
@@ -1091,6 +1098,7 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
     }
     audio_dev = SDL_GetAudioStreamDevice(audio_stream_dev);
     audio_update_gain(is);
+    normalize_reset();
 
     {
         SDL_AudioSpec dev_spec;

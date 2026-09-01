@@ -136,6 +136,9 @@ double display_fps_override = 0.0;
 int no_vsync_snap = 0;
 double fps_convert = 0.0;
 int allow_volume_boost = 1;
+int normalize_audio = 0;
+double normalize_target = -23.0;
+double normalize_gain = 2.0;
 
 static int grow_array(void **array, int elem_size, int *size, int new_size) {
     if (new_size >= INT_MAX / elem_size) {
@@ -624,6 +627,9 @@ const OptionDef options[] = {
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to always keep the window on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 300)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
+    {"normalize", OPT_TYPE_BOOL, 0, {&normalize_audio}, "loudness normalization"},
+    {"normalize-target", OPT_TYPE_DOUBLE, 0, {&normalize_target}, "loudness normalization target in LUFS (default -23)", "LUFS"},
+    {"normalize-gain", OPT_TYPE_DOUBLE, 0, {&normalize_gain}, "extra gain over the loudness normalization in dB (default 2)", "dB"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
     {"edit-list", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_edit_list}, "whether to honor edit lists", "mode", edit_list_modes},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type", "type", sync_types},
@@ -989,6 +995,9 @@ static const struct {
 
     {"an", "af", OPT_DISABLES},
     {"an", "volume", OPT_DISABLES},
+    {"an", "normalize", OPT_DISABLES},
+    {"an", "normalize-target", OPT_DISABLES},
+    {"an", "normalize-gain", OPT_DISABLES},
     {"an", "mute", OPT_DISABLES},
     {"an", "acodec", OPT_DISABLES},
     {"an", "audio-spdif", OPT_DISABLES},

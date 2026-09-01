@@ -220,6 +220,7 @@ add_sources(
     "src/lachesis_keys.c",
     "src/lachesis_log.c",
     "src/lachesis_network.c",
+    "src/lachesis_normalize.c",
     "src/lachesis_options.c",
     "src/lachesis_osd.c",
     "src/lachesis_playlist.c",

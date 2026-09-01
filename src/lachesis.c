@@ -102,6 +102,7 @@
 #include "lachesis_keys.h"
 #include "lachesis_log.h"
 #include "lachesis_network.h"
+#include "lachesis_normalize.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_playlist.h"
@@ -4362,6 +4363,7 @@ int main(int argc, char **argv) {
         osd_warmup();
     }
 
+    normalize_init();
     alloc_track_setup_done();
 
     is = stream_open_playlist_entry(playlist_pos);

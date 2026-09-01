@@ -32,6 +32,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_interpolate.h"
 #include "lachesis_log.h"
+#include "lachesis_normalize.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_present.h"
@@ -265,7 +266,12 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
     }
 
     if (!is->video_st) {
-        snprintf(cached, cached_size, "No video stream");
+        if (is->audio_st) {
+            snprintf(cached, cached_size, "No video stream\nNormalization: %s",
+                     normalize_status());
+        } else {
+            snprintf(cached, cached_size, "No video stream");
+        }
     } else {
         int early = is->frame_drops_early;
         int late = is->frame_drops_late;
@@ -326,15 +332,23 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
                      ps.nominal_hz, hz_from, snap_note, feedback);
         }
 
+        char audio_line[192];
+        if (is->audio_st) {
+            snprintf(audio_line, sizeof(audio_line), "\nNormalization: %s",
+                     normalize_status());
+        } else {
+            audio_line[0] = '\0';
+        }
+
         snprintf(cached, cached_size,
                  "Dropped frames: %d (early %d, late %d)\n%s\n%s\n"
                  "Decoding: %s\n"
-                 "Interpolation: %s\nDeinterlacing: %s\nSupersampling: %s\n%s",
+                 "Interpolation: %s\nDeinterlacing: %s\nSupersampling: %s\n%s%s",
                  early + late, early, late, sync_line, disp_line,
                  degrade_status(is), interpolate_status(), deinterlace_status(is),
                  supersample_status(supersample_level,
                                     playback_stats_supersample()),
-                 timing);
+                 timing, audio_line);
     }
 
     playback_stats_next_refresh_us = now + 500000;
