@@ -2778,9 +2778,9 @@ static double compute_target_delay(double delay, VideoState *is) {
         is->last_av_diff = isnan(diff) ? LACHESIS_NAN : -diff;
         if (!isnan(diff) && fabs(diff) < is->max_frame_duration) {
             double base = delay > 0 ? delay : AV_SYNC_THRESHOLD_MIN;
-            int near = fabs(diff) <= AV_SYNC_THRESHOLD_MAX;
-            double gain = near ? AV_SYNC_SLEW_GAIN : 1.0;
-            double limit = base * (near ? AV_SYNC_SLEW_FACTOR : AV_SYNC_MAX_CATCHUP);
+            int is_near = fabs(diff) <= AV_SYNC_THRESHOLD_MAX;
+            double gain = is_near ? AV_SYNC_SLEW_GAIN : 1.0;
+            double limit = base * (is_near ? AV_SYNC_SLEW_FACTOR : AV_SYNC_MAX_CATCHUP);
 
             delay = FFMAX(0, delay + av_clipd(diff * gain, -limit, limit));
         }
