@@ -628,8 +628,8 @@ const OptionDef options[] = {
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 300)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
     {"normalize", OPT_TYPE_BOOL, 0, {&normalize_audio}, "loudness normalization"},
-    {"normalize-target", OPT_TYPE_DOUBLE, 0, {&normalize_target}, "loudness normalization target in LUFS (default -23)", "LUFS"},
-    {"normalize-gain", OPT_TYPE_DOUBLE, 0, {&normalize_gain}, "extra gain over the loudness normalization in dB (default 2)", "dB"},
+    {"normalize-target", OPT_TYPE_DOUBLE, 0, {&normalize_target}, "loudness normalization target in LUFS (-40 to -5, default -23)", "LUFS"},
+    {"normalize-gain", OPT_TYPE_DOUBLE, 0, {&normalize_gain}, "extra gain over the loudness normalization in dB (-6 to 12, default 2)", "dB"},
     {"f", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_format}, "force a format", "fmt"},
     {"edit-list", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_edit_list}, "whether to honor edit lists", "mode", edit_list_modes},
     {"sync", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_sync}, "set the audio-video sync type", "type", sync_types},
@@ -954,6 +954,7 @@ enum OptionRelation {
     OPT_CONFLICTS_WITH,
     OPT_DISABLES,
     OPT_IMPLIES,
+    OPT_NEEDS,
 };
 
 static const struct {
@@ -1002,6 +1003,9 @@ static const struct {
     {"an", "acodec", OPT_DISABLES},
     {"an", "audio-spdif", OPT_DISABLES},
     {"an", "audio-spdif-force", OPT_DISABLES},
+
+    {"normalize", "normalize-target", OPT_NEEDS},
+    {"normalize", "normalize-gain", OPT_NEEDS},
 
     {"sn", "scodec", OPT_DISABLES},
     {"sn", "sub-offset", OPT_DISABLES},
@@ -1084,6 +1088,22 @@ void validate_option_tables(const OptionDef *defs) {
     }
 }
 
+static int option_is_disabled(const OptionDef *defs, const char *name) {
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
+        const char *via;
+
+        if (option_relations[i].how != OPT_DISABLES ||
+            strcmp(option_relations[i].b, name)) {
+            continue;
+        }
+        if (option_reach(defs, option_relations[i].a, &via)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 void validate_option_relations(const OptionDef *defs) {
     for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
         const char *a = option_relations[i].a;
@@ -1097,6 +1117,13 @@ void validate_option_relations(const OptionDef *defs) {
         }
         oa = option_reach(defs, a, &via);
         ob = option_origin_of(defs, b);
+        if (option_relations[i].how == OPT_NEEDS) {
+            if (!oa && ob == OPT_FROM_CMDLINE && !option_is_disabled(defs, b)) {
+                log_warn("-%s does nothing unless -%s is given.\n",
+                         option_name_given(defs, b), via);
+            }
+            continue;
+        }
         if (!oa || !ob) {
             continue;
         }

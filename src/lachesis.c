@@ -4172,6 +4172,18 @@ static void validate_options(void) {
         fatal_quit("-%s must be between 0 and 1000.\n",
                    option_name(options, &display_fps_override));
     }
+    if (normalize_target < NORMALIZE_TARGET_MIN ||
+        normalize_target > NORMALIZE_TARGET_MAX) {
+        fatal_quit("-%s must be between %g and %g.\n",
+                   option_name(options, &normalize_target),
+                   NORMALIZE_TARGET_MIN, NORMALIZE_TARGET_MAX);
+    }
+    if (normalize_gain < NORMALIZE_GAIN_MIN ||
+        normalize_gain > NORMALIZE_GAIN_MAX) {
+        fatal_quit("-%s must be between %g and %g.\n",
+                   option_name(options, &normalize_gain),
+                   NORMALIZE_GAIN_MIN, NORMALIZE_GAIN_MAX);
+    }
     validate_option_relations(options);
     if (audio_spdif_opt && audio_spdif_opt[0] &&
         !audio_spdif_names_known(audio_spdif_opt)) {
