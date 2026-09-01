@@ -216,7 +216,7 @@ fail:
 #define AV_SYNC_SLEW_GAIN 0.1
 #define AV_SYNC_SLEW_FACTOR 0.1
 #define AV_SYNC_RESYNC_THRESHOLD 0.2
-#define AV_SYNC_MAX_HOLD 0.5
+#define AV_SYNC_MAX_CATCHUP 0.25
 
 #define EXTERNAL_CLOCK_SPEED_MIN 0.900
 #define EXTERNAL_CLOCK_SPEED_MAX 1.010
@@ -239,8 +239,6 @@ fail:
 #define RAISE_GRACE_US (300 * 1000)
 
 #define CURSOR_HIDE_DELAY 1000000
-
-#define AUDIO_START_MAX_WAIT_US (10 * 1000000)
 
 #define USE_ONEPASS_SUBTITLE_RENDER 1
 
@@ -2120,6 +2118,20 @@ static void apply_present_feedback(void) {
     }
 }
 
+static int audio_start_picture_shown(VideoState *is) {
+    Frame *shown;
+
+    if (!video_stream_advances(is) || is->audio_start_serial < 0) {
+        return 1;
+    }
+    if (!is->pictq.rindex_shown) {
+        return 0;
+    }
+    shown = frame_queue_peek_last(&is->pictq);
+
+    return shown && shown->serial != is->audio_start_serial;
+}
+
 /* Returns whether the window could be painted at all. */
 static int video_display(VideoState *is) {
     int owed = display_deferred;
@@ -2161,7 +2173,7 @@ static int video_display(VideoState *is) {
         }
     }
 
-    if (is->audio_start_pending) {
+    if (is->audio_start_pending && audio_start_picture_shown(is)) {
         is->audio_start_pending = 0;
         audio_device_resume();
     }
@@ -2532,9 +2544,21 @@ int exact_seek_drop_audio(VideoState *is, double pts, double duration) {
     return exact_seek_drop(is, &is->auddec, is->exact_seek_audio_serial, pts, duration);
 }
 
+static void audio_hold_for_seek(VideoState *is) {
+    if (is->audio_stream < 0 || display_disable || !video_stream_advances(is) ||
+        audio_spdif_active()) {
+        return;
+    }
+    is->audio_start_pending = 1;
+    is->audio_start_serial = is->videoq.serial;
+    is->audio_start_deadline_us = av_gettime_relative() + AUDIO_RESYNC_MAX_WAIT_US;
+    audio_device_pause();
+}
+
 /* Replace whatever is pending rather than dropping the request. */
 static void stream_seek_to(VideoState *is, int64_t pos, int64_t rel, int by_bytes,
                            int exact, int64_t exact_pts) {
+    audio_hold_for_seek(is);
     is->seek_pos = pos;
     is->seek_rel = rel;
     is->seek_exact = exact;
@@ -2753,17 +2777,12 @@ static double compute_target_delay(double delay, VideoState *is) {
         diff = get_clock(&is->vidclk) - get_master_clock(is);
         is->last_av_diff = isnan(diff) ? LACHESIS_NAN : -diff;
         if (!isnan(diff) && fabs(diff) < is->max_frame_duration) {
-            if (fabs(diff) <= AV_SYNC_THRESHOLD_MAX) {
-                double base = delay > 0 ? delay : AV_SYNC_THRESHOLD_MIN;
-                double change = av_clipd(diff * AV_SYNC_SLEW_GAIN,
-                                         -base * AV_SYNC_SLEW_FACTOR,
-                                         base * AV_SYNC_SLEW_FACTOR);
-                delay = FFMAX(0, delay + change);
-            } else if (diff < 0) {
-                delay = FFMAX(0, delay + diff);
-            } else {
-                delay = delay + FFMIN(diff, AV_SYNC_MAX_HOLD * playback_speed);
-            }
+            double base = delay > 0 ? delay : AV_SYNC_THRESHOLD_MIN;
+            int near = fabs(diff) <= AV_SYNC_THRESHOLD_MAX;
+            double gain = near ? AV_SYNC_SLEW_GAIN : 1.0;
+            double limit = base * (near ? AV_SYNC_SLEW_FACTOR : AV_SYNC_MAX_CATCHUP);
+
+            delay = FFMAX(0, delay + av_clipd(diff * gain, -limit, limit));
         }
     } else {
         is->last_av_diff = LACHESIS_NAN;
@@ -2785,9 +2804,20 @@ static double vp_duration(VideoState *is, Frame *vp, Frame *nextvp) {
     }
 }
 
+void external_clock_reseat(VideoState *is, Clock *slave) {
+    double slave_clock = get_clock(slave);
+
+    if (is->extclk_reseat && !isnan(slave_clock)) {
+        is->extclk_reseat = 0;
+        set_clock(&is->extclk, slave_clock, slave->serial);
+        return;
+    }
+    sync_clock_to_slave(&is->extclk, slave);
+}
+
 static void update_video_pts(VideoState *is, double pts, int serial) {
     set_clock(&is->vidclk, pts, serial);
-    sync_clock_to_slave(&is->extclk, &is->vidclk);
+    external_clock_reseat(is, &is->vidclk);
 }
 
 static int open_is_slow(VideoState *is) {
@@ -3900,7 +3930,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
         remaining_time = REFRESH_RATE;
         ab_loop_check(is);
         if (is->audio_start_pending &&
-            av_gettime_relative() - is->audio_start_pending_since > AUDIO_START_MAX_WAIT_US) {
+            av_gettime_relative() > is->audio_start_deadline_us) {
             is->audio_start_pending = 0;
             audio_device_resume();
         }

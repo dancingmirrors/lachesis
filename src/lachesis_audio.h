@@ -45,6 +45,7 @@ int configure_audio_filters(VideoState *is, const char *afilters, int force_outp
 int audio_thread(void *arg);
 
 void audio_update_gain(VideoState *is);
+void audio_device_pause(void);
 void audio_device_resume(void);
 void audio_device_abandon(void);
 

@@ -51,6 +51,9 @@
 #define AV_SYNC_THRESHOLD_MIN 0.04
 /* Number of audio samples over which the audio difference average is computed. */
 #define AUDIO_DIFF_AVG_NB 20
+/* How long audio waits for the first picture at startup and after a seek. */
+#define AUDIO_START_MAX_WAIT_US (10 * 1000000)
+#define AUDIO_RESYNC_MAX_WAIT_US (2 * 1000000)
 
 typedef struct MyAVPacketList {
     AVPacket *pkt;
@@ -356,8 +359,10 @@ typedef struct VideoState {
     int step_key_held;
     int start_pause_pending;
     int begin_paused;
+    int extclk_reseat;
     int audio_start_pending;
-    int64_t audio_start_pending_since;
+    int audio_start_serial;
+    int64_t audio_start_deadline_us;
     double audio_catchup_pts;
     int audio_catchup_serial;
     int audio_catchup_checked_serial;
@@ -455,6 +460,7 @@ double get_clock(Clock *c);
 void set_clock(Clock *c, double pts, int serial);
 void set_clock_at(Clock *c, double pts, int serial, double time);
 void sync_clock_to_slave(Clock *c, Clock *slave);
+void external_clock_reseat(VideoState *is, Clock *slave);
 int get_master_sync_type(VideoState *is);
 int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                           AVFilterContext *source_ctx, AVFilterContext *sink_ctx);

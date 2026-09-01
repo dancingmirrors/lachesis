@@ -499,7 +499,9 @@ static int component_open(VideoState *is, int stream_index) {
             goto out;
         }
         is->audio_start_pending = 1;
-        is->audio_start_pending_since = av_gettime_relative();
+        is->audio_start_serial = -1;
+        is->audio_start_deadline_us =
+            av_gettime_relative() + AUDIO_START_MAX_WAIT_US;
         break;
     case AVMEDIA_TYPE_VIDEO:
         is->video_stream = stream_index;
@@ -1532,6 +1534,7 @@ int read_thread(void *arg) {
                     set_clock(&is->extclk, LACHESIS_NAN, 0);
                 } else {
                     set_clock(&is->extclk, seek_exact_pts / (double)AV_TIME_BASE, 0);
+                    is->extclk_reseat = 1;
                     is->observed_pos = seek_exact_pts / (double)AV_TIME_BASE -
                         playhead_origin(is);
                 }

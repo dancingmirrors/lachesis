@@ -1047,7 +1047,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         is->audclk_drift_time = cb_time;
         set_clock_at(&is->audclk, is->audclk_drift + cb_time,
                      is->audio_clock_serial, cb_time);
-        sync_clock_to_slave(&is->extclk, &is->audclk);
+        external_clock_reseat(is, &is->audclk);
     }
 }
 
@@ -1279,6 +1279,10 @@ void update_volume(VideoState *is, int sign, double step) {
     audio_update_gain(is);
     osd_show_volume();
     is->force_refresh = 1;
+}
+
+void audio_device_pause(void) {
+    SDL_PauseAudioDevice(audio_dev);
 }
 
 void audio_device_resume(void) {
