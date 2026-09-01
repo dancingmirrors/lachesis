@@ -172,7 +172,7 @@ int renderer_resize(Renderer *renderer, int width, int height);
 
 int renderer_refresh_display_info(Renderer *renderer, SDL_Window *window);
 
-void renderer_quiesce(Renderer *renderer);
+void renderer_quiesce(Renderer *renderer, int drain_gpu);
 
 int renderer_release_frames(Renderer *renderer);
 

@@ -338,12 +338,15 @@ typedef struct RendererContext {
     AVFrame *blank_frame;
 
     int quiesced;
+    int gpu_busy;
 
 #if LACHESIS_HAVE_PL_CACHE
     pl_cache shader_cache;
     char *cache_path;
     uint64_t cache_sig;
-    size_t cache_file_bytes;
+    int cache_objects;
+    size_t cache_bytes;
+    int cache_loaded;
     int cache_dirty;
     int cache_saved;
 #endif
@@ -2118,21 +2121,35 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
         }
         if (size < 0 || fseek(f, 0, SEEK_SET) ||
             pl_cache_load_file(ctx->shader_cache, f) < 0) {
-            log_verbose("Replacing the shader cache at %s.\n",
-                        ctx->cache_path);
             ctx->cache_dirty = 1;
         } else {
-            ctx->cache_file_bytes = (size_t)size;
+            ctx->cache_loaded =
+                pl_cache_save(ctx->shader_cache, NULL, 0) == (size_t)size;
+            ctx->cache_dirty = !ctx->cache_loaded;
+        }
+        if (ctx->cache_dirty) {
+            log_verbose("Replacing the shader cache at %s.\n",
+                        ctx->cache_path);
         }
         fclose(f);
     }
     ctx->cache_sig = pl_cache_signature(ctx->shader_cache);
+    ctx->cache_objects = pl_cache_objects(ctx->shader_cache);
+    ctx->cache_bytes = pl_cache_size(ctx->shader_cache);
 
     pl_gpu_set_cache(ctx->gpu, ctx->shader_cache);
 }
 
+static int cache_is_unchanged(const RendererContext *ctx) {
+    return ctx->cache_loaded &&
+        pl_cache_signature(ctx->shader_cache) == ctx->cache_sig &&
+        pl_cache_objects(ctx->shader_cache) == ctx->cache_objects &&
+        pl_cache_size(ctx->shader_cache) == ctx->cache_bytes;
+}
+
 static void cache_save(RendererContext *ctx) {
     char *tmp_path;
+    int64_t t0;
     size_t need;
     FILE *f;
     int ok;
@@ -2142,9 +2159,9 @@ static void cache_save(RendererContext *ctx) {
     }
     ctx->cache_saved = 1;
 
-    if (!ctx->cache_dirty &&
-        pl_cache_signature(ctx->shader_cache) == ctx->cache_sig &&
-        pl_cache_save(ctx->shader_cache, NULL, 0) == ctx->cache_file_bytes) {
+    if (cache_is_unchanged(ctx)) {
+        log_verbose("The shader cache is unchanged (%d objects, %zu bytes).\n",
+                    ctx->cache_objects, ctx->cache_bytes);
         return;
     }
 
@@ -2159,6 +2176,7 @@ static void cache_save(RendererContext *ctx) {
         av_freep(&tmp_path);
         return;
     }
+    t0 = av_gettime_relative();
     pl_cache_save_file(ctx->shader_cache, f);
     ok = !ferror(f);
     if (fclose(f) != 0) {
@@ -2175,6 +2193,11 @@ static void cache_save(RendererContext *ctx) {
     if (!ok) {
         remove(tmp_path);
     }
+    log_verbose("%s the shader cache (%d objects, %zu bytes) in %.1f ms.\n",
+                ok ? "Wrote" : "Failed to write",
+                pl_cache_objects(ctx->shader_cache),
+                pl_cache_size(ctx->shader_cache),
+                (av_gettime_relative() - t0) / 1000.0);
     av_freep(&tmp_path);
 }
 #endif /* LACHESIS_HAVE_PL_CACHE */
@@ -4049,7 +4072,9 @@ static void destroy(Renderer *renderer) {
     av_freep(&ctx->icc_data);
 
     if (ctx->gpu) {
-        gpu_quiesce(ctx);
+        if (!ctx->quiesced || ctx->gpu_busy) {
+            gpu_quiesce(ctx);
+        }
 #if LACHESIS_HAVE_PL_CACHE
         cache_save(ctx);
         pl_gpu_set_cache(ctx->gpu, NULL);
@@ -5062,7 +5087,7 @@ void renderer_save_cache(Renderer *renderer) {
 #endif
 }
 
-void renderer_quiesce(Renderer *renderer) {
+void renderer_quiesce(Renderer *renderer, int drain_gpu) {
     RendererContext *ctx = (RendererContext *)renderer;
 
     if (!ctx || ctx->quiesced) {
@@ -5072,7 +5097,11 @@ void renderer_quiesce(Renderer *renderer) {
         return;
     }
     ctx->quiesced = 1;
-    gpu_quiesce(ctx);
+    if (drain_gpu) {
+        gpu_quiesce(ctx);
+    } else {
+        ctx->gpu_busy = 1;
+    }
 }
 
 int renderer_destroy(Renderer *renderer) {

@@ -87,8 +87,13 @@
 #define SINGLE_CLIENT_TIMEOUT_MS 3000
 #define SINGLE_SERVER_TIMEOUT_MS 1000
 
-#define SINGLE_STOP_TRIES 100
-#define SINGLE_STOP_STEP_MS 10
+#define SINGLE_STOP_TIMEOUT_NS UINT64_C(1000000000)
+#define SINGLE_STOP_WAKE_NS UINT64_C(10000000)
+#if defined(_WIN32)
+#define SINGLE_STOP_POLL_NS UINT64_C(1000000)
+#else
+#define SINGLE_STOP_POLL_NS UINT64_C(250000)
+#endif
 
 #define SINGLE_ACCEPT_FAILS 20
 
@@ -1258,12 +1263,20 @@ void single_handle_event(VideoState **pis) {
 }
 
 static int single_listen_stop(void) {
-    for (int i = 0; i < SINGLE_STOP_TRIES; i++) {
-        if (SDL_GetAtomicInt(&single_done)) {
-            return 1;
+    uint64_t deadline = SDL_GetTicksNS() + SINGLE_STOP_TIMEOUT_NS;
+    uint64_t next_wake = 0;
+
+    while (!SDL_GetAtomicInt(&single_done)) {
+        uint64_t now = SDL_GetTicksNS();
+
+        if (now >= deadline) {
+            break;
         }
-        single_server_wake();
-        SDL_Delay(SINGLE_STOP_STEP_MS);
+        if (now >= next_wake) {
+            single_server_wake();
+            next_wake = now + SINGLE_STOP_WAKE_NS;
+        }
+        SDL_DelayNS(SINGLE_STOP_POLL_NS);
     }
 
     return SDL_GetAtomicInt(&single_done);

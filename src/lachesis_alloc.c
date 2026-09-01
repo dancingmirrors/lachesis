@@ -294,6 +294,10 @@ void alloc_track_init(void) {
     alloc_enabled = 1;
 }
 
+int alloc_track_active(void) {
+    return alloc_enabled && !alloc_aborted;
+}
+
 void alloc_track_complete(void) {
     alloc_completed = 1;
 }

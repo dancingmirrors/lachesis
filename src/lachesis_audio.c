@@ -58,6 +58,7 @@
 
 static SDL_AudioDeviceID audio_dev;
 static SDL_AudioStream *audio_stream_dev;
+static SDL_AtomicInt audio_dev_abandoned;
 
 static SDL_AudioSpec audio_dev_spec;
 static int audio_dev_spec_valid;
@@ -1276,7 +1277,21 @@ void audio_device_resume(void) {
     SDL_ResumeAudioDevice(audio_dev);
 }
 
+void audio_device_abandon(void) {
+    SDL_SetAtomicInt(&audio_dev_abandoned, 1);
+}
+
 void audio_device_close(void) {
+    if (SDL_GetAtomicInt(&audio_dev_abandoned)) {
+        if (audio_stream_dev) {
+            SDL_PauseAudioStreamDevice(audio_stream_dev);
+            SDL_SetAudioStreamGetCallback(audio_stream_dev, NULL, NULL);
+        }
+        audio_stream_dev = NULL;
+        audio_dev = 0;
+        audio_dev_spec_valid = 0;
+        return;
+    }
     SDL_DestroyAudioStream(audio_stream_dev);
     audio_stream_dev = NULL;
     audio_dev = 0;

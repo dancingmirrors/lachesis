@@ -30,12 +30,11 @@
 void alloc_track_init(void);
 void alloc_track_report(void);
 
+int alloc_track_active(void);
+
 void alloc_track_complete(void);
 void alloc_track_setup_done(void);
 void alloc_track_abort(void);
-
-/* Safe to call when tracking is off, on a NULL pointer, or on a pointer that
- * was never tracked. */
 void alloc_track_disown(const void *ptr);
 
 void *alloc_wrap_malloc(size_t size, const char *loc);

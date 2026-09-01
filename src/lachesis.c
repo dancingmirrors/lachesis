@@ -1391,6 +1391,22 @@ static void stream_abandon(VideoState *is) {
     }
 }
 
+static void stream_detach(VideoState *is) {
+    is->abort_request = 1;
+    packet_queue_abort(&is->videoq);
+    packet_queue_abort(&is->audioq);
+    packet_queue_abort(&is->subtitleq);
+    frame_queue_signal(&is->pictq);
+    frame_queue_signal(&is->sampq);
+    frame_queue_signal(&is->subpq);
+    SDL_SignalCondition(is->continue_read_thread);
+
+    if (pipeline_lock(is, ABANDON_LOCK_TIMEOUT_US)) {
+        audio_device_close();
+        SDL_UnlockMutex(is->pipeline_mutex);
+    }
+}
+
 static int stream_close(VideoState *is) {
     int64_t deadline;
     int joined;
@@ -1503,28 +1519,75 @@ static void uninit_opts(void) {
 static volatile sig_atomic_t quit_signal;
 static volatile sig_atomic_t quit_signal_polled;
 
+static int64_t shutdown_started;
+static int64_t shutdown_marked;
+
+static void shutdown_begin(void) {
+    shutdown_started = shutdown_marked = av_gettime_relative();
+}
+
+static void shutdown_step(const char *what) {
+    int64_t now = av_gettime_relative();
+
+    log_verbose("Shutdown: %s took %.1f ms (%.1f ms in).\n", what,
+                (now - shutdown_marked) / 1000.0,
+                (now - shutdown_started) / 1000.0);
+    shutdown_marked = now;
+}
+
+static int teardown_must_be_full(void) {
+    return alloc_track_active();
+}
+
+static av_noreturn void exit_now(int status) {
+    terminal_restore_now();
+    shutdown_step("the exit");
+    alloc_track_report();
+    _Exit(status);
+}
+
 av_noreturn void do_exit(VideoState *is) {
     int status = quit_signal ? 123 : exit_status;
     int stranded_renderer = 0;
     int abandoned;
 
     quit_signal_polled = 0;
+    shutdown_begin();
+
+    if (is) {
+        is->abort_request = 1;
+        packet_queue_abort(&is->videoq);
+        packet_queue_abort(&is->audioq);
+        packet_queue_abort(&is->subtitleq);
+        SDL_SignalCondition(is->continue_read_thread);
+    }
+    if (!teardown_must_be_full()) {
+        audio_device_abandon();
+    }
 
     single_shutdown();
+    shutdown_step("the single instance listener");
+
     if (renderer) {
-        renderer_quiesce(renderer);
+        renderer_quiesce(renderer, teardown_must_be_full());
+        shutdown_step("quiescing the renderer");
+        renderer_save_cache(renderer);
+        shutdown_step("saving the shader cache");
     }
     if (is) {
-        stream_close(is);
+        if (teardown_must_be_full()) {
+            stream_close(is);
+        } else {
+            stream_detach(is);
+        }
+        shutdown_step("closing the stream");
     }
     abandoned = !screenshot_shutdown();
+    shutdown_step("draining screenshots");
     abandoned |= abandoned_threads_live();
 
-    if (abandoned) {
-        renderer_save_cache(renderer);
-        terminal_restore_now();
-        alloc_track_report();
-        _Exit(status);
+    if (abandoned || !teardown_must_be_full()) {
+        exit_now(status);
     }
 
     if (renderer) {
@@ -1533,20 +1596,20 @@ av_noreturn void do_exit(VideoState *is) {
         } else {
             stranded_renderer = 1;
         }
+        shutdown_step("destroying the renderer");
     }
     if (window && !stranded_renderer) {
         SDL_DestroyWindow(window);
     }
     if (stranded_renderer) {
-        terminal_restore_now();
-        alloc_track_report();
-        _Exit(status);
+        exit_now(status);
     }
     uninit_opts();
     avformat_network_deinit();
     subtitles_uninit();
     osd_uninit();
     SDL_Quit();
+    shutdown_step("the rest of the teardown");
     alloc_track_complete();
     exit(status);
 }
@@ -3617,7 +3680,7 @@ void render_fault_fallback(VideoState **pis) {
     }
 
     keep_paused = *pis && (*pis)->paused;
-    renderer_quiesce(renderer);
+    renderer_quiesce(renderer, 1);
     if (*pis) {
         if (render_ever_ok && SDL_GetAtomicInt(&(*pis)->seek_by_bytes) <= 0) {
             resume_at = effective_playhead(*pis);
@@ -4135,6 +4198,8 @@ int main(int argc, char **argv) {
     VideoState *is;
 
     alloc_track_init();
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
 
 #if defined(_WIN32)
     win32_attach_console();
