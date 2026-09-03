@@ -116,6 +116,12 @@ jobs:
           sudo apt-get install -y --reinstall meson ninja-build
 
           git clone --depth 1 https://github.com/chaotic-cx/mesa-mirror.git mesa
+
+          # https://github.com/KhronosGroup/glslang/pull/4052
+          sed -i "s/'-V', '-S', 'comp',/'-V', '--target-env', 'spirv1.2', '-S', 'comp',/" \
+                 mesa/src/vulkan/runtime/meson.build
+          grep -q -e --target-env mesa/src/vulkan/runtime/meson.build
+
           meson setup --prefix=/usr/local -Dlibdir=lib \
                       -Dbuildtype=release \
                       -Dglvnd=disabled \
