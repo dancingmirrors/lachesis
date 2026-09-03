@@ -623,7 +623,7 @@ const OptionDef options[] = {
     OPT_ALIAS("end", "t"),
     {"seek-interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
-    {"benchmark", OPT_TYPE_BOOL, 0, {&benchmark}, "blaze it (for benchmarking)"},
+    {"benchmark", OPT_TYPE_BOOL, OPT_CMDLINE_ONLY, {&benchmark}, "blaze it (for benchmarking)"},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to always keep the window on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 300)", "volume"},
     {"mute", OPT_TYPE_BOOL, 0, {&global_muted}, "mute audio at startup"},
