@@ -34,6 +34,7 @@
 /* clang-format on */
 
 #include <limits.h>
+#include <stddef.h>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -271,6 +272,7 @@ typedef struct RendererContext {
     const VkPhysicalDeviceFeatures2 *dev_features;
 
     const char **filtered_dev_exts;
+    const char **unbacked_dev_exts;
 
     AVFrame *vk_frame;
 #endif
@@ -947,6 +949,242 @@ static void note_decode_caps(RendererContext *ctx, const char *const *exts,
     }
 }
 
+typedef struct VkFeatureLocation {
+    VkStructureType type;
+    size_t offset;
+} VkFeatureLocation;
+
+typedef struct VkBackedExtension {
+    const char *name;
+    const char *feature;
+    VkFeatureLocation at[2];
+} VkBackedExtension;
+
+/* clang-format off */
+static const VkBackedExtension backed_extensions[] = {
+    {VK_KHR_SHADER_SUBGROUP_ROTATE_EXTENSION_NAME, "shaderSubgroupRotate",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_ROTATE_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceShaderSubgroupRotateFeaturesKHR, shaderSubgroupRotate)},
+#ifdef VK_VERSION_1_4
+      {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+       offsetof(VkPhysicalDeviceVulkan14Features, shaderSubgroupRotate)},
+#endif
+     }},
+    {VK_EXT_HOST_IMAGE_COPY_EXTENSION_NAME, "hostImageCopy",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_HOST_IMAGE_COPY_FEATURES_EXT,
+       offsetof(VkPhysicalDeviceHostImageCopyFeaturesEXT, hostImageCopy)},
+#ifdef VK_VERSION_1_4
+      {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+       offsetof(VkPhysicalDeviceVulkan14Features, hostImageCopy)},
+#endif
+     }},
+    {VK_EXT_SHADER_OBJECT_EXTENSION_NAME, "shaderObject",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT,
+       offsetof(VkPhysicalDeviceShaderObjectFeaturesEXT, shaderObject)},
+     }},
+    {VK_KHR_COOPERATIVE_MATRIX_EXTENSION_NAME, "cooperativeMatrix",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COOPERATIVE_MATRIX_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceCooperativeMatrixFeaturesKHR, cooperativeMatrix)},
+     }},
+    {VK_EXT_SHADER_ATOMIC_FLOAT_EXTENSION_NAME, "shaderBufferFloat32Atomics",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_FLOAT_FEATURES_EXT,
+       offsetof(VkPhysicalDeviceShaderAtomicFloatFeaturesEXT, shaderBufferFloat32Atomics)},
+     }},
+    {VK_KHR_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_EXTENSION_NAME, "workgroupMemoryExplicitLayout",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_WORKGROUP_MEMORY_EXPLICIT_LAYOUT_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR, workgroupMemoryExplicitLayout)},
+     }},
+    {VK_NV_OPTICAL_FLOW_EXTENSION_NAME, "opticalFlow",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPTICAL_FLOW_FEATURES_NV,
+       offsetof(VkPhysicalDeviceOpticalFlowFeaturesNV, opticalFlow)},
+     }},
+    {VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME, "videoMaintenance1",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_1_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceVideoMaintenance1FeaturesKHR, videoMaintenance1)},
+     }},
+#ifdef VK_KHR_video_maintenance2
+    {VK_KHR_VIDEO_MAINTENANCE_2_EXTENSION_NAME, "videoMaintenance2",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_MAINTENANCE_2_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceVideoMaintenance2FeaturesKHR, videoMaintenance2)},
+     }},
+#endif
+#ifdef VK_KHR_video_decode_vp9
+    {VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME, "videoDecodeVP9",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceVideoDecodeVP9FeaturesKHR, videoDecodeVP9)},
+     }},
+#endif
+#ifdef VK_KHR_video_encode_av1
+    {VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME, "videoEncodeAV1",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_AV1_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceVideoEncodeAV1FeaturesKHR, videoEncodeAV1)},
+     }},
+#endif
+#ifdef VK_EXT_shader_long_vector
+    {VK_EXT_SHADER_LONG_VECTOR_EXTENSION_NAME, "longVector",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_LONG_VECTOR_FEATURES_EXT,
+       offsetof(VkPhysicalDeviceShaderLongVectorFeaturesEXT, longVector)},
+     }},
+#endif
+#ifdef VK_EXT_shader_replicated_composites
+    {VK_EXT_SHADER_REPLICATED_COMPOSITES_EXTENSION_NAME, "shaderReplicatedComposites",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_REPLICATED_COMPOSITES_FEATURES_EXT,
+       offsetof(VkPhysicalDeviceShaderReplicatedCompositesFeaturesEXT, shaderReplicatedComposites)},
+     }},
+#endif
+#ifdef VK_EXT_zero_initialize_device_memory
+    {VK_EXT_ZERO_INITIALIZE_DEVICE_MEMORY_EXTENSION_NAME, "zeroInitializeDeviceMemory",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ZERO_INITIALIZE_DEVICE_MEMORY_FEATURES_EXT,
+       offsetof(VkPhysicalDeviceZeroInitializeDeviceMemoryFeaturesEXT, zeroInitializeDeviceMemory)},
+     }},
+#endif
+#ifdef VK_KHR_shader_expect_assume
+    {VK_KHR_SHADER_EXPECT_ASSUME_EXTENSION_NAME, "shaderExpectAssume",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_EXPECT_ASSUME_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceShaderExpectAssumeFeaturesKHR, shaderExpectAssume)},
+#ifdef VK_VERSION_1_4
+      {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_4_FEATURES,
+       offsetof(VkPhysicalDeviceVulkan14Features, shaderExpectAssume)},
+#endif
+     }},
+#endif
+#ifdef VK_KHR_shader_maximal_reconvergence
+    {VK_KHR_SHADER_MAXIMAL_RECONVERGENCE_EXTENSION_NAME, "shaderMaximalReconvergence",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_MAXIMAL_RECONVERGENCE_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceShaderMaximalReconvergenceFeaturesKHR, shaderMaximalReconvergence)},
+     }},
+#endif
+#ifdef VK_KHR_shader_relaxed_extended_instruction
+    {VK_KHR_SHADER_RELAXED_EXTENDED_INSTRUCTION_EXTENSION_NAME, "shaderRelaxedExtendedInstruction",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_RELAXED_EXTENDED_INSTRUCTION_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceShaderRelaxedExtendedInstructionFeaturesKHR, shaderRelaxedExtendedInstruction)},
+     }},
+#endif
+#ifdef VK_KHR_maintenance9
+    {VK_KHR_MAINTENANCE_9_EXTENSION_NAME, "maintenance9",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_9_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceMaintenance9FeaturesKHR, maintenance9)},
+     }},
+#endif
+#ifdef VK_KHR_unified_image_layouts
+    {VK_KHR_UNIFIED_IMAGE_LAYOUTS_EXTENSION_NAME, "unifiedImageLayouts",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_UNIFIED_IMAGE_LAYOUTS_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceUnifiedImageLayoutsFeaturesKHR, unifiedImageLayouts)},
+     }},
+#endif
+#ifdef VK_KHR_internally_synchronized_queues
+    {VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME, "internallySynchronizedQueues",
+     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR,
+       offsetof(VkPhysicalDeviceInternallySynchronizedQueuesFeaturesKHR, internallySynchronizedQueues)},
+     }},
+#endif
+};
+/* clang-format on */
+
+static const void *find_feature(const VkPhysicalDeviceFeatures2 *features,
+                                VkStructureType type) {
+    const VkBaseInStructure *entry = features ? features->pNext : NULL;
+
+    for (; entry; entry = entry->pNext) {
+        if (entry->sType == type) {
+            return entry;
+        }
+    }
+
+    return NULL;
+}
+
+static const VkBackedExtension *
+unbacked_extension(const char *name,
+                   const VkPhysicalDeviceFeatures2 *features) {
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(backed_extensions); i++) {
+        const VkBackedExtension *backed = &backed_extensions[i];
+
+        if (strcmp(name, backed->name)) {
+            continue;
+        }
+        for (size_t n = 0; n < FF_ARRAY_ELEMS(backed->at); n++) {
+            const VkFeatureLocation *at = &backed->at[n];
+            const char *entry;
+            VkBool32 enabled;
+
+            if (!at->type) {
+                break;
+            }
+            entry = find_feature(features, at->type);
+            if (!entry) {
+                continue;
+            }
+            memcpy(&enabled, entry + at->offset, sizeof(enabled));
+            if (enabled) {
+                return NULL;
+            }
+        }
+
+        return backed;
+    }
+
+    return NULL;
+}
+
+static int drop_unbacked_extensions(RendererContext *ctx,
+                                    const char *const *exts, int num_exts,
+                                    const VkPhysicalDeviceFeatures2 *features,
+                                    const char *const **out_exts,
+                                    int *out_num) {
+    const char **kept;
+    int n = 0;
+
+    *out_exts = exts;
+    *out_num = num_exts;
+    for (int i = 0; i < num_exts; i++) {
+        if (unbacked_extension(exts[i], features)) {
+            n = 1;
+            break;
+        }
+    }
+    if (!n) {
+        return 0;
+    }
+
+    kept = av_calloc(num_exts, sizeof(*kept));
+    if (!kept) {
+        return AVERROR(ENOMEM);
+    }
+    n = 0;
+    for (int i = 0; i < num_exts; i++) {
+        const VkBackedExtension *backed = unbacked_extension(exts[i], features);
+
+        if (backed) {
+            log_verbose("Withholding %s: the device has no %s.\n",
+                        backed->name, backed->feature);
+            continue;
+        }
+        kept[n++] = exts[i];
+    }
+
+    av_free(ctx->unbacked_dev_exts);
+    ctx->unbacked_dev_exts = kept;
+    *out_exts = (const char *const *)kept;
+    *out_num = n;
+
+    return 0;
+}
+
+static int internally_synchronized(const VkPhysicalDeviceFeatures2 *features) {
+#ifdef VK_KHR_internally_synchronized_queues
+    const VkPhysicalDeviceInternallySynchronizedQueuesFeaturesKHR *isq =
+        find_feature(
+            features,
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_INTERNALLY_SYNCHRONIZED_QUEUES_FEATURES_KHR);
+
+    return isq && isq->internallySynchronizedQueues;
+#else
+    (void)features;
+    return 0;
+#endif
+}
+
 static uint32_t nvidia_proprietary(PFN_vkGetInstanceProcAddr get_proc_addr,
                                    VkInstance inst, VkPhysicalDevice phys) {
     PFN_vkGetPhysicalDeviceProperties2 get_props2;
@@ -1084,30 +1322,23 @@ static int create_vk_by_hwcontext(Renderer *renderer,
         }
     }
 
-#if defined(VK_KHR_internally_synchronized_queues) && PL_API_VER >= 365
-    for (unsigned i = 0; i < (unsigned)hwctx->nb_enabled_dev_extensions; i++) {
-        if (!strcmp(hwctx->enabled_dev_extensions[i],
-                    VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
-            import_params.queue_graphics.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
-            import_params.queue_compute.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
-            import_params.queue_transfer.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
-            import_params.lock_queue = NULL;
-            import_params.unlock_queue = NULL;
-            break;
-        }
-    }
-#elif defined(VK_KHR_internally_synchronized_queues)
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 32, 100)
-    log_warn("VK_KHR_internally_synchronized_queues with libplacebo < 365 hack.\n");
+#if defined(VK_KHR_internally_synchronized_queues) && \
+    LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 32, 100)
+    if (hwctx->queue_flags &
+        VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR) {
+#if PL_API_VER >= 365
+        import_params.queue_graphics.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
+        import_params.queue_compute.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
+        import_params.queue_transfer.flags |= VK_DEVICE_QUEUE_CREATE_INTERNALLY_SYNCHRONIZED_BIT_KHR;
+        import_params.lock_queue = NULL;
+        import_params.unlock_queue = NULL;
+#else
+        log_warn("VK_KHR_internally_synchronized_queues with libplacebo < 365 hack.\n");
+        av_buffer_unref(&ctx->hw_device_ref);
+        ctx->inst = NULL;
+        return create_vk_by_placebo(renderer, ext, num_ext, opt,
+                                    present_timing);
 #endif
-    for (unsigned i = 0; i < (unsigned)hwctx->nb_enabled_dev_extensions; i++) {
-        if (!strcmp(hwctx->enabled_dev_extensions[i],
-                    VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
-            av_buffer_unref(&ctx->hw_device_ref);
-            ctx->inst = NULL;
-            return create_vk_by_placebo(renderer, ext, num_ext, opt,
-                                        present_timing);
-        }
     }
 #endif
     ctx->dev_extensions = import_exts;
@@ -1146,15 +1377,17 @@ static void placebo_unlock_queue(struct AVHWDeviceContext *dev_ctx,
 #endif
 }
 
-static int get_decode_queue(Renderer *renderer, int *index, int *count) {
+#define MAX_DECODE_FAMILIES 8
+
+static int get_decode_queues(Renderer *renderer, uint32_t *index,
+                             uint32_t *count) {
     RendererContext *ctx = (RendererContext *)renderer;
     VkQueueFamilyProperties *queue_family_prop = NULL;
     uint32_t num_queue_family_prop = 0;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties get_queue_family_prop;
     PFN_vkGetInstanceProcAddr get_proc_addr = ctx->get_proc_addr;
+    int num = 0;
 
-    *index = -1;
-    *count = 0;
     get_queue_family_prop = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
         get_proc_addr(ctx->placebo_instance->instance,
                       "vkGetPhysicalDeviceQueueFamilyProperties");
@@ -1174,16 +1407,46 @@ static int get_decode_queue(Renderer *renderer, int *index, int *count) {
                           &num_queue_family_prop,
                           queue_family_prop);
 
-    for (int i = 0; i < (int)num_queue_family_prop; i++) {
-        if (queue_family_prop[i].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR) {
-            *index = i;
-            *count = queue_family_prop[i].queueCount;
+    for (uint32_t i = 0; i < num_queue_family_prop; i++) {
+        if (!(queue_family_prop[i].queueFlags & VK_QUEUE_VIDEO_DECODE_BIT_KHR)) {
+            continue;
+        }
+        if (num >= MAX_DECODE_FAMILIES) {
+            log_verbose("Ignoring video decode queue families past %d.\n",
+                        MAX_DECODE_FAMILIES);
             break;
         }
+        index[num] = i;
+        count[num] = queue_family_prop[i].queueCount;
+        num++;
     }
     av_free(queue_family_prop);
 
-    return 0;
+    return num;
+}
+
+static void add_queue_family(AVVulkanDeviceContext *hwctx, int *nb_qf,
+                             uint32_t idx, uint32_t num,
+                             VkQueueFlagBits flags) {
+    if (!num) {
+        return;
+    }
+    for (int i = 0; i < *nb_qf; i++) {
+        if (hwctx->qf[i].idx == (int)idx) {
+            hwctx->qf[i].flags |= flags;
+            return;
+        }
+    }
+    if (*nb_qf >= (int)FF_ARRAY_ELEMS(hwctx->qf)) {
+        return;
+    }
+
+    hwctx->qf[*nb_qf] = (AVVulkanDeviceQueueFamily){
+        .idx = idx,
+        .num = num,
+        .flags = flags,
+    };
+    (*nb_qf)++;
 }
 
 static int create_vk_by_placebo(Renderer *renderer,
@@ -1197,8 +1460,9 @@ static int create_vk_by_placebo(Renderer *renderer,
     const char **opt_exts = NULL;
     const char **merged_exts = NULL;
     int num_opt_exts = 0;
-    int decode_index;
-    int decode_count;
+    uint32_t decode_index[MAX_DECODE_FAMILIES];
+    uint32_t decode_count[MAX_DECODE_FAMILIES];
+    int num_decode;
     int ret;
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     const char **dev_exts;
@@ -1307,9 +1571,14 @@ static int create_vk_by_placebo(Renderer *renderer,
     if (!ctx->placebo_vulkan) {
         return AVERROR_EXTERNAL;
     }
-    ctx->dev_extensions = ctx->placebo_vulkan->extensions;
-    ctx->num_dev_extensions = ctx->placebo_vulkan->num_extensions;
     ctx->dev_features = ctx->placebo_vulkan->features;
+    ret = drop_unbacked_extensions(ctx, ctx->placebo_vulkan->extensions,
+                                   ctx->placebo_vulkan->num_extensions,
+                                   ctx->dev_features, &ctx->dev_extensions,
+                                   &ctx->num_dev_extensions);
+    if (ret < 0) {
+        return ret;
+    }
 
     ctx->hw_device_ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
     if (!ctx->hw_device_ref) {
@@ -1322,25 +1591,10 @@ static int create_vk_by_placebo(Renderer *renderer,
     vk_dev_ctx = device_ctx->hwctx;
 #if FF_API_VULKAN_SYNC_QUEUES
     FF_DISABLE_DEPRECATION_WARNINGS
-#if defined(VK_KHR_internally_synchronized_queues) && PL_API_VER >= 365
-    {
-        int isq = 0;
-        for (int i = 0; i < ctx->placebo_vulkan->num_extensions; i++) {
-            if (!strcmp(ctx->placebo_vulkan->extensions[i],
-                        VK_KHR_INTERNALLY_SYNCHRONIZED_QUEUES_EXTENSION_NAME)) {
-                isq = 1;
-                break;
-            }
-        }
-        if (!isq) {
-            vk_dev_ctx->lock_queue = placebo_lock_queue;
-            vk_dev_ctx->unlock_queue = placebo_unlock_queue;
-        }
+    if (!internally_synchronized(ctx->dev_features)) {
+        vk_dev_ctx->lock_queue = placebo_lock_queue;
+        vk_dev_ctx->unlock_queue = placebo_unlock_queue;
     }
-#else
-    vk_dev_ctx->lock_queue = placebo_lock_queue;
-    vk_dev_ctx->unlock_queue = placebo_unlock_queue;
-#endif
     FF_ENABLE_DEPRECATION_WARNINGS
 #endif
 
@@ -1355,44 +1609,34 @@ static int create_vk_by_placebo(Renderer *renderer,
     vk_dev_ctx->enabled_inst_extensions = ctx->placebo_instance->extensions;
     vk_dev_ctx->nb_enabled_inst_extensions = ctx->placebo_instance->num_extensions;
 
-    vk_dev_ctx->enabled_dev_extensions = ctx->placebo_vulkan->extensions;
-    vk_dev_ctx->nb_enabled_dev_extensions = ctx->placebo_vulkan->num_extensions;
+    vk_dev_ctx->enabled_dev_extensions = ctx->dev_extensions;
+    vk_dev_ctx->nb_enabled_dev_extensions = ctx->num_dev_extensions;
 
     /* Otherwise we get 16 graphics queues. */
     uint32_t nvidia = nvidia_proprietary(ctx->get_proc_addr, ctx->inst,
                                          ctx->placebo_vulkan->phys_device);
     int nb_qf = 0;
-    vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
-        .idx = ctx->placebo_vulkan->queue_graphics.index,
-        .num = nvidia ? FFMIN(ctx->placebo_vulkan->queue_graphics.count, 1)
-                      : ctx->placebo_vulkan->queue_graphics.count,
-        .flags = VK_QUEUE_GRAPHICS_BIT,
-    };
-    nb_qf++;
-    vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
-        .idx = ctx->placebo_vulkan->queue_transfer.index,
-        .num = ctx->placebo_vulkan->queue_transfer.count,
-        .flags = VK_QUEUE_TRANSFER_BIT,
-    };
-    nb_qf++;
-    vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
-        .idx = ctx->placebo_vulkan->queue_compute.index,
-        .num = ctx->placebo_vulkan->queue_compute.count,
-        .flags = VK_QUEUE_COMPUTE_BIT,
-    };
-    nb_qf++;
-    ret = get_decode_queue(renderer, &decode_index, &decode_count);
-    if (ret < 0) {
-        return ret;
-    }
+    add_queue_family(vk_dev_ctx, &nb_qf,
+                     ctx->placebo_vulkan->queue_graphics.index,
+                     nvidia ? FFMIN(ctx->placebo_vulkan->queue_graphics.count, 1)
+                            : ctx->placebo_vulkan->queue_graphics.count,
+                     VK_QUEUE_GRAPHICS_BIT);
+    add_queue_family(vk_dev_ctx, &nb_qf,
+                     ctx->placebo_vulkan->queue_transfer.index,
+                     ctx->placebo_vulkan->queue_transfer.count,
+                     VK_QUEUE_TRANSFER_BIT);
+    add_queue_family(vk_dev_ctx, &nb_qf,
+                     ctx->placebo_vulkan->queue_compute.index,
+                     ctx->placebo_vulkan->queue_compute.count,
+                     VK_QUEUE_COMPUTE_BIT);
 
-    if (decode_index >= 0 && decode_count > 0) {
-        vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
-            .idx = decode_index,
-            .num = decode_count,
-            .flags = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
-        };
-        nb_qf++;
+    num_decode = get_decode_queues(renderer, decode_index, decode_count);
+    if (num_decode < 0) {
+        return num_decode;
+    }
+    for (int i = 0; i < num_decode; i++) {
+        add_queue_family(vk_dev_ctx, &nb_qf, decode_index[i], decode_count[i],
+                         VK_QUEUE_VIDEO_DECODE_BIT_KHR);
     }
     vk_dev_ctx->nb_qf = nb_qf;
 
@@ -1401,8 +1645,7 @@ static int create_vk_by_placebo(Renderer *renderer,
         return ret;
     }
 
-    note_decode_caps(ctx, ctx->placebo_vulkan->extensions,
-                     ctx->placebo_vulkan->num_extensions);
+    note_decode_caps(ctx, ctx->dev_extensions, ctx->num_dev_extensions);
 
     return 0;
 }
@@ -1619,6 +1862,7 @@ static void vk_backend_destroy(RendererContext *ctx) {
     av_buffer_unref(&ctx->hw_device_ref);
     pl_vk_inst_destroy(&ctx->placebo_instance);
     av_freep(&ctx->filtered_dev_exts);
+    av_freep(&ctx->unbacked_dev_exts);
 
     vkpresent_shutdown();
 }
