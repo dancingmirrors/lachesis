@@ -182,7 +182,7 @@ extern int start_windowed;
 
 int parse_video_background(const char *value, uint8_t rgba[4]);
 
-/* For -video_bg. */
+/* For -video-bg. */
 int video_background_translucent(void);
 
 #define AUTOFIT_MIN 0.05
