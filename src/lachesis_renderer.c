@@ -5045,6 +5045,19 @@ fail:
     return ret;
 }
 
+static void note_ignored_requests(Renderer *renderer) {
+    if (!renderer || renderer_api(renderer) == RENDERER_API_VULKAN) {
+        return;
+    }
+    if (want_device) {
+    }
+    if (want_translucent) {
+        log_warn("A translucent -video-bg needs the Vulkan renderer but on %s "
+                 "the background is opaque.\n",
+                 renderer_api_name(renderer));
+    }
+}
+
 int renderer_open(const RendererOpenParams *params, SDL_Window **window,
                   Renderer **out, char *why, size_t why_size) {
     enum RendererApi order[FF_ARRAY_ELEMS(renderer_api_order)];
@@ -5066,23 +5079,6 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
             continue;
         }
         order[num++] = api;
-    }
-
-    if (want_translucent || want_device) {
-        int have_vulkan = 0;
-        size_t keep = 0;
-
-        for (size_t i = 0; i < num; i++) {
-            have_vulkan |= order[i] == RENDERER_API_VULKAN;
-        }
-        for (size_t i = 0; have_vulkan && i < num; i++) {
-            if (order[i] != RENDERER_API_D3D11) {
-                order[keep++] = order[i];
-            }
-        }
-        for (size_t i = keep; have_vulkan && i < num; i++) {
-            order[i] = RENDERER_API_D3D11;
-        }
     }
 
     if (!num) {
@@ -5108,6 +5104,7 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
                                        why_size);
 
                 if (ret >= 0) {
+                    note_ignored_requests(*out);
                     return 0;
                 }
                 last = ret;
