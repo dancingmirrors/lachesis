@@ -3071,7 +3071,7 @@ static int queue_picture(VideoState *is, AVFrame *src_frame, double pts, double 
     return 0;
 }
 
-static void hwframe_download_inplace(AVFrame *frame) {
+static void hwframe_download_inplace(HwDownload *dl, AVFrame *frame) {
     static int warned = 0;
     static int announced = 0;
     AVFrame *sw = av_frame_alloc();
@@ -3081,7 +3081,7 @@ static void hwframe_download_inplace(AVFrame *frame) {
         return;
     }
 
-    ret = av_hwframe_transfer_data(sw, frame, 0);
+    ret = hwdownload_frame(dl, sw, frame);
     if (ret < 0) {
         if (!warned) {
             warned = 1;
@@ -3096,7 +3096,6 @@ static void hwframe_download_inplace(AVFrame *frame) {
         log_info("Copying decoded frames from the GPU to system memory.\n");
     }
 
-    av_frame_copy_props(sw, frame);
     if (sw->crop_left || sw->crop_top || sw->crop_right || sw->crop_bottom) {
         static int crop_warned = 0;
         int crop_ret = av_frame_apply_cropping(sw, 0);
@@ -3272,6 +3271,7 @@ int video_thread(void *arg) {
     int download_active = 0;
     int report_out_pending = 0;
     int crop_warned = 0;
+    HwDownload download = {0};
 
     if (!frame) {
         return AVERROR(ENOMEM);
@@ -3326,7 +3326,7 @@ int video_thread(void *arg) {
                 if (!graph) {
                     goto the_end;
                 }
-                hwframe_download_inplace(frame);
+                hwframe_download_inplace(&download, frame);
                 download_active = 1;
                 ret = configure_video_filters(graph, is, vfilters, frame, 0);
             }
@@ -3360,7 +3360,7 @@ int video_thread(void *arg) {
             frame_rate = av_buffersink_get_frame_rate(filt_out);
             report_out_pending = 1;
         } else if (download_active && frame->hw_frames_ctx) {
-            hwframe_download_inplace(frame);
+            hwframe_download_inplace(&download, frame);
         }
 
         ret = av_buffersrc_add_frame(filt_in, frame);
@@ -3424,6 +3424,7 @@ int video_thread(void *arg) {
     }
 the_end:
     avfilter_graph_free(&graph);
+    hwdownload_free(&download);
     av_frame_free(&frame);
 
     return 0;
@@ -4378,8 +4379,10 @@ int main(int argc, char **argv) {
             fatal_quit("Unknown GPU API '%s'.\n",
                        gpu_api_name);
         }
-    } else if (no_vulkan) {
-        gpu_api = RENDERER_API_OPENGL;
+    }
+
+    if (no_vulkan && gpu_api == RENDERER_API_VULKAN) {
+        fatal_quit("-gpu-api vulkan and -no-vulkan are contradictory.\n");
     }
 
     if (disable_autorotate) {

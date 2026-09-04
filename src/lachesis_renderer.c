@@ -88,6 +88,7 @@
 
 #if LACHESIS_HAVE_D3D11
 #include <d3d10.h>
+#include <dxgi1_6.h>
 #include <libavutil/hwcontext_d3d11va.h>
 #include <libplacebo/d3d11.h>
 
@@ -96,6 +97,8 @@
 
 #include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
+#include <libavutil/buffer.h>
+#include <libavutil/imgutils.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
@@ -235,6 +238,8 @@ typedef struct RendererContext {
     pl_tex next_tex[4];
     AVFrame *sw_frame;
 
+    HwDownload readback;
+
     struct MixSlot {
         uint64_t signature;
         int mapped;
@@ -273,6 +278,7 @@ typedef struct RendererContext {
 #if LACHESIS_HAVE_OPENGL
     pl_opengl placebo_gl;
     SDL_GLContext gl_context;
+    SDL_ThreadID gl_pinned_by;
 #endif
 
 #if LACHESIS_HAVE_D3D11
@@ -323,6 +329,7 @@ typedef struct RendererContext {
     int benchmark;
 
     double stat_acquire_ms;
+    double stat_convert_ms;
     double stat_render_ms;
     double stat_present_ms;
     int stat_valid;
@@ -509,51 +516,45 @@ static int add_device_extension(const AVDictionary *opt,
     return av_dict_set(dict, dev_ext_key, ext_list, AV_DICT_DONT_STRDUP_VAL);
 }
 
-#if LACHESIS_HAVE_VULKAN
+#define MAX_GPU_DEVICES 16
 
-#define MAX_VK_DEVICES 16
+enum GpuClass {
+    GPU_CLASS_ANY,
+    GPU_CLASS_INTEGRATED,
+    GPU_CLASS_DISCRETE,
+};
 
-static int list_vk_devices(PFN_vkGetInstanceProcAddr get_proc_addr,
-                           VkInstance inst,
-                           char names[MAX_VK_DEVICES][256]) {
-    PFN_vkEnumeratePhysicalDevices enumerate;
-    PFN_vkGetPhysicalDeviceProperties get_props;
-    VkPhysicalDevice devices[MAX_VK_DEVICES];
-    uint32_t num = MAX_VK_DEVICES;
+typedef char GpuDeviceNames[MAX_GPU_DEVICES][256];
 
-    enumerate = (PFN_vkEnumeratePhysicalDevices)
-        get_proc_addr(inst, "vkEnumeratePhysicalDevices");
-    get_props = (PFN_vkGetPhysicalDeviceProperties)
-        get_proc_addr(inst, "vkGetPhysicalDeviceProperties");
-    if (!enumerate || !get_props) {
-        return 0;
-    }
-    if (enumerate(inst, &num, devices) < 0) {
-        return 0;
-    }
-    if (num > MAX_VK_DEVICES) {
-        num = MAX_VK_DEVICES;
-    }
+static enum GpuClass gpu_class_request(const char *want) {
+    static const struct {
+        const char *name;
+        enum GpuClass want;
+    } aliases[] = {
+        {"discrete", GPU_CLASS_DISCRETE},
+        {"dgpu", GPU_CLASS_DISCRETE},
+        {"integrated", GPU_CLASS_INTEGRATED},
+        {"igpu", GPU_CLASS_INTEGRATED},
+    };
 
-    for (uint32_t i = 0; i < num; i++) {
-        VkPhysicalDeviceProperties props;
-
-        get_props(devices[i], &props);
-        snprintf(names[i], 256, "%s", props.deviceName);
+    for (size_t i = 0; want && i < FF_ARRAY_ELEMS(aliases); i++) {
+        if (!av_strcasecmp(want, aliases[i].name)) {
+            return aliases[i].want;
+        }
     }
 
-    return (int)num;
+    return GPU_CLASS_ANY;
 }
 
-static void report_vk_devices(const char names[MAX_VK_DEVICES][256], int num,
-                              int verbose) {
+static void report_gpu_devices(const char *api, const GpuDeviceNames names,
+                               int num, int verbose) {
     void (*say)(const char *, ...) = verbose ? log_verbose : log_info;
 
     if (!num) {
-        say("No Vulkan devices are available.\n");
+        say("No %s devices are available.\n", api);
         return;
     }
-    say("Available Vulkan devices:\n");
+    say("Available %s devices:\n", api);
     for (int i = 0; i < num; i++) {
         say("  %s\n", names[i]);
     }
@@ -584,37 +585,96 @@ static int glob_match(const char *pattern, const char *text) {
     return !*pattern;
 }
 
-static const char *match_vk_device(const char names[MAX_VK_DEVICES][256],
-                                   int num, const char *want) {
+static int match_gpu_device(const GpuDeviceNames names,
+                            const enum GpuClass *classes, int num,
+                            const char *want) {
+    enum GpuClass wanted = gpu_class_request(want);
     int wild = strchr(want, '*') || strchr(want, '?');
     char anywhere[300];
 
+    if (wanted != GPU_CLASS_ANY) {
+        for (int i = 0; classes && i < num; i++) {
+            if (classes[i] == wanted) {
+                return i;
+            }
+        }
+        return -1;
+    }
     for (int i = 0; i < num; i++) {
         if (!strcmp(names[i], want)) {
-            return names[i];
+            return i;
         }
     }
     for (int i = 0; i < num; i++) {
         if (wild ? glob_match(want, names[i])
                  : av_stristr(names[i], want) != NULL) {
-            return names[i];
+            return i;
         }
     }
     if (!wild) {
-        return NULL;
+        return -1;
     }
 
     snprintf(anywhere, sizeof(anywhere), "*%s*", want);
     for (int i = 0; i < num; i++) {
         if (glob_match(anywhere, names[i])) {
-            return names[i];
+            return i;
         }
     }
 
-    return NULL;
+    return -1;
 }
 
-static int list_vk_devices_standalone(char names[MAX_VK_DEVICES][256]) {
+#if LACHESIS_HAVE_VULKAN
+
+static int list_vk_devices(PFN_vkGetInstanceProcAddr get_proc_addr,
+                           VkInstance inst, GpuDeviceNames names,
+                           enum GpuClass *classes) {
+    PFN_vkEnumeratePhysicalDevices enumerate;
+    PFN_vkGetPhysicalDeviceProperties get_props;
+    VkPhysicalDevice devices[MAX_GPU_DEVICES];
+    uint32_t num = MAX_GPU_DEVICES;
+
+    enumerate = (PFN_vkEnumeratePhysicalDevices)
+        get_proc_addr(inst, "vkEnumeratePhysicalDevices");
+    get_props = (PFN_vkGetPhysicalDeviceProperties)
+        get_proc_addr(inst, "vkGetPhysicalDeviceProperties");
+    if (!enumerate || !get_props) {
+        return 0;
+    }
+    if (enumerate(inst, &num, devices) < 0) {
+        return 0;
+    }
+    if (num > MAX_GPU_DEVICES) {
+        num = MAX_GPU_DEVICES;
+    }
+
+    for (uint32_t i = 0; i < num; i++) {
+        VkPhysicalDeviceProperties props;
+
+        get_props(devices[i], &props);
+        snprintf(names[i], 256, "%s", props.deviceName);
+        if (!classes) {
+            continue;
+        }
+        switch (props.deviceType) {
+        case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+            classes[i] = GPU_CLASS_DISCRETE;
+            break;
+        case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+            classes[i] = GPU_CLASS_INTEGRATED;
+            break;
+        default:
+            classes[i] = GPU_CLASS_ANY;
+            break;
+        }
+    }
+
+    return (int)num;
+}
+
+static int list_vk_devices_standalone(GpuDeviceNames names,
+                                      enum GpuClass *classes) {
     PFN_vkGetInstanceProcAddr get_proc_addr;
     PFN_vkCreateInstance create_instance;
     PFN_vkDestroyInstance destroy_instance;
@@ -672,7 +732,7 @@ static int list_vk_devices_standalone(char names[MAX_VK_DEVICES][256]) {
         return AVERROR_EXTERNAL;
     }
 
-    num = list_vk_devices(get_proc_addr, inst, names);
+    num = list_vk_devices(get_proc_addr, inst, names, classes);
 
     destroy_instance =
         (PFN_vkDestroyInstance)get_proc_addr(inst, "vkDestroyInstance");
@@ -937,20 +997,22 @@ static int create_vk_by_hwcontext(Renderer *renderer,
 
     raw_device = select_device(opt);
     if (!raw_device && want_device) {
-        char names[MAX_VK_DEVICES][256];
-        int num = list_vk_devices_standalone(names);
-        const char *match =
-            num > 0 ? match_vk_device(names, num, want_device) : NULL;
+        GpuDeviceNames names;
+        enum GpuClass classes[MAX_GPU_DEVICES];
+        int num = list_vk_devices_standalone(names, classes);
+        int match = num > 0
+            ? match_gpu_device(names, classes, num, want_device)
+            : -1;
 
-        if (match) {
-            av_strlcpy(ctx->device_request, match,
+        if (match >= 0) {
+            av_strlcpy(ctx->device_request, names[match],
                        sizeof(ctx->device_request));
             raw_device = ctx->device_request;
         } else {
             log_warn("No Vulkan device matches '%s'.\n",
                      want_device);
             if (num > 0) {
-                report_vk_devices(names, num, 0);
+                report_gpu_devices("Vulkan", names, num, 0);
             }
         }
     }
@@ -1201,21 +1263,24 @@ static int create_vk_by_placebo(Renderer *renderer,
     }
 
     {
-        char names[MAX_VK_DEVICES][256];
+        GpuDeviceNames names;
+        enum GpuClass classes[MAX_GPU_DEVICES];
         int num = list_vk_devices(ctx->get_proc_addr,
-                                  ctx->placebo_instance->instance, names);
+                                  ctx->placebo_instance->instance, names,
+                                  classes);
 
-        report_vk_devices(names, num, 1);
+        report_gpu_devices("Vulkan", names, num, 1);
 
         device_name = select_device(opt);
         if (!device_name && want_device) {
-            device_name = match_vk_device(names, num, want_device);
-            if (!device_name) {
+            int match = match_gpu_device(names, classes, num, want_device);
+
+            if (match < 0) {
                 log_warn("No Vulkan device matches '%s'.\n",
                          want_device);
-                report_vk_devices(names, num, 0);
+                report_gpu_devices("Vulkan", names, num, 0);
             } else {
-                av_strlcpy(ctx->device_request, device_name,
+                av_strlcpy(ctx->device_request, names[match],
                            sizeof(ctx->device_request));
                 device_name = ctx->device_request;
             }
@@ -1666,12 +1731,37 @@ static void gl_swap_buffers(void *priv) {
 static bool gl_make_current(void *priv) {
     RendererContext *ctx = priv;
 
+    if (ctx->gl_pinned_by == SDL_GetCurrentThreadID()) {
+        return true;
+    }
+
     return SDL_GL_MakeCurrent(ctx->window, ctx->gl_context);
 }
 
 static void gl_release_current(void *priv) {
     RendererContext *ctx = priv;
 
+    if (ctx->gl_pinned_by == SDL_GetCurrentThreadID()) {
+        return;
+    }
+    SDL_GL_MakeCurrent(ctx->window, NULL);
+}
+
+static void gl_pin_current(RendererContext *ctx) {
+    if (ctx->api.backend != RENDERER_API_OPENGL || ctx->gl_pinned_by) {
+        return;
+    }
+    if (SDL_GL_MakeCurrent(ctx->window, ctx->gl_context)) {
+        ctx->gl_pinned_by = SDL_GetCurrentThreadID();
+    }
+}
+
+static void gl_unpin_current(RendererContext *ctx) {
+    if (ctx->api.backend != RENDERER_API_OPENGL ||
+        ctx->gl_pinned_by != SDL_GetCurrentThreadID()) {
+        return;
+    }
+    ctx->gl_pinned_by = 0;
     SDL_GL_MakeCurrent(ctx->window, NULL);
 }
 
@@ -1823,6 +1913,155 @@ static int force_software(const AVDictionary *opt) {
     return force;
 }
 
+typedef HRESULT(WINAPI *create_dxgi_factory1_fn)(REFIID riid, void **factory);
+
+static IDXGIFactory1 *dxgi_open_factory(void) {
+    static create_dxgi_factory1_fn create_factory;
+    static int looked_up;
+    IDXGIFactory1 *factory = NULL;
+
+    if (!looked_up) {
+        HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+
+        looked_up = 1;
+        if (dxgi) {
+            create_factory = (create_dxgi_factory1_fn)(void *)GetProcAddress(
+                dxgi, "CreateDXGIFactory1");
+        }
+    }
+    if (!create_factory ||
+        FAILED(create_factory(&IID_IDXGIFactory1, (void **)&factory))) {
+        return NULL;
+    }
+
+    return factory;
+}
+
+static void dxgi_describe(IDXGIAdapter1 *adapter, char name[256],
+                          enum GpuClass *class) {
+    DXGI_ADAPTER_DESC1 desc;
+
+    name[0] = '\0';
+    *class = GPU_CLASS_ANY;
+
+    if (FAILED(IDXGIAdapter1_GetDesc1(adapter, &desc))) {
+        return;
+    }
+    if (!WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, 256, NULL,
+                             NULL)) {
+        name[0] = '\0';
+    }
+    name[255] = '\0';
+
+    if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        return;
+    }
+    *class = desc.DedicatedVideoMemory > 0 ? GPU_CLASS_DISCRETE
+                                           : GPU_CLASS_INTEGRATED;
+}
+
+static int dxgi_list_adapters(IDXGIFactory1 *factory, GpuDeviceNames names,
+                              enum GpuClass *classes,
+                              IDXGIAdapter1 **adapters) {
+    int num = 0;
+
+    while (num < MAX_GPU_DEVICES) {
+        IDXGIAdapter1 *adapter = NULL;
+
+        if (IDXGIFactory1_EnumAdapters1(factory, (UINT)num, &adapter) !=
+            S_OK) {
+            break;
+        }
+        dxgi_describe(adapter, names[num], &classes[num]);
+        adapters[num] = adapter;
+        num++;
+    }
+
+    return num;
+}
+
+static IDXGIAdapter1 *dxgi_preferred_adapter(IDXGIFactory1 *factory,
+                                             enum GpuClass want) {
+#ifdef __IDXGIFactory6_INTERFACE_DEFINED__
+    IDXGIFactory6 *factory6 = NULL;
+    IDXGIAdapter1 *adapter = NULL;
+    DXGI_GPU_PREFERENCE preference =
+        want == GPU_CLASS_DISCRETE ? DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE
+                                   : DXGI_GPU_PREFERENCE_MINIMUM_POWER;
+
+    if (FAILED(IDXGIFactory1_QueryInterface(factory, &IID_IDXGIFactory6,
+                                            (void **)&factory6))) {
+        return NULL;
+    }
+    if (IDXGIFactory6_EnumAdapterByGpuPreference(
+            factory6, 0, preference, &IID_IDXGIAdapter1,
+            (void **)&adapter) != S_OK) {
+        adapter = NULL;
+    }
+    IDXGIFactory6_Release(factory6);
+
+    return adapter;
+#else
+    (void)factory;
+    (void)want;
+
+    return NULL;
+#endif
+}
+
+static IDXGIAdapter1 *d3d11_pick_adapter(void) {
+    IDXGIFactory1 *factory;
+    IDXGIAdapter1 *adapters[MAX_GPU_DEVICES] = {0};
+    IDXGIAdapter1 *chosen = NULL;
+    enum GpuClass classes[MAX_GPU_DEVICES];
+    enum GpuClass chosen_class;
+    enum GpuClass want;
+    GpuDeviceNames names;
+    char chosen_name[256];
+    int num;
+    int match;
+
+    if (!want_device) {
+        return NULL;
+    }
+
+    factory = dxgi_open_factory();
+    if (!factory) {
+        return NULL;
+    }
+
+    num = dxgi_list_adapters(factory, names, classes, adapters);
+    report_gpu_devices("Direct3D 11", names, num, 1);
+
+    want = gpu_class_request(want_device);
+    if (want != GPU_CLASS_ANY) {
+        chosen = dxgi_preferred_adapter(factory, want);
+        if (chosen) {
+            dxgi_describe(chosen, chosen_name, &chosen_class);
+            log_verbose("Direct3D 11: Windows picked '%s' as the %s GPU.\n",
+                        chosen_name,
+                        want == GPU_CLASS_DISCRETE ? "high performance"
+                                                   : "low power");
+        }
+    }
+
+    match = chosen ? -1 : match_gpu_device(names, classes, num, want_device);
+    if (match >= 0) {
+        chosen = adapters[match];
+        IDXGIAdapter1_AddRef(chosen);
+    } else if (!chosen) {
+        log_warn("No Direct3D 11 device matches '%s'.\n", want_device);
+        report_gpu_devices("Direct3D 11", names, num, 0);
+    }
+
+    for (int i = 0; i < num; i++) {
+        IDXGIAdapter1_Release(adapters[i]);
+    }
+    IDXGIFactory1_Release(factory);
+
+    return chosen;
+}
+
 static void d3d11_read_device_name(RendererContext *ctx) {
     IDXGIDevice *dxgi_dev = NULL;
     IDXGIAdapter *adapter = NULL;
@@ -1936,6 +2175,7 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
 static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                                 AVDictionary *opt) {
     const AVDictionaryEntry *entry;
+    IDXGIAdapter1 *adapter;
     HWND hwnd;
     int software = force_software(opt);
     int present_timing = 1;
@@ -1953,15 +2193,21 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
         return AVERROR_EXTERNAL;
     }
 
+    adapter = software ? NULL : d3d11_pick_adapter();
+
     /* clang-format off */
     ctx->placebo_d3d11 = pl_d3d11_create(ctx->log_ctx,
                                          pl_d3d11_params(
                                              .debug = enable_debug(opt),
+                                             .adapter = (IDXGIAdapter *)adapter,
                                              .allow_software = software || allow_software_gpu,
                                              .force_software = software,
                                              .flags = software ? 0 : D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                              .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
     /* clang-format on */
+    if (adapter) {
+        IDXGIAdapter1_Release(adapter);
+    }
     if (!ctx->placebo_d3d11) {
         return AVERROR_EXTERNAL;
     }
@@ -1997,6 +2243,7 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
     d3d11_read_device_name(ctx);
 
     if (ctx->placebo_d3d11->software && !software) {
+        log_warn("Fell back to WARP.\n");
     }
 
     if (!ctx->placebo_d3d11->software) {
@@ -2952,6 +3199,88 @@ static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
 
 #endif /* LACHESIS_HAVE_VULKAN */
 
+#define LACHESIS_READBACK_ALIGN 64
+
+static int hwdownload_alloc(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
+    const AVHWFramesContext *frames =
+        (const AVHWFramesContext *)src->hw_frames_ctx->data;
+    enum AVPixelFormat *formats;
+    int ret;
+
+    if (!dl->pool || dl->width != frames->width ||
+        dl->height != frames->height || dl->sw_format != frames->sw_format) {
+        ret = av_hwframe_transfer_get_formats(src->hw_frames_ctx,
+                                              AV_HWFRAME_TRANSFER_DIRECTION_FROM,
+                                              &formats, 0);
+        if (ret < 0) {
+            return ret;
+        }
+        ret = formats[0] == AV_PIX_FMT_NONE
+            ? AVERROR(ENOSYS)
+            : av_image_get_buffer_size(formats[0], frames->width,
+                                       frames->height,
+                                       LACHESIS_READBACK_ALIGN);
+        if (ret < 0) {
+            av_freep(&formats);
+            return ret;
+        }
+
+        av_buffer_pool_uninit(&dl->pool);
+        dl->pool = av_buffer_pool_init((size_t)ret, NULL);
+        if (!dl->pool) {
+            av_freep(&formats);
+            return AVERROR(ENOMEM);
+        }
+        dl->format = formats[0];
+        dl->sw_format = frames->sw_format;
+        dl->width = frames->width;
+        dl->height = frames->height;
+        av_freep(&formats);
+    }
+
+    dst->format = dl->format;
+    dst->width = dl->width;
+    dst->height = dl->height;
+
+    dst->buf[0] = av_buffer_pool_get(dl->pool);
+    if (!dst->buf[0]) {
+        return AVERROR(ENOMEM);
+    }
+
+    ret = av_image_fill_arrays(dst->data, dst->linesize, dst->buf[0]->data,
+                               dst->format, dst->width, dst->height,
+                               LACHESIS_READBACK_ALIGN);
+    if (ret < 0) {
+        av_buffer_unref(&dst->buf[0]);
+        return ret;
+    }
+
+    return 0;
+}
+
+int hwdownload_frame(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
+    int ret;
+
+    av_frame_unref(dst);
+    if (hwdownload_alloc(dl, dst, src) < 0) {
+        /* Let the transfer allocate for us rather than give up on the frame. */
+        av_frame_unref(dst);
+    }
+    ret = av_hwframe_transfer_data(dst, src, 0);
+    if (ret < 0) {
+        return ret;
+    }
+    dst->width = src->width;
+    dst->height = src->height;
+
+    return av_frame_copy_props(dst, src);
+}
+
+void hwdownload_free(HwDownload *dl) {
+    av_buffer_pool_uninit(&dl->pool);
+    memset(dl, 0, sizeof(*dl));
+}
+
 static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
     static int warned_download;
     int ret;
@@ -2963,21 +3292,22 @@ static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
         }
     }
 
-    av_frame_unref(ctx->sw_frame);
-    ret = av_hwframe_transfer_data(ctx->sw_frame, frame, 0);
-    if (ret < 0) {
-        return ret;
-    }
-    ret = av_frame_copy_props(ctx->sw_frame, frame);
+    ret = hwdownload_frame(&ctx->readback, ctx->sw_frame, frame);
     if (ret < 0) {
         return ret;
     }
 
     if (!warned_download) {
         warned_download = 1;
-        log_info("Displaying hardware frames via a system memory copy "
-                 "(the GPU cannot import %s).\n",
+        log_info("Displaying hardware frames via a system memory copy: the %s "
+                 "renderer cannot import %s.\n",
+                 renderer_api_name(&ctx->api),
                  av_get_pix_fmt_name(frame->format));
+#if LACHESIS_HAVE_D3D11
+        if (ctx->api.backend != RENDERER_API_D3D11 &&
+            frame->format == AV_PIX_FMT_D3D11) {
+        }
+#endif
     }
 
     av_frame_unref(frame);
@@ -3852,6 +4182,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     bool mapped_image = false;
     struct pl_color_space hint = {0};
     int64_t _ts0, _ts1, _ts2, _ts3 = 0, prs_us = 0;
+    int64_t _tsc, cnv_us = 0;
     uint32_t max_dim;
     const struct pl_frame *mix_refs[LACHESIS_MAX_MIX_FRAMES];
     struct pl_frame mix_images[LACHESIS_MAX_MIX_FRAMES];
@@ -3879,6 +4210,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
         goto done;
     }
 
+    _tsc = av_gettime_relative();
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
         goto done;
@@ -3890,6 +4222,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     if (next_ref && convert_frame(renderer, next_ref) < 0) {
         next_ref = NULL;
     }
+    cnv_us = av_gettime_relative() - _tsc;
 
     if (frame->width <= 0 || frame->height <= 0) {
         ret = AVERROR_INVALIDDATA;
@@ -3974,6 +4307,7 @@ static int display(Renderer *renderer, AVFrame *frame, RenderParams *params) {
     }
 
     _ts2 = av_gettime_relative();
+    cnv_us += _ts2 - _ts1;
     if (num_mix > 0) {
         struct pl_frame_mix mix = {
             .num_frames = num_mix,
@@ -4035,17 +4369,20 @@ out:
 
     if (ret == 0) {
         double acq_ms = (double)(_ts1 - _ts0) / 1000.0;
+        double cnv_ms = (double)cnv_us / 1000.0;
         double rnd_ms = (double)(_ts3 - _ts2) / 1000.0;
         double prs_ms = (double)prs_us / 1000.0;
         vo_state_lock(ctx);
         if (!ctx->stat_valid) {
             ctx->stat_acquire_ms = acq_ms;
+            ctx->stat_convert_ms = cnv_ms;
             ctx->stat_render_ms = rnd_ms;
             ctx->stat_present_ms = prs_ms;
             ctx->stat_valid = 1;
         } else {
             const double ema_alpha = 1.0 / LACHESIS_STAT_EMA_FRAMES;
             ctx->stat_acquire_ms += (acq_ms - ctx->stat_acquire_ms) * ema_alpha;
+            ctx->stat_convert_ms += (cnv_ms - ctx->stat_convert_ms) * ema_alpha;
             ctx->stat_render_ms += (rnd_ms - ctx->stat_render_ms) * ema_alpha;
             ctx->stat_present_ms += (prs_ms - ctx->stat_present_ms) * ema_alpha;
         }
@@ -4264,6 +4601,22 @@ static AVFrame *alloc_self_test_frame(int value) {
     return frame;
 }
 
+static void vo_pin_gpu(RendererContext *ctx) {
+#if LACHESIS_HAVE_OPENGL
+    gl_pin_current(ctx);
+#else
+    (void)ctx;
+#endif
+}
+
+static void vo_unpin_gpu(RendererContext *ctx) {
+#if LACHESIS_HAVE_OPENGL
+    gl_unpin_current(ctx);
+#else
+    (void)ctx;
+#endif
+}
+
 static int display_blank(Renderer *renderer, RenderParams *params) {
     RendererContext *ctx = (RendererContext *)renderer;
 
@@ -4334,6 +4687,7 @@ static void destroy(Renderer *renderer) {
 
     av_frame_free(&ctx->blank_frame);
     av_frame_free(&ctx->sw_frame);
+    hwdownload_free(&ctx->readback);
     av_freep(&ctx->pixfmts);
     ctx->num_pixfmts = 0;
 
@@ -4622,8 +4976,12 @@ static int vo_thread(void *arg) {
                 ctx->supersample_hook ? p_supersample : SUPERSAMPLE_OFF;
         }
 
+        vo_pin_gpu(ctx);
+        vo_pin_gpu(ctx);
         status = blank ? display_blank(&ctx->api, &vo->params)
                        : display(&ctx->api, frame, &vo->params);
+        vo_unpin_gpu(ctx);
+        vo_unpin_gpu(ctx);
 
         SDL_LockMutex(vo->lock);
         vo->last_status = status;
@@ -4773,8 +5131,10 @@ static int vo_submit(RendererContext *ctx, AVFrame *frame, RenderParams *params,
         if (vo->abandoned) {
             return AVERROR(EAGAIN);
         }
+        vo_pin_gpu(ctx);
         status = blank ? display_blank(&ctx->api, params)
                        : display(&ctx->api, frame, params);
+        vo_unpin_gpu(ctx);
         vo_note_feedback(vo, params, vo->feedback_epoch);
 
         return status;
@@ -5049,7 +5409,12 @@ static void note_ignored_requests(Renderer *renderer) {
     if (!renderer || renderer_api(renderer) == RENDERER_API_VULKAN) {
         return;
     }
-    if (want_device) {
+    if (want_device && renderer_api(renderer) == RENDERER_API_OPENGL) {
+        log_warn("-gpu-device has no effect on the OpenGL renderer. "
+                 "Rendering on %s.\n",
+                 renderer_device_name(renderer)
+                     ? renderer_device_name(renderer)
+                     : "the GPU the driver picked");
     }
     if (want_translucent) {
         log_warn("A translucent -video-bg needs the Vulkan renderer but on %s "
@@ -5412,83 +5777,47 @@ int renderer_destroy(Renderer *renderer) {
     return 1;
 }
 
-int renderer_list_vulkan_devices(void) {
-#if LACHESIS_HAVE_VULKAN
-    PFN_vkGetInstanceProcAddr get_proc_addr;
-    PFN_vkCreateInstance create_instance;
-    PFN_vkDestroyInstance destroy_instance;
-    VkInstanceCreateInfo info = {
-        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-    };
-    VkInstance inst = VK_NULL_HANDLE;
-    char names[MAX_VK_DEVICES][256];
-    int had_video = SDL_WasInit(SDL_INIT_VIDEO) != 0;
-    int num;
+int renderer_list_gpu_devices(void) {
+    int listed = 0;
 
-    if (!had_video && !SDL_InitSubSystem(SDL_INIT_VIDEO)) {
-        log_dead("No video subsystem to list Vulkan devices with: %s\n",
-                 SDL_GetError());
-        return AVERROR_EXTERNAL;
-    }
-    if (!SDL_Vulkan_LoadLibrary(NULL)) {
-        log_dead("Vulkan is not available: %s\n", SDL_GetError());
-        if (!had_video) {
-            SDL_QuitSubSystem(SDL_INIT_VIDEO);
-        }
-        return AVERROR_EXTERNAL;
-    }
-
-    get_proc_addr =
-        (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
-    create_instance = get_proc_addr
-        ? (PFN_vkCreateInstance)get_proc_addr(NULL, "vkCreateInstance")
-        : NULL;
-#ifdef VK_KHR_portability_enumeration
-    /* MoltenVK and friends are hidden from a plain instance. */
+#if LACHESIS_HAVE_D3D11
     {
-        static const char *const portability[] = {
-            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-        };
-        VkInstanceCreateInfo portable = info;
+        IDXGIFactory1 *factory = dxgi_open_factory();
 
-        portable.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-        portable.enabledExtensionCount = 1;
-        portable.ppEnabledExtensionNames = portability;
-        if (create_instance &&
-            create_instance(&portable, NULL, &inst) == VK_SUCCESS) {
-            create_instance = NULL;
+        if (factory) {
+            IDXGIAdapter1 *adapters[MAX_GPU_DEVICES] = {0};
+            enum GpuClass classes[MAX_GPU_DEVICES];
+            GpuDeviceNames names;
+            int num = dxgi_list_adapters(factory, names, classes, adapters);
+
+            report_gpu_devices("Direct3D 11", names, num, 0);
+            for (int i = 0; i < num; i++) {
+                IDXGIAdapter1_Release(adapters[i]);
+            }
+            IDXGIFactory1_Release(factory);
+            listed = 1;
         }
     }
 #endif
 
-    if (inst == VK_NULL_HANDLE &&
-        (!create_instance ||
-         create_instance(&info, NULL, &inst) != VK_SUCCESS)) {
-        SDL_Vulkan_UnloadLibrary();
-        if (!had_video) {
-            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+#if LACHESIS_HAVE_VULKAN
+    {
+        enum GpuClass classes[MAX_GPU_DEVICES];
+        GpuDeviceNames names;
+        int num = list_vk_devices_standalone(names, classes);
+
+        if (num >= 0) {
+            report_gpu_devices("Vulkan", names, num, 0);
+            listed = 1;
         }
-        log_dead("Failed to create a Vulkan instance to list devices.\n");
+    }
+#endif
+
+    if (!listed) {
         return AVERROR_EXTERNAL;
     }
 
-    num = list_vk_devices(get_proc_addr, inst, names);
-    report_vk_devices(names, num, 0);
-
-    destroy_instance =
-        (PFN_vkDestroyInstance)get_proc_addr(inst, "vkDestroyInstance");
-    if (destroy_instance) {
-        destroy_instance(inst, NULL);
-    }
-    SDL_Vulkan_UnloadLibrary();
-    if (!had_video) {
-        SDL_QuitSubSystem(SDL_INIT_VIDEO);
-    }
-
     return 0;
-#else
-    return 0;
-#endif
 }
 
 unsigned renderer_video_decode_caps(Renderer *renderer) {
@@ -5553,7 +5882,8 @@ int renderer_is_vsync_blocked(Renderer *renderer) {
 }
 
 int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
-                         double *render_ms, double *present_ms) {
+                         double *convert_ms, double *render_ms,
+                         double *present_ms) {
     RendererContext *ctx = (RendererContext *)renderer;
 
     if (!ctx) {
@@ -5566,6 +5896,9 @@ int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
     }
     if (acquire_ms) {
         *acquire_ms = ctx->stat_acquire_ms;
+    }
+    if (convert_ms) {
+        *convert_ms = ctx->stat_convert_ms;
     }
     if (render_ms) {
         *render_ms = ctx->stat_render_ms;

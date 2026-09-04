@@ -486,7 +486,7 @@ static int opt_icc_profile(void *optctx av_unused, const char *opt av_unused,
 static int opt_gpu_device(void *optctx av_unused, const char *opt av_unused,
                           const char *arg) {
     if (!strcmp(arg, "help")) {
-        int ret = renderer_list_vulkan_devices();
+        int ret = renderer_list_gpu_devices();
 
         return ret < 0 ? ret : AVERROR_EXIT;
     }

@@ -32,6 +32,17 @@
 
 typedef struct Renderer Renderer;
 
+typedef struct HwDownload {
+    AVBufferPool *pool;
+    enum AVPixelFormat format;
+    enum AVPixelFormat sw_format;
+    int width;
+    int height;
+} HwDownload;
+
+int hwdownload_frame(HwDownload *dl, AVFrame *dst, const AVFrame *src);
+void hwdownload_free(HwDownload *dl);
+
 enum RendererApi {
     RENDERER_API_AUTO,
     RENDERER_API_VULKAN,
@@ -128,7 +139,7 @@ enum RendererApi renderer_api(const Renderer *renderer);
 const char *renderer_api_name(const Renderer *renderer);
 const char *renderer_device_name(const Renderer *renderer);
 
-int renderer_list_vulkan_devices(void);
+int renderer_list_gpu_devices(void);
 
 unsigned renderer_video_decode_caps(Renderer *renderer);
 
@@ -142,7 +153,8 @@ int renderer_is_vsync_blocked(Renderer *renderer);
 
 /* Safe to call with a NULL renderer. */
 int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
-                         double *render_ms, double *present_ms);
+                         double *convert_ms, double *render_ms,
+                         double *present_ms);
 
 /* NULL unless the backend can decode into its own memory. */
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);

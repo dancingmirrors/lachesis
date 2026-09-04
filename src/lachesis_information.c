@@ -277,12 +277,14 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
         int late = is->frame_drops_late;
 
         char timing[128];
-        double acquire = 0.0, render = 0.0, present = 0.0;
+        double acquire = 0.0, convert = 0.0, render = 0.0, present = 0.0;
         if (renderer &&
-            renderer_frame_stats(renderer, &acquire, &render, &present)) {
+            renderer_frame_stats(renderer, &acquire, &convert, &render,
+                                 &present)) {
             snprintf(timing, sizeof(timing),
-                     "acquire=%.2fms render=%.2fms present=%.2fms", acquire,
-                     render, present);
+                     "acquire=%.2fms upload=%.2fms render=%.2fms "
+                     "present=%.2fms",
+                     acquire, convert, render, present);
         } else if (renderer) {
             snprintf(timing, sizeof(timing), "Frame timing: measuring...");
         } else {
