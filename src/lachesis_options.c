@@ -104,6 +104,7 @@ enum RendererApi gpu_api = RENDERER_API_AUTO;
 char *gpu_api_name = NULL;
 int no_vulkan = 0;
 char *gpu_params = NULL;
+char *gpu_device = NULL;
 char *vulkan_swap_mode = NULL;
 int max_glsl_version = 0;
 int no_shader_cache = 0;
@@ -443,6 +444,18 @@ int parse_video_background(const char *value, uint8_t rgba[4]) {
     return VIDEO_BACKGROUND_COLOR;
 }
 
+int video_background_translucent(void) {
+    uint8_t rgba[4];
+
+    if (!video_background) {
+        return 0;
+    }
+
+    return parse_video_background(video_background, rgba) ==
+        VIDEO_BACKGROUND_COLOR &&
+        rgba[3] < 255;
+}
+
 static int opt_video_bg(void *optctx av_unused, const char *opt, const char *arg) {
     uint8_t rgba[4];
 
@@ -468,6 +481,17 @@ static int opt_icc_profile(void *optctx av_unused, const char *opt av_unused,
     }
 
     return store_string(&icc_profile, arg);
+}
+
+static int opt_gpu_device(void *optctx av_unused, const char *opt av_unused,
+                          const char *arg) {
+    if (!strcmp(arg, "help")) {
+        int ret = renderer_list_vulkan_devices();
+
+        return ret < 0 ? ret : AVERROR_EXIT;
+    }
+
+    return store_string((const char **)&gpu_device, arg);
 }
 
 static int opt_gpu_params(void *optctx av_unused, const char *opt,
@@ -661,6 +685,7 @@ const OptionDef options[] = {
     {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl, d3d11)", "api"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
     {"gpu-params", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_params}, "backend configuration using a list of key=value pairs separated by ':'", "params"},
+    {"gpu-device", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_device}, "GPU to render on (or help)", "device"},
     {"vulkan-swap-mode", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_vulkan_swap_mode}, "present mode", "mode", swap_modes},
     {"max-glsl-version", OPT_TYPE_INT, 0, {&max_glsl_version}, "cap the GLSL version libplacebo targets (0 for no cap)", "version"},
     {"icc-profile", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_profile}, "ICC profile passed to libplacebo", "path"},

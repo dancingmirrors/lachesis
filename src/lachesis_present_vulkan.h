@@ -46,6 +46,8 @@ void vkpresent_attach(VkDevice device, const char *const *extensions,
                       int num_extensions,
                       const VkPhysicalDeviceFeatures2 *features);
 
+void vkpresent_force_opaque(int enable);
+
 int vkpresent_source(void);
 int vkpresent_poll(VkPresentSample *out);
 

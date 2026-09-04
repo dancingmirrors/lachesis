@@ -116,6 +116,8 @@ typedef struct RendererOpenParams {
     Uint32 window_flags;
     enum RendererApi api;
     unsigned exclude;
+    int translucent;
+    const char *device;
     AVDictionary *opt;
 } RendererOpenParams;
 
@@ -125,6 +127,8 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
 enum RendererApi renderer_api(const Renderer *renderer);
 const char *renderer_api_name(const Renderer *renderer);
 const char *renderer_device_name(const Renderer *renderer);
+
+int renderer_list_vulkan_devices(void);
 
 unsigned renderer_video_decode_caps(Renderer *renderer);
 

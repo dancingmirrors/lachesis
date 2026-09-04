@@ -94,6 +94,7 @@
 #include "lachesis_present_d3d11.h"
 #endif
 
+#include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
@@ -128,6 +129,8 @@
 #endif
 
 static int allow_software_gpu = 1;
+static int want_translucent;
+static const char *want_device;
 
 struct Renderer {
     const AVClass *class;
@@ -250,6 +253,7 @@ typedef struct RendererContext {
     AVBufferRef *hw_frame_ref;
     enum AVPixelFormat *transfer_formats;
     AVHWFramesConstraints *constraints;
+    char device_request[256];
     unsigned decode_caps;
     /* Not necessarily the requested mode. */
     VkPresentModeKHR present_mode;
@@ -505,6 +509,186 @@ static int add_device_extension(const AVDictionary *opt,
     return av_dict_set(dict, dev_ext_key, ext_list, AV_DICT_DONT_STRDUP_VAL);
 }
 
+#if LACHESIS_HAVE_VULKAN
+
+#define MAX_VK_DEVICES 16
+
+static int list_vk_devices(PFN_vkGetInstanceProcAddr get_proc_addr,
+                           VkInstance inst,
+                           char names[MAX_VK_DEVICES][256]) {
+    PFN_vkEnumeratePhysicalDevices enumerate;
+    PFN_vkGetPhysicalDeviceProperties get_props;
+    VkPhysicalDevice devices[MAX_VK_DEVICES];
+    uint32_t num = MAX_VK_DEVICES;
+
+    enumerate = (PFN_vkEnumeratePhysicalDevices)
+        get_proc_addr(inst, "vkEnumeratePhysicalDevices");
+    get_props = (PFN_vkGetPhysicalDeviceProperties)
+        get_proc_addr(inst, "vkGetPhysicalDeviceProperties");
+    if (!enumerate || !get_props) {
+        return 0;
+    }
+    if (enumerate(inst, &num, devices) < 0) {
+        return 0;
+    }
+    if (num > MAX_VK_DEVICES) {
+        num = MAX_VK_DEVICES;
+    }
+
+    for (uint32_t i = 0; i < num; i++) {
+        VkPhysicalDeviceProperties props;
+
+        get_props(devices[i], &props);
+        snprintf(names[i], 256, "%s", props.deviceName);
+    }
+
+    return (int)num;
+}
+
+static void report_vk_devices(const char names[MAX_VK_DEVICES][256], int num,
+                              int verbose) {
+    void (*say)(const char *, ...) = verbose ? log_verbose : log_info;
+
+    if (!num) {
+        say("No Vulkan devices are available.\n");
+        return;
+    }
+    say("Available Vulkan devices:\n");
+    for (int i = 0; i < num; i++) {
+        say("  %s\n", names[i]);
+    }
+}
+
+static int glob_match(const char *pattern, const char *text) {
+    const char *star = NULL;
+    const char *retry = text;
+
+    while (*text) {
+        if (*pattern == '?' || av_tolower(*pattern) == av_tolower(*text)) {
+            pattern++;
+            text++;
+        } else if (*pattern == '*') {
+            star = pattern++;
+            retry = text;
+        } else if (star) {
+            pattern = star + 1;
+            text = ++retry;
+        } else {
+            return 0;
+        }
+    }
+    while (*pattern == '*') {
+        pattern++;
+    }
+
+    return !*pattern;
+}
+
+static const char *match_vk_device(const char names[MAX_VK_DEVICES][256],
+                                   int num, const char *want) {
+    int wild = strchr(want, '*') || strchr(want, '?');
+    char anywhere[300];
+
+    for (int i = 0; i < num; i++) {
+        if (!strcmp(names[i], want)) {
+            return names[i];
+        }
+    }
+    for (int i = 0; i < num; i++) {
+        if (wild ? glob_match(want, names[i])
+                 : av_stristr(names[i], want) != NULL) {
+            return names[i];
+        }
+    }
+    if (!wild) {
+        return NULL;
+    }
+
+    snprintf(anywhere, sizeof(anywhere), "*%s*", want);
+    for (int i = 0; i < num; i++) {
+        if (glob_match(anywhere, names[i])) {
+            return names[i];
+        }
+    }
+
+    return NULL;
+}
+
+static int list_vk_devices_standalone(char names[MAX_VK_DEVICES][256]) {
+    PFN_vkGetInstanceProcAddr get_proc_addr;
+    PFN_vkCreateInstance create_instance;
+    PFN_vkDestroyInstance destroy_instance;
+    VkInstanceCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+    };
+    VkInstance inst = VK_NULL_HANDLE;
+    int had_video = SDL_WasInit(SDL_INIT_VIDEO) != 0;
+    int num;
+
+    if (!had_video && !SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+        log_dead("No video subsystem to list Vulkan devices with: %s\n",
+                 SDL_GetError());
+        return AVERROR_EXTERNAL;
+    }
+    if (!SDL_Vulkan_LoadLibrary(NULL)) {
+        log_dead("Vulkan is not available: %s\n", SDL_GetError());
+        if (!had_video) {
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        }
+        return AVERROR_EXTERNAL;
+    }
+
+    get_proc_addr =
+        (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    create_instance = get_proc_addr
+        ? (PFN_vkCreateInstance)get_proc_addr(NULL, "vkCreateInstance")
+        : NULL;
+#ifdef VK_KHR_portability_enumeration
+    /* MoltenVK and friends are hidden from a plain instance. */
+    {
+        static const char *const portability[] = {
+            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+        };
+        VkInstanceCreateInfo portable = info;
+
+        portable.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        portable.enabledExtensionCount = 1;
+        portable.ppEnabledExtensionNames = portability;
+        if (create_instance &&
+            create_instance(&portable, NULL, &inst) == VK_SUCCESS) {
+            create_instance = NULL;
+        }
+    }
+#endif
+
+    if (inst == VK_NULL_HANDLE &&
+        (!create_instance ||
+         create_instance(&info, NULL, &inst) != VK_SUCCESS)) {
+        SDL_Vulkan_UnloadLibrary();
+        if (!had_video) {
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        }
+        log_dead("Failed to create a Vulkan instance to list devices.\n");
+        return AVERROR_EXTERNAL;
+    }
+
+    num = list_vk_devices(get_proc_addr, inst, names);
+
+    destroy_instance =
+        (PFN_vkDestroyInstance)get_proc_addr(inst, "vkDestroyInstance");
+    if (destroy_instance) {
+        destroy_instance(inst, NULL);
+    }
+    SDL_Vulkan_UnloadLibrary();
+    if (!had_video) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    }
+
+    return num;
+}
+
+#endif /* LACHESIS_HAVE_VULKAN */
+
 static const char *select_device(const AVDictionary *opt) {
     const AVDictionaryEntry *entry;
 
@@ -703,6 +887,34 @@ static void note_decode_caps(RendererContext *ctx, const char *const *exts,
     }
 }
 
+static uint32_t nvidia_proprietary(PFN_vkGetInstanceProcAddr get_proc_addr,
+                                   VkInstance inst, VkPhysicalDevice phys) {
+    PFN_vkGetPhysicalDeviceProperties2 get_props2;
+    VkPhysicalDeviceDriverProperties driver = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES,
+    };
+    VkPhysicalDeviceProperties2 props = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &driver,
+    };
+
+    if (!get_proc_addr || !inst || !phys) {
+        return 0;
+    }
+    get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
+        get_proc_addr(inst, "vkGetPhysicalDeviceProperties2");
+    if (!get_props2) {
+        return 0;
+    }
+    get_props2(phys, &props);
+
+    if (driver.driverID != VK_DRIVER_ID_NVIDIA_PROPRIETARY) {
+        return 0;
+    }
+
+    return props.properties.driverVersion;
+}
+
 static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
                                   const AVDictionary *opt, int present_timing) {
@@ -710,6 +922,7 @@ static int create_vk_by_hwcontext(Renderer *renderer,
     AVHWDeviceContext *dev;
     AVVulkanDeviceContext *hwctx;
     AVDictionary *dict = NULL;
+    const char *raw_device;
     int ret;
 
     ret = add_instance_extension(ext, num_ext, opt, &dict);
@@ -722,8 +935,27 @@ static int create_vk_by_hwcontext(Renderer *renderer,
         return ret;
     }
 
+    raw_device = select_device(opt);
+    if (!raw_device && want_device) {
+        char names[MAX_VK_DEVICES][256];
+        int num = list_vk_devices_standalone(names);
+        const char *match =
+            num > 0 ? match_vk_device(names, num, want_device) : NULL;
+
+        if (match) {
+            av_strlcpy(ctx->device_request, match,
+                       sizeof(ctx->device_request));
+            raw_device = ctx->device_request;
+        } else {
+            log_warn("No Vulkan device matches '%s'.\n",
+                     want_device);
+            if (num > 0) {
+                report_vk_devices(names, num, 0);
+            }
+        }
+    }
     ret = av_hwdevice_ctx_create(&ctx->hw_device_ref, AV_HWDEVICE_TYPE_VULKAN,
-                                 select_device(opt), dict, 0);
+                                 raw_device, dict, 0);
     av_dict_free(&dict);
     if (ret < 0) {
         return ret;
@@ -751,9 +983,7 @@ static int create_vk_by_hwcontext(Renderer *renderer,
 
     struct pl_vulkan_import_params import_params = {
         .instance = hwctx->inst,
-        .get_proc_addr = present_timing
-            ? vkpresent_wrap_proc_addr(hwctx->get_proc_addr)
-            : hwctx->get_proc_addr,
+        .get_proc_addr = vkpresent_wrap_proc_addr(hwctx->get_proc_addr),
         .phys_device = hwctx->phys_dev,
         .device = hwctx->act_dev,
         .extensions = import_exts,
@@ -901,6 +1131,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     AVHWDeviceContext *device_ctx;
     AVVulkanDeviceContext *vk_dev_ctx;
     PFN_vkGetInstanceProcAddr placebo_proc_addr;
+    const char *device_name;
     const char **opt_exts = NULL;
     const char **merged_exts = NULL;
     int num_opt_exts = 0;
@@ -913,9 +1144,7 @@ static int create_vk_by_placebo(Renderer *renderer,
 #endif
 
     ctx->get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
-    placebo_proc_addr = present_timing
-        ? vkpresent_wrap_proc_addr(ctx->get_proc_addr)
-        : ctx->get_proc_addr;
+    placebo_proc_addr = vkpresent_wrap_proc_addr(ctx->get_proc_addr);
     if (!want_host_image_copy(opt)) {
         placebo_proc_addr = hide_host_image_copy(placebo_proc_addr);
     }
@@ -971,6 +1200,28 @@ static int create_vk_by_placebo(Renderer *renderer,
         num_opt_exts = n;
     }
 
+    {
+        char names[MAX_VK_DEVICES][256];
+        int num = list_vk_devices(ctx->get_proc_addr,
+                                  ctx->placebo_instance->instance, names);
+
+        report_vk_devices(names, num, 1);
+
+        device_name = select_device(opt);
+        if (!device_name && want_device) {
+            device_name = match_vk_device(names, num, want_device);
+            if (!device_name) {
+                log_warn("No Vulkan device matches '%s'.\n",
+                         want_device);
+                report_vk_devices(names, num, 0);
+            } else {
+                av_strlcpy(ctx->device_request, device_name,
+                           sizeof(ctx->device_request));
+                device_name = ctx->device_request;
+            }
+        }
+    }
+
     /* clang-format off */
     ctx->placebo_vulkan = pl_vulkan_create(ctx->log_ctx,
                                            pl_vulkan_params(
@@ -982,7 +1233,7 @@ static int create_vk_by_placebo(Renderer *renderer,
                                                .num_opt_extensions = num_opt_exts,
                                                .features = present_timing ? vkpresent_device_features() : NULL,
                                                .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
-                                               .device_name = select_device(opt), ));
+                                               .device_name = device_name, ));
     /* clang-format on */
     av_free(merged_exts);
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
@@ -1042,10 +1293,14 @@ static int create_vk_by_placebo(Renderer *renderer,
     vk_dev_ctx->enabled_dev_extensions = ctx->placebo_vulkan->extensions;
     vk_dev_ctx->nb_enabled_dev_extensions = ctx->placebo_vulkan->num_extensions;
 
+    /* Otherwise we get 16 graphics queues. */
+    uint32_t nvidia = nvidia_proprietary(ctx->get_proc_addr, ctx->inst,
+                                         ctx->placebo_vulkan->phys_device);
     int nb_qf = 0;
     vk_dev_ctx->qf[nb_qf] = (AVVulkanDeviceQueueFamily){
         .idx = ctx->placebo_vulkan->queue_graphics.index,
-        .num = ctx->placebo_vulkan->queue_graphics.count,
+        .num = nvidia ? FFMIN(ctx->placebo_vulkan->queue_graphics.count, 1)
+                      : ctx->placebo_vulkan->queue_graphics.count,
         .flags = VK_QUEUE_GRAPHICS_BIT,
     };
     nb_qf++;
@@ -1155,6 +1410,24 @@ static VkPresentModeKHR select_present_mode(RendererContext *ctx, const char *na
     return chosen;
 }
 
+static int surface_allows_opaque(RendererContext *ctx) {
+    PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR get_caps;
+    VkSurfaceCapabilitiesKHR caps;
+
+    get_caps = (PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR)
+                   ctx->get_proc_addr(ctx->inst,
+                                      "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
+    if (!get_caps) {
+        return 0;
+    }
+    if (get_caps(ctx->placebo_vulkan->phys_device, ctx->vk_surface, &caps) !=
+        VK_SUCCESS) {
+        return 0;
+    }
+
+    return !!(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
+}
+
 static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
                              AVDictionary *opt) {
     Renderer *renderer = &ctx->api;
@@ -1211,6 +1484,8 @@ static int vk_backend_create(RendererContext *ctx, SDL_Window *window,
     if (!SDL_Vulkan_CreateSurface(window, ctx->inst, NULL, &ctx->vk_surface)) {
         return AVERROR_EXTERNAL;
     }
+
+    vkpresent_force_opaque(!want_translucent && surface_allows_opaque(ctx));
 
     if (present_timing) {
         vkpresent_attach(ctx->placebo_vulkan->device, ctx->dev_extensions,
@@ -1682,7 +1957,7 @@ static int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
     ctx->placebo_d3d11 = pl_d3d11_create(ctx->log_ctx,
                                          pl_d3d11_params(
                                              .debug = enable_debug(opt),
-                                             .allow_software = true,
+                                             .allow_software = software || allow_software_gpu,
                                              .force_software = software,
                                              .flags = software ? 0 : D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                              .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
@@ -4602,11 +4877,11 @@ static const AVClass renderer_class = {
 };
 
 static const enum RendererApi renderer_api_order[] = {
-#if LACHESIS_HAVE_VULKAN
-    RENDERER_API_VULKAN,
-#endif
 #if LACHESIS_HAVE_D3D11
     RENDERER_API_D3D11,
+#endif
+#if LACHESIS_HAVE_VULKAN
+    RENDERER_API_VULKAN,
 #endif
 #if LACHESIS_HAVE_OPENGL
     RENDERER_API_OPENGL,
@@ -4778,6 +5053,8 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
     int last = AVERROR(ENOSYS);
 
     why[0] = '\0';
+    want_translucent = params->translucent;
+    want_device = params->device && params->device[0] ? params->device : NULL;
 
     for (size_t i = 0; i < FF_ARRAY_ELEMS(renderer_api_order); i++) {
         enum RendererApi api = renderer_api_order[i];
@@ -4789,6 +5066,23 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
             continue;
         }
         order[num++] = api;
+    }
+
+    if (want_translucent || want_device) {
+        int have_vulkan = 0;
+        size_t keep = 0;
+
+        for (size_t i = 0; i < num; i++) {
+            have_vulkan |= order[i] == RENDERER_API_VULKAN;
+        }
+        for (size_t i = 0; have_vulkan && i < num; i++) {
+            if (order[i] != RENDERER_API_D3D11) {
+                order[keep++] = order[i];
+            }
+        }
+        for (size_t i = keep; have_vulkan && i < num; i++) {
+            order[i] = RENDERER_API_D3D11;
+        }
     }
 
     if (!num) {
@@ -5119,6 +5413,85 @@ int renderer_destroy(Renderer *renderer) {
     destroy(renderer);
 
     return 1;
+}
+
+int renderer_list_vulkan_devices(void) {
+#if LACHESIS_HAVE_VULKAN
+    PFN_vkGetInstanceProcAddr get_proc_addr;
+    PFN_vkCreateInstance create_instance;
+    PFN_vkDestroyInstance destroy_instance;
+    VkInstanceCreateInfo info = {
+        .sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+    };
+    VkInstance inst = VK_NULL_HANDLE;
+    char names[MAX_VK_DEVICES][256];
+    int had_video = SDL_WasInit(SDL_INIT_VIDEO) != 0;
+    int num;
+
+    if (!had_video && !SDL_InitSubSystem(SDL_INIT_VIDEO)) {
+        log_dead("No video subsystem to list Vulkan devices with: %s\n",
+                 SDL_GetError());
+        return AVERROR_EXTERNAL;
+    }
+    if (!SDL_Vulkan_LoadLibrary(NULL)) {
+        log_dead("Vulkan is not available: %s\n", SDL_GetError());
+        if (!had_video) {
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        }
+        return AVERROR_EXTERNAL;
+    }
+
+    get_proc_addr =
+        (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+    create_instance = get_proc_addr
+        ? (PFN_vkCreateInstance)get_proc_addr(NULL, "vkCreateInstance")
+        : NULL;
+#ifdef VK_KHR_portability_enumeration
+    /* MoltenVK and friends are hidden from a plain instance. */
+    {
+        static const char *const portability[] = {
+            VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
+        };
+        VkInstanceCreateInfo portable = info;
+
+        portable.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+        portable.enabledExtensionCount = 1;
+        portable.ppEnabledExtensionNames = portability;
+        if (create_instance &&
+            create_instance(&portable, NULL, &inst) == VK_SUCCESS) {
+            create_instance = NULL;
+        }
+    }
+#endif
+
+    if (inst == VK_NULL_HANDLE &&
+        (!create_instance ||
+         create_instance(&info, NULL, &inst) != VK_SUCCESS)) {
+        SDL_Vulkan_UnloadLibrary();
+        if (!had_video) {
+            SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        }
+        log_dead("Failed to create a Vulkan instance to list devices.\n");
+        return AVERROR_EXTERNAL;
+    }
+
+    num = list_vk_devices(get_proc_addr, inst, names);
+    report_vk_devices(names, num, 0);
+
+    destroy_instance =
+        (PFN_vkDestroyInstance)get_proc_addr(inst, "vkDestroyInstance");
+    if (destroy_instance) {
+        destroy_instance(inst, NULL);
+    }
+    SDL_Vulkan_UnloadLibrary();
+    if (!had_video) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    }
+
+    return 0;
+#else
+    return 0;
+#endif
 }
 
 unsigned renderer_video_decode_caps(Renderer *renderer) {

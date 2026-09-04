@@ -193,7 +193,7 @@ static int create_hwaccel(AVBufferRef **device_ctx, enum AVCodecID codec_id) {
     static const char *auto_hwaccels_vk[] = {
         "vulkan", "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
     static const char *auto_hwaccels_other[] = {
-        "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
+        "vaapi", "videotoolbox", "d3d11va", "dxva2", "cuda", NULL};
     const char *const *auto_hwaccels =
         renderer_api(renderer) == RENDERER_API_VULKAN ? auto_hwaccels_vk
                                                       : auto_hwaccels_other;

@@ -158,6 +158,7 @@ extern enum RendererApi gpu_api;
 extern char *gpu_api_name;
 extern int no_vulkan;
 extern char *gpu_params;
+extern char *gpu_device;
 extern char *vulkan_swap_mode;
 extern int max_glsl_version;
 extern int no_shader_cache;
@@ -180,6 +181,9 @@ extern int is_fullscreen;
 extern int start_windowed;
 
 int parse_video_background(const char *value, uint8_t rgba[4]);
+
+/* For -video_bg. */
+int video_background_translucent(void);
 
 #define AUTOFIT_MIN 0.05
 #define AUTOFIT_MAX 10.0

@@ -1492,6 +1492,7 @@ static void uninit_opts(void) {
     av_freep(&audio_spdif_opt);
     av_freep(&gpu_api_name);
     av_freep(&gpu_params);
+    av_freep(&gpu_device);
     av_freep(&vulkan_swap_mode);
     av_freep(&shader_cache_dir);
     av_freep(&icc_profile);
@@ -3655,6 +3656,8 @@ static void open_renderer(enum RendererApi api) {
     params.window_flags = startup_window_flags();
     params.api = api;
     params.exclude = renderer_faulted_apis;
+    params.translucent = video_background_translucent();
+    params.device = gpu_device;
     if (no_vulkan) {
         params.exclude |= 1u << RENDERER_API_VULKAN;
     }

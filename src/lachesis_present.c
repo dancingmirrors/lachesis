@@ -474,6 +474,7 @@ static struct {
     int have_present_wait;
     int have_display_timing;
     int device_lost;
+    int force_opaque;
 
     SDL_Mutex *lock;
     SDL_Condition *cond;
@@ -585,6 +586,7 @@ static VKAPI_ATTR VkResult VKAPI_CALL
 hook_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
                       const VkAllocationCallbacks *alloc,
                       VkSwapchainKHR *swapchain) {
+    VkSwapchainCreateInfoKHR opaque;
     VkResult res;
 
     SDL_LockMutex(vkp.lock);
@@ -595,6 +597,14 @@ hook_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
         SDL_WaitCondition(vkp.cond, vkp.lock);
     }
     SDL_UnlockMutex(vkp.lock);
+
+    /* Otherwise an overlay can leave the window transparent. */
+    if (vkp.force_opaque &&
+        info->compositeAlpha != VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) {
+        opaque = *info;
+        opaque.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+        info = &opaque;
+    }
 
     res = vkp.real_create_swapchain(device, info, alloc, swapchain);
     if (res != VK_SUCCESS) {
@@ -1034,6 +1044,10 @@ static void stop_waiter(void) {
     SDL_LockMutex(vkp.lock);
     vkp.quit = 0;
     SDL_UnlockMutex(vkp.lock);
+}
+
+void vkpresent_force_opaque(int enable) {
+    vkp.force_opaque = enable;
 }
 
 void vkpresent_disable(void) {
