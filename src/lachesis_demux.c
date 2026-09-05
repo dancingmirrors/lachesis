@@ -130,32 +130,51 @@ static int check_avoptions(AVDictionary *m) {
     return 0;
 }
 
+enum HwaccelLocality {
+    HWACCEL_ON_RENDERER,
+    HWACCEL_ON_SAME_GPU,
+    HWACCEL_ON_ANY_GPU,
+};
+
+static int hwaccel_takes_node(enum AVHWDeviceType type) {
+    return type == AV_HWDEVICE_TYPE_VAAPI || type == AV_HWDEVICE_TYPE_DRM;
+}
+
+static int hwaccel_locatable(enum AVHWDeviceType type, const char *node) {
+    if (hwaccel_takes_node(type)) {
+        return node && node[0];
+    }
+
+    return type == AV_HWDEVICE_TYPE_CUDA &&
+        renderer_api(renderer) == RENDERER_API_VULKAN;
+}
+
 static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
-                       int shared_only) {
+                       enum HwaccelLocality locality, const char *node) {
     enum AVHWDeviceType type;
     AVBufferRef *render_dev;
-    int ret;
 
     type = av_hwdevice_find_type_by_name(name);
     if (type == AV_HWDEVICE_TYPE_NONE) {
         return AVERROR(ENOTSUP);
     }
 
-    if (renderer_get_hw_dev(renderer, &render_dev) >= 0) {
-        ret = av_hwdevice_ctx_create_derived(device_ctx, type, render_dev, 0);
-        if (!ret) {
-            return 0;
+    switch (locality) {
+    case HWACCEL_ON_RENDERER:
+        if (renderer_get_hw_dev(renderer, &render_dev) < 0) {
+            return AVERROR(ENOSYS);
         }
-        if (ret != AVERROR(ENOSYS)) {
-            return ret;
+        return av_hwdevice_ctx_create_derived(device_ctx, type, render_dev, 0);
+    case HWACCEL_ON_SAME_GPU:
+        if (!hwaccel_takes_node(type) || !node || !node[0]) {
+            return AVERROR(ENOSYS);
         }
+        return av_hwdevice_ctx_create(device_ctx, type, node, NULL, 0);
+    case HWACCEL_ON_ANY_GPU:
+        return av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
     }
 
-    if (shared_only) {
-        return AVERROR(ENOSYS);
-    }
-
-    return av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
+    return AVERROR_BUG;
 }
 
 static int hwaccel_codec_allowed(enum AVCodecID codec_id) {
@@ -189,7 +208,86 @@ static int hwaccel_codec_allowed(enum AVCodecID codec_id) {
     return allowed || (!listed && *list);
 }
 
-static int create_hwaccel(AVBufferRef **device_ctx, enum AVCodecID codec_id) {
+static int hwaccel_decodes(const AVCodec *codec, enum AVHWDeviceType type) {
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+
+        if (!config) {
+            return 0;
+        }
+        if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
+            config->device_type == type) {
+            return 1;
+        }
+    }
+}
+
+static unsigned decode_cap_for_codec(enum AVCodecID codec_id) {
+    switch (codec_id) {
+    case AV_CODEC_ID_H264:
+        return RENDERER_DECODE_CAP_H264;
+    case AV_CODEC_ID_HEVC:
+        return RENDERER_DECODE_CAP_HEVC;
+    case AV_CODEC_ID_AV1:
+        return RENDERER_DECODE_CAP_AV1;
+    case AV_CODEC_ID_VP9:
+        return RENDERER_DECODE_CAP_VP9;
+    default:
+        return 0;
+    }
+}
+
+static int vulkan_decodes(enum AVCodecID codec_id) {
+    unsigned caps = renderer_video_decode_caps(renderer);
+    unsigned bit = decode_cap_for_codec(codec_id);
+
+    return bit ? (caps & bit) != 0 : caps != 0;
+}
+
+static double codec_decode_effort(enum AVCodecID codec_id) {
+    switch (codec_id) {
+    case AV_CODEC_ID_VVC:
+        return 4.0;
+    case AV_CODEC_ID_AV1:
+        return 2.5;
+    case AV_CODEC_ID_HEVC:
+    case AV_CODEC_ID_VP9:
+        return 2.0;
+    case AV_CODEC_ID_H264:
+        return 1.0;
+    case AV_CODEC_ID_VP8:
+        return 0.6;
+    default:
+        return 0.4;
+    }
+}
+
+#define HWACCEL_OFF_GPU_LOAD 100.0
+
+static double software_decode_load(const AVCodecContext *avctx,
+                                   AVRational frame_rate) {
+    double pixels = (double)FFMAX(avctx->coded_width, avctx->width) *
+        FFMAX(avctx->coded_height, avctx->height);
+    double fps = frame_rate.num > 0 && frame_rate.den > 0
+        ? av_q2d(frame_rate)
+        : 30.0;
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(avctx->pix_fmt);
+    int depth = desc ? desc->comp[0].depth : avctx->bits_per_raw_sample;
+
+    if (pixels <= 0) {
+        return HWACCEL_OFF_GPU_LOAD;
+    }
+
+    if (fps > 1000.0) {
+        fps = 30.0;
+    }
+
+    return pixels * fps * codec_decode_effort(avctx->codec_id) *
+        (depth > 8 ? 1.4 : 1.0) / 1e6;
+}
+
+static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
+                          const AVCodecContext *avctx, AVRational frame_rate) {
     static const char *auto_hwaccels_vk[] = {
         "vulkan", "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
     static const char *auto_hwaccels_other[] = {
@@ -197,6 +295,9 @@ static int create_hwaccel(AVBufferRef **device_ctx, enum AVCodecID codec_id) {
     const char *const *auto_hwaccels =
         renderer_api(renderer) == RENDERER_API_VULKAN ? auto_hwaccels_vk
                                                       : auto_hwaccels_other;
+    int another_gpu_exists;
+    int off_gpu_pays;
+    char node[64];
     int saved_level;
     int ret;
 
@@ -206,36 +307,72 @@ static int create_hwaccel(AVBufferRef **device_ctx, enum AVCodecID codec_id) {
         return 0;
     }
 
-    if (!hwaccel_codec_allowed(codec_id)) {
-        log_verbose("Not using hwaccel for %s.\n", avcodec_get_name(codec_id));
+    if (!hwaccel_codec_allowed(avctx->codec_id)) {
+        log_verbose("Not using hwaccel for %s.\n",
+                    avcodec_get_name(avctx->codec_id));
         return 0;
     }
 
-    if (hwaccel) {
-        ret = try_hwaccel(device_ctx, hwaccel, 0);
-        if (ret < 0 && ret != AVERROR(ENOSYS)) {
-            log_dead("hwaccel %s is not available!\n", hwaccel);
-        }
-        if (ret >= 0) {
-            media_info_set_hwaccel(hwaccel);
-        }
-        return ret < 0 ? ret : 0;
+    if (renderer_device_node(renderer, node, sizeof(node)) < 0) {
+        node[0] = '\0';
     }
+    another_gpu_exists = node[0] && renderer_gpu_count() > 1;
+    off_gpu_pays =
+        software_decode_load(avctx, frame_rate) >= HWACCEL_OFF_GPU_LOAD;
 
     saved_level = av_log_get_level();
     if (saved_level < AV_LOG_VERBOSE) {
         av_log_set_level(AV_LOG_QUIET);
     }
-    for (int shared_only = 1; shared_only >= 0; shared_only--) {
+
+    if (hwaccel) {
+        enum AVHWDeviceType type = av_hwdevice_find_type_by_name(hwaccel);
+
+        for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
+             loc <= HWACCEL_ON_ANY_GPU; loc++) {
+            ret = try_hwaccel(device_ctx, hwaccel, loc, node);
+            if (ret >= 0) {
+                av_log_set_level(saved_level);
+                media_info_set_hwaccel(hwaccel,
+                                       loc == HWACCEL_ON_ANY_GPU &&
+                                           another_gpu_exists &&
+                                           hwaccel_locatable(type, node));
+                return 0;
+            }
+            *device_ctx = NULL;
+        }
+        av_log_set_level(saved_level);
+        log_dead("hwaccel %s is not available!\n", hwaccel);
+
+        return ret;
+    }
+
+    for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
+         loc <= HWACCEL_ON_ANY_GPU; loc++) {
         for (int i = 0; auto_hwaccels[i]; i++) {
-            if (!strcmp(auto_hwaccels[i], "vulkan") &&
-                !renderer_video_decode_caps(renderer)) {
+            const char *name = auto_hwaccels[i];
+            enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
+            int off_gpu;
+
+            if (type == AV_HWDEVICE_TYPE_NONE || !hwaccel_decodes(codec, type)) {
                 continue;
             }
-            ret = try_hwaccel(device_ctx, auto_hwaccels[i], shared_only);
+            if (type == AV_HWDEVICE_TYPE_VULKAN &&
+                (loc != HWACCEL_ON_RENDERER ||
+                 !vulkan_decodes(avctx->codec_id))) {
+                continue;
+            }
+
+            off_gpu = loc == HWACCEL_ON_ANY_GPU && another_gpu_exists &&
+                hwaccel_locatable(type, node);
+            if (off_gpu && !off_gpu_pays) {
+                continue;
+            }
+
+            ret = try_hwaccel(device_ctx, name, loc, node);
             if (!ret) {
                 av_log_set_level(saved_level);
-                media_info_set_hwaccel(auto_hwaccels[i]);
+                media_info_set_hwaccel(name, off_gpu);
                 return 0;
             }
             *device_ctx = NULL;
@@ -286,16 +423,7 @@ static int hwaccel_size_usable(AVBufferRef *device_ctx, int width, int height) {
 static int hwaccel_usable(const AVCodec *codec, const AVBufferRef *device_ctx) {
     const AVHWDeviceContext *dev = (const AVHWDeviceContext *)device_ctx->data;
 
-    for (int i = 0;; i++) {
-        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
-        if (!config) {
-            return 0;
-        }
-        if ((config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX) &&
-            config->device_type == dev->type) {
-            return 1;
-        }
-    }
+    return hwaccel_decodes(codec, dev->type);
 }
 
 static int format_lacks_timestamps(const AVFormatContext *ic) {
@@ -412,7 +540,9 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        ret = create_hwaccel(&avctx->hw_device_ctx, avctx->codec_id);
+        ret = create_hwaccel(&avctx->hw_device_ctx, codec, avctx,
+                             av_guess_frame_rate(ic, ic->streams[stream_index],
+                                                 NULL));
         if (ret < 0) {
             goto fail;
         }
@@ -422,7 +552,7 @@ static int component_open(VideoState *is, int stream_index) {
                                   FFMAX(avctx->coded_width, avctx->width),
                                   FFMAX(avctx->coded_height, avctx->height)))) {
             av_buffer_unref(&avctx->hw_device_ctx);
-            media_info_set_hwaccel(NULL);
+            media_info_set_hwaccel(NULL, 0);
         }
     }
 

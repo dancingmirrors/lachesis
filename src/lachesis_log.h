@@ -33,6 +33,8 @@ extern int lachesis_quiet;
 void alloc_track_abort(void);
 
 void log_init(void);
+
+void log_finish_line(void);
 void log_interrupt_begin(int (*cb)(void *), void *ctx);
 void log_interrupt_end(void);
 

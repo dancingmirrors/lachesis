@@ -20,6 +20,15 @@
 
 #include <stdarg.h>
 #include <stdio.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#define LACHESIS_STDERR_ISATTY() _isatty(_fileno(stderr))
+#else
+#include <unistd.h>
+#define LACHESIS_STDERR_ISATTY() isatty(STDERR_FILENO)
+#endif
 
 #include <libavutil/log.h>
 
@@ -43,6 +52,16 @@ static void log_sanitize(char *line, size_t len) {
     }
 }
 
+static char log_av_prev[LOG_LINE_MAX];
+static int log_av_repeating;
+
+void log_finish_line(void) {
+    if (log_av_repeating) {
+        log_av_repeating = 0;
+        fputc('\n', stderr);
+    }
+}
+
 void log_vline(const char *tag, const char *fmt, va_list ap) {
     char line[LOG_LINE_MAX];
     int n;
@@ -50,6 +69,7 @@ void log_vline(const char *tag, const char *fmt, va_list ap) {
     if (lachesis_quiet) {
         return;
     }
+    log_finish_line();
     n = vsnprintf(line, sizeof(line), fmt, ap);
     if (n < 0) {
         return;
@@ -95,6 +115,15 @@ static void log_av_callback(void *avcl, int level, const char *fmt, va_list ap) 
         n = (int)sizeof(line) - 1;
     }
     log_sanitize(line, (size_t)n);
+
+    if (LACHESIS_STDERR_ISATTY() && !strcmp(line, log_av_prev) && line[0] &&
+        line[n - 1] != '\r') {
+        log_av_repeating = 1;
+    } else {
+        log_av_repeating = 0;
+        memcpy(log_av_prev, line, (size_t)n + 1);
+    }
+
     log_av_default(avcl, level, "%s", line);
 }
 

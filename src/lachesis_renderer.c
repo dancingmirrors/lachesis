@@ -33,6 +33,7 @@
 #include "lachesis_view360.h"
 /* clang-format on */
 
+#include <inttypes.h>
 #include <limits.h>
 #include <stddef.h>
 
@@ -130,6 +131,17 @@
     defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
 #include <link.h>
 #define LACHESIS_CAN_ITERATE_LIBS 1
+#endif
+
+#if LACHESIS_HAVE_VULKAN && \
+    defined(VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME) && \
+    (defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+     defined(__NetBSD__) || defined(__DragonFly__))
+#define LACHESIS_HAVE_DRM_NODES 1
+#include <dirent.h>
+#ifdef __linux__
+#include <sys/sysmacros.h>
+#endif
 #endif
 
 static int allow_software_gpu = 1;
@@ -307,6 +319,7 @@ typedef struct RendererContext {
     int swapchain_retry;
 
     int zero_copy_failed;
+    int zero_copy_misses;
     struct ZeroCopyPool {
         enum AVPixelFormat sw_format;
         int width;
@@ -1212,6 +1225,77 @@ static uint32_t nvidia_proprietary(PFN_vkGetInstanceProcAddr get_proc_addr,
 
     return props.properties.driverVersion;
 }
+
+#ifdef LACHESIS_HAVE_DRM_NODES
+
+static int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr,
+                          VkInstance inst, VkPhysicalDevice phys, char *buf,
+                          size_t size) {
+    PFN_vkEnumerateDeviceExtensionProperties enumerate;
+    PFN_vkGetPhysicalDeviceProperties2 get_props2;
+    VkPhysicalDeviceDrmPropertiesEXT drm = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT,
+    };
+    VkPhysicalDeviceProperties2 props = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+        .pNext = &drm,
+    };
+    VkExtensionProperties *exts;
+    uint32_t num = 0;
+    int supported = 0;
+    struct stat st;
+
+    if (!buf || !size) {
+        return AVERROR(EINVAL);
+    }
+    buf[0] = '\0';
+
+    if (!get_proc_addr || !inst || !phys) {
+        return AVERROR(ENOSYS);
+    }
+    enumerate = (PFN_vkEnumerateDeviceExtensionProperties)
+        get_proc_addr(inst, "vkEnumerateDeviceExtensionProperties");
+    get_props2 = (PFN_vkGetPhysicalDeviceProperties2)
+        get_proc_addr(inst, "vkGetPhysicalDeviceProperties2");
+    if (!enumerate || !get_props2) {
+        return AVERROR(ENOSYS);
+    }
+
+    if (enumerate(phys, NULL, &num, NULL) != VK_SUCCESS || !num) {
+        return AVERROR(ENOSYS);
+    }
+    exts = av_calloc(num, sizeof(*exts));
+    if (!exts) {
+        return AVERROR(ENOMEM);
+    }
+    if (enumerate(phys, NULL, &num, exts) == VK_SUCCESS) {
+        for (uint32_t i = 0; i < num && !supported; i++) {
+            supported = !strcmp(exts[i].extensionName,
+                                VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME);
+        }
+    }
+    av_free(exts);
+    if (!supported) {
+        return AVERROR(ENOSYS);
+    }
+
+    get_props2(phys, &props);
+    if (!drm.hasRender) {
+        return AVERROR(ENOSYS);
+    }
+
+    snprintf(buf, size, "/dev/dri/renderD%" PRId64, drm.renderMinor);
+    if (stat(buf, &st) < 0 || !S_ISCHR(st.st_mode) ||
+        (int64_t)major(st.st_rdev) != drm.renderMajor ||
+        (int64_t)minor(st.st_rdev) != drm.renderMinor) {
+        buf[0] = '\0';
+        return AVERROR(ENOENT);
+    }
+
+    return 0;
+}
+
+#endif /* LACHESIS_HAVE_DRM_NODES */
 
 static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
@@ -3244,6 +3328,13 @@ static int create(Renderer *renderer, SDL_Window *window, AVDictionary *opt) {
     return 0;
 }
 
+#define LACHESIS_ZERO_COPY_STRIKES 2
+
+static void zero_copy_note_failed(RendererContext *ctx) {
+    ctx->zero_copy_failed = 1;
+    ctx->zero_copy_failed_pool = ctx->zero_copy_pool;
+}
+
 #if LACHESIS_HAVE_VULKAN
 
 static int create_hw_frame(Renderer *renderer, AVFrame *frame) {
@@ -3411,8 +3502,9 @@ static int transfer_frame(Renderer *renderer, AVFrame *frame, int use_hw_frame) 
 }
 
 static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
+    RendererContext *ctx = (RendererContext *)renderer;
     static int warned_download;
-    int ret;
+    int ret = AVERROR(ENOSYS);
 
     if (frame->format == AV_PIX_FMT_VULKAN) {
         return 0;
@@ -3420,7 +3512,7 @@ static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
 
     create_hw_frame(renderer, frame);
 
-    for (int use_hw = 1; use_hw >= 0; use_hw--) {
+    for (int use_hw = !ctx->zero_copy_failed; use_hw >= 0; use_hw--) {
         const char *how = "mapping";
 
         ret = map_frame(renderer, frame, use_hw);
@@ -3429,12 +3521,18 @@ static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
             how = "copy";
         }
         if (!ret) {
-            if (!use_hw && !warned_download) {
+            if (use_hw) {
+                ctx->zero_copy_misses = 0;
+            } else if (!warned_download) {
                 warned_download = 1;
                 log_info("Displaying hardware frames via a system memory %s.\n",
                          how);
             }
             return 0;
+        }
+        if (use_hw &&
+            ++ctx->zero_copy_misses >= LACHESIS_ZERO_COPY_STRIKES) {
+            zero_copy_note_failed(ctx);
         }
     }
 
@@ -3563,8 +3661,7 @@ static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
 static void zero_copy_give_up(RendererContext *ctx, const AVFrame *frame) {
     static int warned;
 
-    ctx->zero_copy_failed = 1;
-    ctx->zero_copy_failed_pool = ctx->zero_copy_pool;
+    zero_copy_note_failed(ctx);
 
     if (!warned) {
         warned = 1;
@@ -3594,6 +3691,7 @@ static int convert_frame(Renderer *renderer, AVFrame *frame) {
          ctx->zero_copy_failed_pool.width != ctx->zero_copy_pool.width ||
          ctx->zero_copy_failed_pool.height != ctx->zero_copy_pool.height)) {
         ctx->zero_copy_failed = 0;
+        ctx->zero_copy_misses = 0;
     }
 
 #if LACHESIS_HAVE_VULKAN
@@ -5899,6 +5997,53 @@ int renderer_take_image_repaint(Renderer *renderer) {
     }
 
     return take;
+}
+
+int renderer_gpu_count(void) {
+#ifdef LACHESIS_HAVE_DRM_NODES
+    struct dirent *ent;
+    DIR *dir = opendir("/dev/dri");
+    int num = 0;
+
+    if (!dir) {
+        return 0;
+    }
+    while ((ent = readdir(dir))) {
+        num += !strncmp(ent->d_name, "renderD", 7);
+    }
+    closedir(dir);
+
+    return num;
+#else
+    return 0;
+#endif
+}
+
+int renderer_device_node(Renderer *renderer, char *buf, size_t size) {
+    if (size) {
+        buf[0] = '\0';
+    }
+
+#ifdef LACHESIS_HAVE_DRM_NODES
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (ctx && ctx->api.backend == RENDERER_API_VULKAN && ctx->hw_device_ref) {
+        const AVHWDeviceContext *dev =
+            (const AVHWDeviceContext *)ctx->hw_device_ref->data;
+        const AVVulkanDeviceContext *hwctx = dev->hwctx;
+
+        if (dev->type != AV_HWDEVICE_TYPE_VULKAN) {
+            return AVERROR(ENOSYS);
+        }
+
+        return vk_render_node(hwctx->get_proc_addr, hwctx->inst,
+                              hwctx->phys_dev, buf, size);
+    }
+#else
+    (void)renderer;
+#endif
+
+    return AVERROR(ENOSYS);
 }
 
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {

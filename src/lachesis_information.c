@@ -39,6 +39,7 @@
 #include "lachesis_supersample.h"
 
 static const char *active_hwaccel = NULL;
+static char active_hwaccel_line[64] = "";
 
 static char audio_device_driver_line[96] = "";
 static char audio_device_format_line[96] = "";
@@ -69,7 +70,8 @@ static const char *media_info_renderer(void) {
 }
 
 static const char *media_info_hwaccel(void) {
-    return active_hwaccel ? active_hwaccel : "none (software decoding)";
+    return active_hwaccel_line[0] ? active_hwaccel_line
+                                  : "none (software decoding)";
 }
 
 static void media_info_video_line(const VideoState *is, char *buf, size_t sz) {
@@ -364,13 +366,20 @@ void media_info_reset(void) {
     audio_passthrough_line[0] = '\0';
     media_info_vout_line[0] = '\0';
     active_hwaccel = NULL;
+    active_hwaccel_line[0] = '\0';
     playback_stats_cached[0] = '\0';
     playback_stats_next_refresh_us = 0;
     osd_invalidate_info();
 }
 
-void media_info_set_hwaccel(const char *name) {
+void media_info_set_hwaccel(const char *name, int off_gpu) {
     active_hwaccel = name;
+    if (!name) {
+        active_hwaccel_line[0] = '\0';
+    } else {
+        snprintf(active_hwaccel_line, sizeof(active_hwaccel_line), "%s%s", name,
+                 off_gpu ? " (on another GPU)" : "");
+    }
 }
 
 void media_info_note_hw_frame(int is_hw) {
@@ -379,6 +388,7 @@ void media_info_note_hw_frame(int is_hw) {
     }
     log_info("Using software decoding\n");
     active_hwaccel = NULL;
+    active_hwaccel_line[0] = '\0';
     osd_invalidate_info();
 }
 

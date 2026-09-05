@@ -34,7 +34,7 @@ void format_media_info(const VideoState *is, char *buf, size_t bufsz);
 void format_playback_stats(const VideoState *is, char *buf, size_t bufsz);
 
 void media_info_reset(void);
-void media_info_set_hwaccel(const char *name);
+void media_info_set_hwaccel(const char *name, int off_gpu);
 
 void media_info_note_hw_frame(int is_hw);
 void media_info_note_audio_driver(const char *driver, int channels, int freq);
