@@ -171,7 +171,11 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
         }
         return av_hwdevice_ctx_create(device_ctx, type, node, NULL, 0);
     case HWACCEL_ON_ANY_GPU:
+        /* XXX */
+#if 0
         return av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
+#endif
+        return AVERROR(ENOSYS);
     }
 
     return AVERROR_BUG;
