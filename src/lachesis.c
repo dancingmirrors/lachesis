@@ -1540,10 +1540,14 @@ static int teardown_must_be_full(void) {
     return alloc_track_active();
 }
 
-static av_noreturn void exit_now(int status) {
+static void shutdown_finish(void) {
     log_finish_line();
     terminal_restore_now();
     shutdown_step("the exit");
+}
+
+static av_noreturn void exit_now(int status) {
+    shutdown_finish();
     alloc_track_report();
     _Exit(status);
 }
@@ -1613,7 +1617,7 @@ av_noreturn void do_exit(VideoState *is) {
     SDL_Quit();
     shutdown_step("the rest of the teardown");
     alloc_track_complete();
-    log_finish_line();
+    shutdown_finish();
     exit(status);
 }
 
