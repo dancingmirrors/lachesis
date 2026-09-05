@@ -1496,6 +1496,7 @@ static void uninit_opts(void) {
     av_freep(&vulkan_swap_mode);
     av_freep(&shader_cache_dir);
     av_freep(&icc_profile);
+    av_freep(&icc_intent);
     av_freep(&video_background);
     av_freep(&ytdl_path);
     av_freep(&ytdl_format);
@@ -3631,6 +3632,18 @@ static AVDictionary *build_renderer_options(void) {
     if (icc_auto) {
         av_dict_set(&dict, "icc_auto", "1", 0);
     }
+    if (icc_intent) {
+        av_dict_set(&dict, "icc_intent", icc_intent, 0);
+    }
+    if (icc_vcgt) {
+        av_dict_set(&dict, "icc_vcgt", "1", 0);
+    }
+    if (color_temperature != COLOR_TEMPERATURE_NEUTRAL) {
+        char buf[32];
+
+        snprintf(buf, sizeof(buf), "%g", color_temperature);
+        av_dict_set(&dict, "color_temperature", buf, 0);
+    }
     if (no_display_hdr) {
         av_dict_set(&dict, "display_hdr", "0", 0);
     }
@@ -4219,6 +4232,22 @@ static void validate_options(void) {
         fatal_quit("-%s must be between %g and %g.\n",
                    option_name(options, &normalize_gain),
                    NORMALIZE_GAIN_MIN, NORMALIZE_GAIN_MAX);
+    }
+    if (color_temperature < COLOR_TEMPERATURE_MIN ||
+        color_temperature > COLOR_TEMPERATURE_MAX) {
+        fatal_quit("-%s must be between %g and %g kelvin.\n",
+                   option_name(options, &color_temperature),
+                   COLOR_TEMPERATURE_MIN, COLOR_TEMPERATURE_MAX);
+    }
+    if ((!icc_profile || !icc_profile[0]) && !icc_auto && !display_disable) {
+        if (option_given_on_cmdline(options, "icc-intent")) {
+            log_warn("-icc-intent does nothing unless -icc-profile or "
+                     "-icc-auto is given.\n");
+        }
+        if (option_given_on_cmdline(options, "icc-vcgt")) {
+            log_warn("-icc-vcgt does nothing unless -icc-profile or "
+                     "-icc-auto is given.\n");
+        }
     }
     validate_option_relations(options);
     if (audio_spdif_opt && audio_spdif_opt[0] &&

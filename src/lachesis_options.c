@@ -57,6 +57,7 @@
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_playlist.h"
+#include "lachesis_rc.h"
 #include "lachesis_scale.h"
 #include "lachesis_single.h"
 
@@ -110,7 +111,10 @@ int max_glsl_version = 0;
 int no_shader_cache = 0;
 char *shader_cache_dir = NULL;
 const char *icc_profile = NULL;
+const char *icc_intent = NULL;
 int icc_auto = 0;
+int icc_vcgt = 0;
+double color_temperature = COLOR_TEMPERATURE_NEUTRAL;
 int no_display_hdr = 0;
 char *video_background = NULL;
 const char *hwaccel = NULL;
@@ -209,6 +213,8 @@ static const char *const archive_jump_modes[] = {"first", "last", NULL};
 static const char *const sync_types[] = {"audio", "video", "ext", NULL};
 static const char *const swap_modes[] = {"fifo", "fifo-relaxed", "mailbox",
                                          "immediate", NULL};
+static const char *const icc_intents[] = {"auto", "perceptual", "relative",
+                                          "saturation", "absolute", NULL};
 
 static int opt_add_vfilter(void *optctx av_unused, const char *opt av_unused,
                            const char *arg) {
@@ -467,20 +473,57 @@ static int opt_video_bg(void *optctx av_unused, const char *opt, const char *arg
     return store_string((const char **)&video_background, arg);
 }
 
-static int opt_icc_profile(void *optctx av_unused, const char *opt av_unused,
-                           const char *arg) {
-    FILE *f;
+static char *expand_home(const char *arg) {
+    const char *home;
 
-    if (arg[0]) {
-        f = fopen(arg, "rb");
-        if (!f) {
-            log_dead("Failed to open the ICC profile '%s'!\n", arg);
-            return AVERROR(EINVAL);
-        }
-        fclose(f);
+    if (arg[0] != '~' || (arg[1] && arg[1] != '/' && arg[1] != '\\')) {
+        return av_strdup(arg);
+    }
+    home = user_home_dir();
+    if (!home) {
+        return av_strdup(arg);
     }
 
-    return store_string(&icc_profile, arg);
+    return av_asprintf("%s%s", home, arg + 1);
+}
+
+static int opt_icc_profile(void *optctx av_unused, const char *opt av_unused,
+                           const char *arg) {
+    char *path;
+    FILE *f;
+    int ret;
+
+    if (!arg[0]) {
+        return store_string(&icc_profile, arg);
+    }
+
+    path = expand_home(arg);
+    if (!path) {
+        return AVERROR(ENOMEM);
+    }
+
+    f = fopen(path, "rb");
+    if (!f) {
+        log_dead("Failed to open the ICC profile '%s': %s!\n", path,
+                 strerror(errno));
+        av_free(path);
+        return AVERROR(EINVAL);
+    }
+    fclose(f);
+
+    ret = store_string(&icc_profile, path);
+    av_free(path);
+
+    return ret;
+}
+
+static int opt_icc_intent(void *optctx av_unused, const char *opt,
+                          const char *arg) {
+    if (opt_value_index(arg, icc_intents) < 0) {
+        return opt_bad_value(opt, arg, icc_intents);
+    }
+
+    return store_string(&icc_intent, arg);
 }
 
 static int opt_gpu_device(void *optctx av_unused, const char *opt av_unused,
@@ -688,8 +731,11 @@ const OptionDef options[] = {
     {"gpu-device", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_device}, "GPU to render on (or help)", "device"},
     {"vulkan-swap-mode", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_vulkan_swap_mode}, "present mode", "mode", swap_modes},
     {"max-glsl-version", OPT_TYPE_INT, 0, {&max_glsl_version}, "cap the GLSL version libplacebo targets (0 for no cap)", "version"},
-    {"icc-profile", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_profile}, "ICC profile passed to libplacebo", "path"},
-    {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "use the ICC profile the display advertises"},
+    {"icc-profile", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_profile}, "manually specify an ICC profile", "path"},
+    {"icc-auto", OPT_TYPE_BOOL, 0, {&icc_auto}, "try to automatically load an ICC profile"},
+    {"icc-intent", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_intent}, "rendering intent for the ICC profile (default relative)", "intent", icc_intents},
+    {"icc-vcgt", OPT_TYPE_BOOL, 0, {&icc_vcgt}, "apply the calibration curves of the ICC profile if necessary"},
+    {"color-temperature", OPT_TYPE_DOUBLE, 0, {&color_temperature}, "white point to adapt the picture to, in kelvin (default 6500)", "kelvin"},
     {"no-display-hdr", OPT_TYPE_BOOL, 0, {&no_display_hdr}, "ignore the HDR peak brightness the display reports"},
     {"video-bg", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_video_bg}, "set the video background for transparent content (none, tiles, or a color)", "color"},
     {"hwaccel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_hwaccel}, "use hardware accelerated decoding with the specified method, or no, or none, or off", "method"},
@@ -1042,6 +1088,9 @@ static const struct {
     {"nodisp", "delete", OPT_DISABLES},
     {"nodisp", "icc-profile", OPT_DISABLES},
     {"nodisp", "icc-auto", OPT_DISABLES},
+    {"nodisp", "icc-intent", OPT_DISABLES},
+    {"nodisp", "icc-vcgt", OPT_DISABLES},
+    {"nodisp", "color-temperature", OPT_DISABLES},
     {"nodisp", "no-display-hdr", OPT_DISABLES},
     {"nodisp", "gpu-api", OPT_DISABLES},
     {"nodisp", "gpu-params", OPT_DISABLES},
@@ -1240,9 +1289,17 @@ static const char *opt_implied_value(const OptionDef *po, const char *arg) {
     return on < 0 ? arg : (on ? po->implied : po->implied_no);
 }
 
+static int looks_misplaced(const char *arg) {
+    return arg && arg[0] && !(arg[0] == '-' && arg[1]) &&
+        !strpbrk(arg, "/\\.:") && !playlist_path_is_usable(arg);
+}
+
 static int opt_wants_next(const OptionDef *po, const char *next) {
-    if (!opt_has_arg(po) || !next) {
+    if (!next) {
         return 0;
+    }
+    if (!opt_has_arg(po)) {
+        return config_parse_bool(next) >= 0;
     }
     if (!(po->flags & OPT_ARG_OPTIONAL)) {
         return 1;
@@ -1348,13 +1405,20 @@ int parse_option(void *optctx, const char *opt, const char *arg,
 
     consumed = !inline_arg && !negated && opt_wants_next(po, arg);
 
+    if (!consumed && !inline_arg && (!opt_has_arg(po) || negated) &&
+        looks_misplaced(arg)) {
+        log_warn("'%s' is not a value for -%s so taking it as an input.\n",
+                 arg, opt);
+    }
+
     if (!opt_has_arg(po) || negated) {
+        const char *value = consumed ? arg : inline_arg;
         int on = 1;
 
-        if (inline_arg) {
-            on = config_parse_bool(inline_arg);
+        if (value) {
+            on = config_parse_bool(value);
             if (on < 0) {
-                log_dead("Option '%s' wants yes or no, got '%s'.\n", opt, inline_arg);
+                log_dead("Option '%s' wants yes or no, got '%s'.\n", opt, value);
                 return AVERROR(EINVAL);
             }
         }
@@ -1365,7 +1429,7 @@ int parse_option(void *optctx, const char *opt, const char *arg,
             arg = on ? po->implied : po->implied_no;
         } else {
             if (po->type != OPT_TYPE_BOOL && !on) {
-                return 0;
+                return consumed;
             }
             arg = on ? "1" : "0";
         }
@@ -1523,6 +1587,10 @@ static int locate_option(int argc, char **argv, const OptionDef *defs,
         if ((!po->name && !strcmp(cur_opt, optname)) ||
             (po->name && !strcmp(optname, po->name))) {
             *value_out = inline_arg;
+            if (!inline_arg && !negated &&
+                opt_wants_next(po, i + 1 < argc ? argv[i + 1] : NULL)) {
+                *value_out = argv[i + 1];
+            }
             return i;
         }
 

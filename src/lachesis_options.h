@@ -164,7 +164,14 @@ extern int max_glsl_version;
 extern int no_shader_cache;
 extern char *shader_cache_dir;
 extern const char *icc_profile;
+extern const char *icc_intent;
 extern int icc_auto;
+extern int icc_vcgt;
+
+#define COLOR_TEMPERATURE_NEUTRAL 6500.0
+#define COLOR_TEMPERATURE_MIN 2000.0
+#define COLOR_TEMPERATURE_MAX 25000.0
+extern double color_temperature;
 extern int no_display_hdr;
 extern char *video_background;
 extern const char *hwaccel;

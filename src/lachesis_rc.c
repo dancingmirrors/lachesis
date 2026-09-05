@@ -37,7 +37,7 @@
 #define LACHESIS_RC_PATH_MAX 4096
 #define LACHESIS_RC_SRC_MAX (LACHESIS_RC_PATH_MAX + 16)
 
-static int resolve_rc_path(char *buf, size_t size) {
+const char *user_home_dir(void) {
     const char *home;
 
 #ifdef _WIN32
@@ -45,15 +45,22 @@ static int resolve_rc_path(char *buf, size_t size) {
     if (!home || !home[0]) {
         home = getenv("HOME");
     }
-    if (!home || !home[0]) {
-        return -1;
-    }
-    snprintf(buf, size, "%s\\%s", home, LACHESIS_RC_NAME);
 #else
     home = getenv("HOME");
-    if (!home || !home[0]) {
+#endif
+
+    return home && home[0] ? home : NULL;
+}
+
+static int resolve_rc_path(char *buf, size_t size) {
+    const char *home = user_home_dir();
+
+    if (!home) {
         return -1;
     }
+#ifdef _WIN32
+    snprintf(buf, size, "%s\\%s", home, LACHESIS_RC_NAME);
+#else
     snprintf(buf, size, "%s/%s", home, LACHESIS_RC_NAME);
 #endif
 

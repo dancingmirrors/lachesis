@@ -173,6 +173,11 @@ check(
 )
 
 check(
+    desc="PL_HAVE_LCMS",
+    fn=lambda: check_cc(include="libplacebo/config.h", defined="PL_HAVE_LCMS"),
+)
+
+check(
     "-vulkan*",
     desc="Vulkan",
     fn=lambda: check_pkg_config("vulkan")
@@ -214,6 +219,7 @@ add_sources(
     "src/lachesis_demux.c",
     "src/lachesis_equalizer.c",
     "src/lachesis_filters.c",
+    "src/lachesis_icc.c",
     "src/lachesis_icon.c",
     "src/lachesis_information.c",
     "src/lachesis_interpolate.c",
