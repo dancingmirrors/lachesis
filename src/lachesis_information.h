@@ -29,6 +29,8 @@
 
 void print_current_file(const VideoState *is);
 void print_stream_info(const VideoState *is);
+void refresh_status_line(VideoState *is);
+void print_exit_position(VideoState *is);
 
 void format_media_info(const VideoState *is, char *buf, size_t bufsz);
 void format_playback_stats(const VideoState *is, char *buf, size_t bufsz);

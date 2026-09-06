@@ -1544,6 +1544,7 @@ static void shutdown_finish(void) {
     log_finish_line();
     terminal_restore_now();
     shutdown_step("the exit");
+    log_status_finish();
 }
 
 static av_noreturn void exit_now(int status) {
@@ -1557,6 +1558,10 @@ av_noreturn void do_exit(VideoState *is) {
     int stranded_renderer = 0;
     int abandoned;
 
+    refresh_status_line(is);
+    if (!log_status_available()) {
+        print_exit_position(is);
+    }
     quit_signal_polled = 0;
     shutdown_begin();
 
@@ -1623,6 +1628,7 @@ av_noreturn void do_exit(VideoState *is) {
 
 static void sigterm_handler(int sig) {
     if (!quit_signal_polled || quit_signal) {
+        log_status_break();
         terminal_restore_now();
         _Exit(123);
     }
@@ -3935,6 +3941,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
 
     quit_signal_polled = 1;
     refresh_window_title(is);
+    refresh_status_line(is);
     SDL_PumpEvents();
     input_poll(is);
     while (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) <= 0) {
@@ -3951,6 +3958,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             }
         }
         remaining_time = REFRESH_RATE;
+        refresh_status_line(is);
         ab_loop_check(is);
         if (is->audio_start_pending &&
             av_gettime_relative() > is->audio_start_deadline_us) {

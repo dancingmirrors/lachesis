@@ -157,6 +157,54 @@ void print_stream_info(const VideoState *is) {
     }
 }
 
+static double format_position(VideoState *is, char *buf, size_t bufsz) {
+    char pos_str[16], dur_str[16];
+    double pos, length;
+
+    if (!is || !is->ic || is->is_still_image) {
+        return LACHESIS_NAN;
+    }
+    pos = playhead_elapsed(is, effective_playhead(is));
+    if (isnan(pos)) {
+        pos = 0.0;
+    }
+
+    length = playhead_length(is);
+    format_time(pos_str, sizeof(pos_str), pos);
+    if (length > 0.0) {
+        format_time(dur_str, sizeof(dur_str), length);
+        snprintf(buf, bufsz, "%s / %s (%d%%)", pos_str, dur_str,
+                 (int)(100.0 * pos / length));
+    } else {
+        snprintf(buf, bufsz, "%s", pos_str);
+    }
+
+    return pos;
+}
+
+void refresh_status_line(VideoState *is) {
+    char body[64], line[96];
+
+    if (!log_status_available()) {
+        return;
+    }
+    if (isnan(format_position(is, body, sizeof(body)))) {
+        log_status_set("");
+        return;
+    }
+    snprintf(line, sizeof(line), "%s%s", body, is->paused ? " [paused]" : "");
+    log_status_set(line);
+}
+
+void print_exit_position(VideoState *is) {
+    char body[64];
+
+    if (isnan(format_position(is, body, sizeof(body)))) {
+        return;
+    }
+    log_info("Stopped at %s\n", body);
+}
+
 static void av_printf_format(4, 5)
     media_info_append(char *buf, size_t bufsz, size_t *len, const char *fmt,
                       ...) {

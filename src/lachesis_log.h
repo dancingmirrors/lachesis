@@ -38,6 +38,11 @@ void log_finish_line(void);
 void log_interrupt_begin(int (*cb)(void *), void *ctx);
 void log_interrupt_end(void);
 
+int log_status_available(void);
+void log_status_set(const char *text);
+int log_status_finish(void);
+void log_status_break(void);
+
 av_printf_format(2, 0) void log_vline(const char *tag, const char *fmt,
                                       va_list ap);
 
@@ -78,6 +83,7 @@ static av_unused av_printf_format(1, 2) void fatal_quit(const char *fmt, ...) {
     va_start(ap, fmt);
     log_vline("DEAD: ", fmt, ap);
     va_end(ap);
+    log_status_finish();
     alloc_track_abort();
     exit(1);
 }
