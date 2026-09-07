@@ -25,6 +25,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <libavutil/common.h>
 #include <libavutil/time.h>
 
 #include "lachesis_config.h"
@@ -46,12 +47,26 @@
 
 #define MAX_VSYNC_SAMPLES 200
 #define DELAY_VSYNC_SAMPLES 10
-#define PRESENT_BLOCK_MIN_US 1000
 #define PRESENT_MAX_GAP_US 1000000
-#define PRESENT_MAX_FOLD 8
-#define PRESENT_ANCHOR_STALE_US 1000000
 #define PRESENT_SYNC_GRACE 120
 #define PRESENT_SYNC_RECOVER 10
+
+#define PRESENT_HZ_MIN 20.0
+#define PRESENT_HZ_MAX 600.0
+#define PRESENT_REFRESH_US_MIN (1e6 / PRESENT_HZ_MAX)
+#define PRESENT_REFRESH_US_MAX (1e6 / PRESENT_HZ_MIN)
+
+#define PRESENT_MAX_FOLD 8
+#define PRESENT_MAX_FOLD_US (PRESENT_MAX_FOLD * (1e6 / 60.0))
+
+#define PRESENT_LEAD_MAX 0.004
+#define PRESENT_LEAD_SHARE 0.45
+
+#define PRESENT_BLOCK_MIN_US 1000.0
+#define PRESENT_BLOCK_MIN_SHARE 0.125
+
+#define PRESENT_ANCHOR_STALE_US 1000000.0
+#define PRESENT_ANCHOR_STALE_REFRESHES 60
 
 static struct {
     double nominal_us;
@@ -91,6 +106,40 @@ const char *present_source_name(int source) {
     }
 }
 
+static double reference_us(void) {
+    return pres.interval_us > 0 ? pres.interval_us : pres.nominal_us;
+}
+
+static int64_t max_folds(double ref_us) {
+    if (!(ref_us > 0)) {
+        return PRESENT_MAX_FOLD;
+    }
+
+    return (int64_t)FFMAX(PRESENT_MAX_FOLD, llrint(PRESENT_MAX_FOLD_US / ref_us));
+}
+
+static double block_min_us(void) {
+    double ref = reference_us();
+
+    if (!(ref > 0)) {
+        return PRESENT_BLOCK_MIN_US;
+    }
+
+    return FFMIN(PRESENT_BLOCK_MIN_US, ref * PRESENT_BLOCK_MIN_SHARE);
+}
+
+static double anchor_stale_sec(void) {
+    double ref = reference_us();
+    double stale_us = PRESENT_ANCHOR_STALE_US;
+
+    if (ref > 0) {
+        stale_us = FFMIN(stale_us, ref * PRESENT_ANCHOR_STALE_REFRESHES);
+        stale_us = FFMAX(stale_us, PRESENT_MAX_FOLD_US);
+    }
+
+    return stale_us / 1e6;
+}
+
 static double vsync_stddev(double ref_us) {
     double jitter = 0;
     for (int n = 0; n < pres.num_samples; n++) {
@@ -109,7 +158,8 @@ static void check_estimated_display_fps(void) {
     int use_estimated = 0;
 
     if (enough_samples() &&
-        pres.estimated_us <= 1e6 / 20.0 && pres.estimated_us >= 1e6 / 400.0) {
+        pres.estimated_us <= PRESENT_REFRESH_US_MAX &&
+        pres.estimated_us >= PRESENT_REFRESH_US_MIN) {
         use_estimated = 1;
         for (int n = 0; n < pres.num_samples; n++) {
             if (fabs(pres.samples[n] - pres.estimated_us) >= pres.estimated_us / 4) {
@@ -160,6 +210,11 @@ void present_update_display_mode(void) {
     }
 
     double nominal_us = hz > 0 ? 1e6 / hz : 0;
+    if (!(display_fps_override > 0) && nominal_us > 0 &&
+        (nominal_us < PRESENT_REFRESH_US_MIN ||
+         nominal_us > PRESENT_REFRESH_US_MAX)) {
+        nominal_us = 0;
+    }
     if (nominal_us != pres.nominal_us) {
         pres.nominal_us = nominal_us;
         pres.num_samples = 0;
@@ -174,7 +229,8 @@ void present_update_display_mode(void) {
 }
 
 void present_set_refresh_interval(double refresh_us) {
-    if (refresh_us > 1e6 / 20.0 || refresh_us < 1e6 / 400.0) {
+    if (refresh_us > PRESENT_REFRESH_US_MAX ||
+        refresh_us < PRESENT_REFRESH_US_MIN) {
         refresh_us = 0;
     }
     if (refresh_us == pres.driver_us) {
@@ -260,13 +316,13 @@ static int refresh_sample(int64_t done_us, int blocked, int64_t prev_done,
     int64_t folds = 1;
     if (ref_us > 0) {
         folds = llrint(delta / ref_us);
-        if (folds < 1 || folds > PRESENT_MAX_FOLD) {
+        if (folds < 1 || folds > max_folds(ref_us)) {
             return 0;
         }
         if (fabs(delta - folds * ref_us) >= ref_us / 4) {
             return 0;
         }
-    } else if (delta < 1e6 / 400.0 || delta > 1e6 / 20.0) {
+    } else if (delta < PRESENT_REFRESH_US_MIN || delta > PRESENT_REFRESH_US_MAX) {
         return 0;
     }
 
@@ -332,7 +388,7 @@ void present_feedback(int64_t submit_us, int64_t done_us) {
     }
     switch_source(PRESENT_SOURCE_SWAP);
     present_note_present(done_us);
-    feedback_sample(done_us, done_us - submit_us >= PRESENT_BLOCK_MIN_US);
+    feedback_sample(done_us, done_us - submit_us >= block_min_us());
 }
 
 void present_feedback_display(int source, int64_t display_us, double refresh_us) {
@@ -346,6 +402,12 @@ void present_feedback_display(int source, int64_t display_us, double refresh_us)
 
 double present_vsync_sec(void) {
     return pres.interval_us > 0 ? pres.interval_us / 1e6 : 0;
+}
+
+double present_lead_sec(void) {
+    double vsync = present_vsync_sec();
+
+    return vsync > 0 ? FFMIN(PRESENT_LEAD_MAX, vsync * PRESENT_LEAD_SHARE) : 0;
 }
 
 int64_t present_last_done_us(void) {
@@ -363,7 +425,7 @@ static double phase_anchor(double now_sec) {
     }
     anchor = pres.last_blocked_done_us / 1e6;
 
-    return now_sec - anchor > PRESENT_ANCHOR_STALE_US / 1e6 ? LACHESIS_NAN : anchor;
+    return now_sec - anchor > anchor_stale_sec() ? LACHESIS_NAN : anchor;
 }
 
 double present_next_vsync(double now_sec, int *phase_locked) {
@@ -1153,7 +1215,7 @@ static void note_refresh_window(UINT sync_count, int64_t qpc) {
 
     measured = (double)(qpc - d3dp.prev_qpc) * 1e6 /
         ((double)d3dp.qpc_freq * span);
-    if (measured < 1e6 / 400.0 || measured > 1e6 / 20.0) {
+    if (measured < PRESENT_REFRESH_US_MIN || measured > PRESENT_REFRESH_US_MAX) {
         forget_refresh_window();
         return;
     }

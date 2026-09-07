@@ -2945,10 +2945,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
             if (!benchmark) {
                 double ideal = is->frame_timer + delay;
                 double target = present_snap(ideal, time);
-                double lead = 0;
-                if (target != ideal) {
-                    lead = FFMIN(PRESENT_LEAD_MAX, present_vsync_sec() * 0.25);
-                }
+                double lead = target != ideal ? present_lead_sec() : 0;
                 if (time < target - lead) {
                     *remaining_time = FFMIN(target - lead - time, *remaining_time);
                     if (target - lead - time >= OSD_ONLY_REFRESH_RATE) {

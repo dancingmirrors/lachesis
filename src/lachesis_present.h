@@ -23,8 +23,6 @@
 
 #include <stdint.h>
 
-#define PRESENT_LEAD_MAX 0.004
-
 enum PresentSource {
     PRESENT_SOURCE_SWAP = 0,
     PRESENT_SOURCE_PRESENT_WAIT,
@@ -59,6 +57,7 @@ void present_note_present(int64_t done_us);
 void present_set_refresh_interval(double refresh_us);
 
 double present_vsync_sec(void);
+double present_lead_sec(void);
 
 int64_t present_last_done_us(void);
 

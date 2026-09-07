@@ -32,7 +32,6 @@
 #define RATE_MATCH_TOLERANCE 0.01
 #define RATE_MATCH_HOLD 5
 #define BLEND_SHARE_WINDOW 120
-#define REFRESH_LEAD 0.004
 
 enum {
     INTERP_OFF,
@@ -151,6 +150,7 @@ int interpolate_frames(VideoState *is, Frame *vp, RenderMixFrame *mix,
 
 int interpolate_pace(VideoState *is, double now, double *remaining_time) {
     double vsync, lead, next_vsync;
+    int locked;
 
     if (interp.state != INTERP_ON || !interpolation_wanted(is) ||
         !is->pictq.rindex_shown) {
@@ -158,8 +158,8 @@ int interpolate_pace(VideoState *is, double now, double *remaining_time) {
     }
 
     vsync = present_vsync_sec();
-    lead = FFMIN(REFRESH_LEAD, vsync / 4.0);
-    next_vsync = present_next_vsync(now, NULL);
+    lead = present_lead_sec();
+    next_vsync = present_next_vsync(now, &locked);
     if (isnan(next_vsync)) {
         is->force_refresh = 1;
         *remaining_time = 0.0;
@@ -168,6 +168,9 @@ int interpolate_pace(VideoState *is, double now, double *remaining_time) {
 
     if (next_vsync > interp.drawn_vsync + vsync / 2.0) {
         is->force_refresh = 1;
+        if (!locked && interp.drawn_vsync + vsync > now) {
+            next_vsync = interp.drawn_vsync + vsync;
+        }
         interp.drawn_vsync = next_vsync;
         *remaining_time =
             FFMIN(FFMAX(next_vsync - lead - now, 0.0), *remaining_time);

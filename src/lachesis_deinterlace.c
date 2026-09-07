@@ -121,7 +121,7 @@ void deinterlace_pace(VideoState *is, double delay, double time,
     ideal = is->frame_timer + delay / 2.0;
     target = present_snap(ideal, time);
     if (target != ideal) {
-        lead = FFMIN(PRESENT_LEAD_MAX, present_vsync_sec() * 0.25);
+        lead = present_lead_sec();
     }
     if (time < target - lead) {
         *remaining_time = FFMIN(target - lead - time, *remaining_time);
