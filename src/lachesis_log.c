@@ -24,8 +24,12 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+/* clang-format off */
 #include <io.h>
 #include <windows.h>
+/* clang-format on */
 #define LACHESIS_STDERR_ISATTY() _isatty(_fileno(stderr))
 #define LACHESIS_STDERR_WRITE(buf, len) _write(_fileno(stderr), buf, len)
 #else
@@ -34,6 +38,8 @@
 #define LACHESIS_STDERR_ISATTY() isatty(STDERR_FILENO)
 #define LACHESIS_STDERR_WRITE(buf, len) write(STDERR_FILENO, buf, len)
 #endif
+
+#include <SDL3/SDL.h>
 
 #include <libavutil/log.h>
 
@@ -61,11 +67,31 @@ static char log_av_prev[LOG_LINE_MAX];
 static int log_av_repeating;
 static int log_stderr_tty;
 
-void log_finish_line(void) {
+static SDL_Mutex *log_mutex;
+
+static void log_lock(void) {
+    if (log_mutex) {
+        SDL_LockMutex(log_mutex);
+    }
+}
+
+static void log_unlock(void) {
+    if (log_mutex) {
+        SDL_UnlockMutex(log_mutex);
+    }
+}
+
+static void log_finish_line_locked(void) {
     if (log_av_repeating) {
         log_av_repeating = 0;
         fputc('\n', stderr);
     }
+}
+
+void log_finish_line(void) {
+    log_lock();
+    log_finish_line_locked();
+    log_unlock();
 }
 
 #define LOG_STATUS_MAX 256
@@ -101,6 +127,7 @@ static size_t log_status_budget(void) {
     return columns > 1 ? (size_t)columns - 1 : 0;
 }
 
+/* All three of these expect the caller to hold log_mutex. */
 static void log_status_erase(void) {
     size_t cols = log_status_shown;
     size_t budget;
@@ -141,6 +168,7 @@ static void log_status_draw(void) {
         }
     }
     cols = tag + len;
+    log_status_live = 1;
     fputc('\r', stderr);
     fputs(LOG_STATUS_TAG, stderr);
     fwrite(log_status_text, 1, len, stderr);
@@ -151,7 +179,6 @@ static void log_status_draw(void) {
         fputc('\b', stderr);
     }
     log_status_shown = cols;
-    log_status_live = 1;
     fflush(stderr);
 }
 
@@ -159,33 +186,37 @@ void log_status_set(const char *text) {
     if (!text) {
         text = "";
     }
-    if (!strcmp(text, log_status_text)) {
-        return;
+    log_lock();
+    if (strcmp(text, log_status_text)) {
+        snprintf(log_status_text, sizeof(log_status_text), "%s", text);
+        if (log_status_text[0]) {
+            log_finish_line_locked();
+            log_status_draw();
+        } else {
+            log_status_erase();
+        }
     }
-    snprintf(log_status_text, sizeof(log_status_text), "%s", text);
-    if (log_status_text[0]) {
-        log_finish_line();
-        log_status_draw();
-    } else {
-        log_status_erase();
-    }
+    log_unlock();
 }
 
 int log_status_finish(void) {
-    log_finish_line();
+    int drawn;
+
+    log_lock();
+    log_finish_line_locked();
     if (!log_status_live) {
         log_status_draw();
     }
-    if (!log_status_live) {
-        return 0;
+    if ((drawn = log_status_live)) {
+        fputc('\n', stderr);
+        fflush(stderr);
+        log_status_shown = 0;
+        log_status_live = 0;
+        log_status_text[0] = '\0';
     }
-    fputc('\n', stderr);
-    fflush(stderr);
-    log_status_shown = 0;
-    log_status_live = 0;
-    log_status_text[0] = '\0';
+    log_unlock();
 
-    return 1;
+    return drawn;
 }
 
 void log_status_break(void) {
@@ -205,20 +236,20 @@ void log_vline(const char *tag, const char *fmt, va_list ap) {
     if (lachesis_quiet) {
         return;
     }
+    log_lock();
     log_status_erase();
-    log_finish_line();
+    log_finish_line_locked();
     n = vsnprintf(line, sizeof(line), fmt, ap);
-    if (n < 0) {
-        log_status_draw();
-        return;
+    if (n >= 0) {
+        if ((size_t)n >= sizeof(line)) {
+            n = (int)sizeof(line) - 1;
+        }
+        log_sanitize(line, (size_t)n);
+        fputs(tag, stderr);
+        fwrite(line, 1, (size_t)n, stderr);
     }
-    if ((size_t)n >= sizeof(line)) {
-        n = (int)sizeof(line) - 1;
-    }
-    log_sanitize(line, (size_t)n);
-    fputs(tag, stderr);
-    fwrite(line, 1, (size_t)n, stderr);
     log_status_draw();
+    log_unlock();
 }
 
 static _Thread_local int (*log_interrupt_cb)(void *);
@@ -255,6 +286,7 @@ static void log_av_callback(void *avcl, int level, const char *fmt, va_list ap) 
     }
     log_sanitize(line, (size_t)n);
 
+    log_lock();
     log_status_erase();
     if (log_stderr_tty && !strcmp(line, log_av_prev) && line[0] &&
         line[n - 1] != '\r') {
@@ -266,10 +298,15 @@ static void log_av_callback(void *avcl, int level, const char *fmt, va_list ap) 
 
     log_av_default(avcl, level, "%s", line);
     log_status_draw();
+    log_unlock();
 }
 
 void log_init(void) {
     log_stderr_tty = LACHESIS_STDERR_ISATTY();
+    log_mutex = SDL_CreateMutex();
+    if (!log_mutex) {
+        /* Is this reachable anywhere? */
+    }
     av_log_set_callback(log_av_callback);
 }
 
