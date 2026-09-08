@@ -134,15 +134,18 @@
 #define LACHESIS_CAN_ITERATE_LIBS 1
 #endif
 
-#if LACHESIS_HAVE_VULKAN && \
-    defined(VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME) && \
-    (defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
-     defined(__NetBSD__) || defined(__DragonFly__))
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
+    defined(__NetBSD__) || defined(__DragonFly__)
 #define LACHESIS_HAVE_DRM_NODES 1
 #include <dirent.h>
 #ifdef __linux__
 #include <sys/sysmacros.h>
 #endif
+#endif
+
+#if LACHESIS_HAVE_VULKAN && defined(LACHESIS_HAVE_DRM_NODES) && \
+    defined(VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME)
+#define LACHESIS_HAVE_VK_DRM_NODE 1
 #endif
 
 static int allow_software_gpu = 1;
@@ -293,7 +296,9 @@ typedef struct RendererContext {
 #if LACHESIS_HAVE_OPENGL
     pl_opengl placebo_gl;
     SDL_GLContext gl_context;
+    SDL_EGLDisplay gl_egl_display;
     SDL_ThreadID gl_pinned_by;
+    char gl_drm_node[64];
 #endif
 
 #if LACHESIS_HAVE_D3D11
@@ -415,6 +420,253 @@ static inline int enable_debug(const AVDictionary *opt) {
     int debug = entry && strtol(entry->value, NULL, 10);
     return debug;
 }
+
+#if LACHESIS_HAVE_VULKAN || LACHESIS_HAVE_D3D11 || \
+    defined(LACHESIS_HAVE_DRM_NODES)
+
+static int glob_match(const char *pattern, const char *text) {
+    const char *star = NULL;
+    const char *retry = text;
+
+    while (*text) {
+        if (*pattern == '?' || av_tolower(*pattern) == av_tolower(*text)) {
+            pattern++;
+            text++;
+        } else if (*pattern == '*') {
+            star = pattern++;
+            retry = text;
+        } else if (star) {
+            pattern = star + 1;
+            text = ++retry;
+        } else {
+            return 0;
+        }
+    }
+    while (*pattern == '*') {
+        pattern++;
+    }
+
+    return !*pattern;
+}
+
+#endif
+
+#ifdef LACHESIS_HAVE_DRM_NODES
+
+static int read_sysfs_line(const char *path, char *buf, size_t size) {
+    FILE *f = fopen(path, "r");
+    size_t len;
+
+    if (!f) {
+        return AVERROR(ENOENT);
+    }
+    if (!fgets(buf, (int)size, f)) {
+        fclose(f);
+        return AVERROR(EIO);
+    }
+    fclose(f);
+
+    len = strlen(buf);
+    while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+        buf[--len] = '\0';
+    }
+
+    return len ? 0 : AVERROR(ENODATA);
+}
+
+static int drm_node_driver(const char *node, char *buf, size_t size) {
+    const char *base = strrchr(node, '/');
+    char path[128];
+    char link[256];
+    const char *name;
+    ssize_t len;
+
+    buf[0] = '\0';
+    base = base ? base + 1 : node;
+    snprintf(path, sizeof(path), "/sys/class/drm/%s/device/driver", base);
+
+    len = readlink(path, link, sizeof(link) - 1);
+    if (len <= 0) {
+        return AVERROR(ENOSYS);
+    }
+    link[len] = '\0';
+
+    name = strrchr(link, '/');
+    name = name ? name + 1 : link;
+    if (!*name) {
+        return AVERROR(ENODATA);
+    }
+    av_strlcpy(buf, name, size);
+
+    return 0;
+}
+
+static const char *drm_node_vendor(const char *node) {
+    static const struct {
+        unsigned id;
+        const char *name;
+    } vendors[] = {
+        {0x1002, "AMD"},
+        {0x1022, "AMD"},
+        {0x10de, "NVIDIA"},
+        {0x13b5, "ARM"},
+        {0x1414, "Microsoft"},
+        {0x1af4, "Virtio"},
+        {0x5143, "Qualcomm"},
+        {0x8086, "Intel"},
+    };
+    const char *base = strrchr(node, '/');
+    char path[128];
+    char id[32];
+    unsigned vendor;
+
+    base = base ? base + 1 : node;
+    snprintf(path, sizeof(path), "/sys/class/drm/%s/device/vendor", base);
+    if (read_sysfs_line(path, id, sizeof(id)) < 0) {
+        return NULL;
+    }
+    vendor = (unsigned)strtoul(id, NULL, 0);
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(vendors); i++) {
+        if (vendors[i].id == vendor) {
+            return vendors[i].name;
+        }
+    }
+
+    return NULL;
+}
+
+static int drm_driver_does_vaapi(const char *driver) {
+    static const char *const known[] = {
+        "amdgpu",
+        "i915",
+        "msm",
+        "nouveau",
+        "radeon",
+        "v3d",
+        "vc4",
+        "xe",
+    };
+
+    for (size_t i = 0; driver[0] && i < FF_ARRAY_ELEMS(known); i++) {
+        if (!strcmp(driver, known[i])) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int rank_gpu_node(const RendererGpuNode *node) {
+    char described[128];
+
+    if (node->is_renderer) {
+        return 0;
+    }
+    if (want_device) {
+        const char *vendor = drm_node_vendor(node->path);
+
+        snprintf(described, sizeof(described), "%s%s%s", vendor ? vendor : "",
+                 vendor ? " " : "", node->driver);
+        if (described[0] &&
+            (av_stristr(described, want_device) ||
+             glob_match(want_device, described))) {
+            return 1;
+        }
+    }
+
+    return drm_driver_does_vaapi(node->driver) ? 2 : 3;
+}
+
+static int list_gpu_nodes(const char *own, RendererGpuNode *nodes, int max) {
+    int ranks[RENDERER_MAX_GPU_NODES];
+    struct dirent *ent;
+    DIR *dir;
+    int num = 0;
+
+    if (max <= 0) {
+        return 0;
+    }
+    if (max > RENDERER_MAX_GPU_NODES) {
+        max = RENDERER_MAX_GPU_NODES;
+    }
+
+    if (own[0]) {
+        av_strlcpy(nodes[0].path, own, sizeof(nodes[0].path));
+        if (drm_node_driver(own, nodes[0].driver,
+                            sizeof(nodes[0].driver)) < 0) {
+            nodes[0].driver[0] = '\0';
+        }
+        nodes[0].is_renderer = 1;
+        num = 1;
+    }
+
+    dir = opendir("/dev/dri");
+    if (!dir) {
+        return num;
+    }
+
+    while ((ent = readdir(dir)) && num < max) {
+        RendererGpuNode *node = &nodes[num];
+
+        if (strncmp(ent->d_name, "renderD", 7)) {
+            continue;
+        }
+        av_strlcpy(node->path, "/dev/dri/", sizeof(node->path));
+        av_strlcat(node->path, ent->d_name, sizeof(node->path));
+        if (!strcmp(node->path, own)) {
+            continue;
+        }
+        if (drm_node_driver(node->path, node->driver,
+                            sizeof(node->driver)) < 0) {
+            node->driver[0] = '\0';
+        }
+        node->is_renderer = 0;
+        num++;
+    }
+    closedir(dir);
+
+    for (int i = 0; i < num; i++) {
+        ranks[i] = rank_gpu_node(&nodes[i]);
+    }
+    for (int i = 1; i < num; i++) {
+        RendererGpuNode hold = nodes[i];
+        int rank = ranks[i];
+        int j = i;
+
+        while (j > 0 && ranks[j - 1] > rank) {
+            nodes[j] = nodes[j - 1];
+            ranks[j] = ranks[j - 1];
+            j--;
+        }
+        nodes[j] = hold;
+        ranks[j] = rank;
+    }
+
+    return num;
+}
+
+int renderer_gpu_nodes(Renderer *renderer, RendererGpuNode *nodes, int max) {
+    char own[64];
+
+    if (renderer_device_node(renderer, own, sizeof(own)) < 0) {
+        own[0] = '\0';
+    }
+
+    return list_gpu_nodes(own, nodes, max);
+}
+
+#else /* !LACHESIS_HAVE_DRM_NODES */
+
+int renderer_gpu_nodes(Renderer *renderer, RendererGpuNode *nodes, int max) {
+    (void)renderer;
+    (void)nodes;
+    (void)max;
+
+    return 0;
+}
+
+#endif /* LACHESIS_HAVE_DRM_NODES */
 
 #if LACHESIS_HAVE_VULKAN
 
@@ -582,31 +834,6 @@ static void report_gpu_devices(const char *api, const GpuDeviceNames names,
     for (int i = 0; i < num; i++) {
         say("  %s\n", names[i]);
     }
-}
-
-static int glob_match(const char *pattern, const char *text) {
-    const char *star = NULL;
-    const char *retry = text;
-
-    while (*text) {
-        if (*pattern == '?' || av_tolower(*pattern) == av_tolower(*text)) {
-            pattern++;
-            text++;
-        } else if (*pattern == '*') {
-            star = pattern++;
-            retry = text;
-        } else if (star) {
-            pattern = star + 1;
-            text = ++retry;
-        } else {
-            return 0;
-        }
-    }
-    while (*pattern == '*') {
-        pattern++;
-    }
-
-    return !*pattern;
 }
 
 static int match_gpu_device(const GpuDeviceNames names,
@@ -1235,7 +1462,7 @@ static uint32_t nvidia_proprietary(PFN_vkGetInstanceProcAddr get_proc_addr,
     return props.properties.driverVersion;
 }
 
-#ifdef LACHESIS_HAVE_DRM_NODES
+#ifdef LACHESIS_HAVE_VK_DRM_NODE
 
 static int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr,
                           VkInstance inst, VkPhysicalDevice phys, char *buf,
@@ -1304,7 +1531,7 @@ static int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr,
     return 0;
 }
 
-#endif /* LACHESIS_HAVE_DRM_NODES */
+#endif /* LACHESIS_HAVE_VK_DRM_NODE */
 
 static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
@@ -2102,6 +2329,90 @@ static void gl_unpin_current(RendererContext *ctx) {
     SDL_GL_MakeCurrent(ctx->window, NULL);
 }
 
+#ifdef LACHESIS_HAVE_DRM_NODES
+
+static int card_node_to_render_node(const char *card, char *buf, size_t size) {
+    const char *base = strrchr(card, '/');
+    char path[128];
+    struct dirent *ent;
+    DIR *dir;
+    int ret = AVERROR(ENOENT);
+
+    buf[0] = '\0';
+    base = base ? base + 1 : card;
+    snprintf(path, sizeof(path), "/sys/class/drm/%s/device/drm", base);
+
+    dir = opendir(path);
+    if (!dir) {
+        return AVERROR(ENOSYS);
+    }
+    while ((ent = readdir(dir))) {
+        if (strncmp(ent->d_name, "renderD", 7)) {
+            continue;
+        }
+        av_strlcpy(buf, "/dev/dri/", size);
+        av_strlcat(buf, ent->d_name, size);
+        ret = 0;
+        break;
+    }
+    closedir(dir);
+
+    return ret;
+}
+
+static int gl_render_node(RendererContext *ctx, char *buf, size_t size) {
+    enum {
+        LACHESIS_EGL_DEVICE = 0x322C,
+        LACHESIS_EGL_DRM_DEVICE_FILE = 0x3233,
+        LACHESIS_EGL_DRM_RENDER_NODE_FILE = 0x3377,
+    };
+    typedef unsigned int egl_bool;
+    typedef egl_bool (*query_display_attrib_fn)(void *, int32_t, intptr_t *);
+    typedef const char *(*query_device_string_fn)(void *, int32_t);
+    query_display_attrib_fn query_display;
+    query_device_string_fn query_device;
+    const char *path;
+    intptr_t device = 0;
+    struct stat st;
+
+    if (!ctx->gl_egl_display) {
+        return AVERROR(ENOSYS);
+    }
+    query_display = (query_display_attrib_fn)SDL_GL_GetProcAddress(
+        "eglQueryDisplayAttribEXT");
+    query_device = (query_device_string_fn)SDL_GL_GetProcAddress(
+        "eglQueryDeviceStringEXT");
+    if (!query_display || !query_device) {
+        SDL_ClearError();
+        return AVERROR(ENOSYS);
+    }
+
+    if (!query_display(ctx->gl_egl_display, LACHESIS_EGL_DEVICE, &device) ||
+        !device) {
+        return AVERROR(ENOSYS);
+    }
+
+    path = query_device((void *)device, LACHESIS_EGL_DRM_RENDER_NODE_FILE);
+    if (path && path[0] && strstr(path, "render")) {
+        av_strlcpy(buf, path, size);
+    } else {
+        path = query_device((void *)device, LACHESIS_EGL_DRM_DEVICE_FILE);
+        if (!path || !strstr(path, "/card") ||
+            card_node_to_render_node(path, buf, size) < 0) {
+            return AVERROR(ENOSYS);
+        }
+    }
+
+    if (stat(buf, &st) < 0 || !S_ISCHR(st.st_mode)) {
+        buf[0] = '\0';
+        return AVERROR(ENOENT);
+    }
+
+    return 0;
+}
+
+#endif /* LACHESIS_HAVE_DRM_NODES */
+
 static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                              AVDictionary *opt) {
     AVDictionaryEntry *entry;
@@ -2137,6 +2448,7 @@ static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
     if (!egl_display) {
         SDL_ClearError();
     }
+    ctx->gl_egl_display = egl_display;
 
     /* clang-format off */
     ctx->placebo_gl = pl_opengl_create(ctx->log_ctx,
@@ -2151,6 +2463,7 @@ static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                                            .priv = ctx, ));
     if (!ctx->placebo_gl && egl_display) {
         egl_display = NULL;
+        ctx->gl_egl_display = NULL;
         ctx->placebo_gl = pl_opengl_create(ctx->log_ctx,
                                            pl_opengl_params(
                                                .get_proc_addr = gl_get_proc_addr,
@@ -2207,6 +2520,18 @@ static int gl_backend_create(RendererContext *ctx, SDL_Window *window,
         }
         SDL_GL_MakeCurrent(window, NULL);
     }
+
+#ifdef LACHESIS_HAVE_DRM_NODES
+    if (SDL_GL_MakeCurrent(window, ctx->gl_context)) {
+        if (gl_render_node(ctx, ctx->gl_drm_node,
+                           sizeof(ctx->gl_drm_node)) < 0) {
+            ctx->gl_drm_node[0] = '\0';
+        } else {
+            log_verbose("OpenGL: rendering on %s.\n", ctx->gl_drm_node);
+        }
+        SDL_GL_MakeCurrent(window, NULL);
+    }
+#endif
 
     if (!(ctx->gpu->import_caps.tex & PL_HANDLE_DMA_BUF)) {
         log_verbose("OpenGL: no DMA-BUF import (EGL display: %s, "
@@ -6026,11 +6351,6 @@ static void note_ignored_requests(Renderer *renderer) {
         return;
     }
     if (want_device && renderer_api(renderer) == RENDERER_API_OPENGL) {
-        log_warn("-gpu-device has no effect on the OpenGL renderer. "
-                 "Rendering on %s.\n",
-                 renderer_device_name(renderer)
-                     ? renderer_device_name(renderer)
-                     : "the GPU the driver picked");
     }
     if (want_translucent) {
         log_warn("A translucent -video-bg needs the Vulkan renderer but on %s "
@@ -6273,35 +6593,21 @@ int renderer_take_image_repaint(Renderer *renderer) {
     return take;
 }
 
-int renderer_gpu_count(void) {
-#ifdef LACHESIS_HAVE_DRM_NODES
-    struct dirent *ent;
-    DIR *dir = opendir("/dev/dri");
-    int num = 0;
-
-    if (!dir) {
-        return 0;
-    }
-    while ((ent = readdir(dir))) {
-        num += !strncmp(ent->d_name, "renderD", 7);
-    }
-    closedir(dir);
-
-    return num;
-#else
-    return 0;
-#endif
-}
-
 int renderer_device_node(Renderer *renderer, char *buf, size_t size) {
-    if (size) {
-        buf[0] = '\0';
+    if (!buf || !size) {
+        return AVERROR(EINVAL);
     }
+    buf[0] = '\0';
 
 #ifdef LACHESIS_HAVE_DRM_NODES
     RendererContext *ctx = (RendererContext *)renderer;
 
-    if (ctx && ctx->api.backend == RENDERER_API_VULKAN && ctx->hw_device_ref) {
+    if (!ctx) {
+        return AVERROR(ENOSYS);
+    }
+
+#ifdef LACHESIS_HAVE_VK_DRM_NODE
+    if (ctx->api.backend == RENDERER_API_VULKAN && ctx->hw_device_ref) {
         const AVHWDeviceContext *dev =
             (const AVHWDeviceContext *)ctx->hw_device_ref->data;
         const AVVulkanDeviceContext *hwctx = dev->hwctx;
@@ -6313,6 +6619,18 @@ int renderer_device_node(Renderer *renderer, char *buf, size_t size) {
         return vk_render_node(hwctx->get_proc_addr, hwctx->inst,
                               hwctx->phys_dev, buf, size);
     }
+#endif
+
+#if LACHESIS_HAVE_OPENGL
+    if (ctx->api.backend == RENDERER_API_OPENGL) {
+        if (!ctx->gl_drm_node[0]) {
+            return AVERROR(ENOSYS);
+        }
+        av_strlcpy(buf, ctx->gl_drm_node, size);
+
+        return 0;
+    }
+#endif
 #else
     (void)renderer;
 #endif
@@ -6492,6 +6810,27 @@ unsigned renderer_video_decode_caps(Renderer *renderer) {
     (void)renderer;
 
     return 0;
+}
+
+int renderer_maps_hw_frames(Renderer *renderer) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx) {
+        return 0;
+    }
+
+#if LACHESIS_HAVE_VULKAN
+    if (ctx->api.backend == RENDERER_API_VULKAN) {
+        return 1;
+    }
+#endif
+#if LACHESIS_HAVE_D3D11
+    if (ctx->api.backend == RENDERER_API_D3D11) {
+        return 1;
+    }
+#endif
+
+    return ctx->gpu && (ctx->gpu->import_caps.tex & PL_HANDLE_DMA_BUF) != 0;
 }
 
 const enum AVPixelFormat *renderer_supported_pixfmts(Renderer *renderer,

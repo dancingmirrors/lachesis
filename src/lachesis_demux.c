@@ -136,23 +136,124 @@ enum HwaccelLocality {
     HWACCEL_ON_ANY_GPU,
 };
 
+typedef struct HwaccelGpus {
+    RendererGpuNode nodes[RENDERER_MAX_GPU_NODES];
+    int num;
+    char own[64];
+} HwaccelGpus;
+
 static int hwaccel_takes_node(enum AVHWDeviceType type) {
     return type == AV_HWDEVICE_TYPE_VAAPI || type == AV_HWDEVICE_TYPE_DRM;
 }
 
-static int hwaccel_locatable(enum AVHWDeviceType type, const char *node) {
+static void hwaccel_list_gpus(HwaccelGpus *gpus) {
+    gpus->own[0] = '\0';
+    gpus->num =
+        renderer_gpu_nodes(renderer, gpus->nodes, FF_ARRAY_ELEMS(gpus->nodes));
+
+    for (int i = 0; i < gpus->num; i++) {
+        if (gpus->nodes[i].is_renderer) {
+            av_strlcpy(gpus->own, gpus->nodes[i].path, sizeof(gpus->own));
+            break;
+        }
+    }
+}
+
+static int hwaccel_would_be_off_gpu(const HwaccelGpus *gpus,
+                                    enum AVHWDeviceType type) {
+    if (gpus->num <= 1) {
+        return 0;
+    }
     if (hwaccel_takes_node(type)) {
-        return node && node[0];
+        return 1;
     }
 
     return type == AV_HWDEVICE_TYPE_CUDA &&
         renderer_api(renderer) == RENDERER_API_VULKAN;
 }
 
+static const char *const *vaapi_drivers_for(const char *kernel_driver) {
+    static const char *const intel[] = {"iHD", "i965", NULL};
+    static const char *const intel_xe[] = {"iHD", NULL};
+    static const char *const amd[] = {"radeonsi", NULL};
+    static const char *const amd_old[] = {"r600", NULL};
+    static const char *const nvidia_open[] = {"nouveau", NULL};
+    static const char *const nvidia[] = {"nvidia", NULL};
+    static const struct {
+        const char *kernel;
+        const char *const *drivers;
+    } map[] = {
+        {"i915", intel},
+        {"xe", intel_xe},
+        {"amdgpu", amd},
+        {"radeon", amd_old},
+        {"nouveau", nvidia_open},
+        {"nvidia", nvidia},
+        {"nvidia-drm", nvidia},
+    };
+
+    if (!kernel_driver || !kernel_driver[0]) {
+        return NULL;
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(map); i++) {
+        if (!strcmp(kernel_driver, map[i].kernel)) {
+            return map[i].drivers;
+        }
+    }
+
+    return NULL;
+}
+
+static int open_on_node(AVBufferRef **device_ctx, enum AVHWDeviceType type,
+                        const RendererGpuNode *node) {
+    const char *const *drivers;
+    int ret;
+
+    ret = av_hwdevice_ctx_create(device_ctx, type, node->path, NULL, 0);
+    if (ret >= 0 || type != AV_HWDEVICE_TYPE_VAAPI) {
+        return ret;
+    }
+    if (getenv("LIBVA_DRIVER_NAME")) {
+        return ret;
+    }
+
+    drivers = vaapi_drivers_for(node->driver);
+    for (int i = 0; drivers && drivers[i]; i++) {
+        AVDictionary *opts = NULL;
+        int err;
+
+        *device_ctx = NULL;
+        av_dict_set(&opts, "driver", drivers[i], 0);
+        err = av_hwdevice_ctx_create(device_ctx, type, node->path, opts, 0);
+        av_dict_free(&opts);
+        if (err >= 0) {
+            log_verbose("VA-API on %s (%s) only worked with the %s driver "
+                        "named explicitly.\n",
+                        node->path, node->driver, drivers[i]);
+            return err;
+        }
+        *device_ctx = NULL;
+    }
+
+    return ret;
+}
+
+static int keep_best_error(int best, int ret) {
+    if (!best || (best == AVERROR(ENOSYS) && ret != AVERROR(ENOSYS))) {
+        return ret;
+    }
+
+    return best;
+}
+
 static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
-                       enum HwaccelLocality locality, const char *node) {
+                       enum HwaccelLocality locality, const HwaccelGpus *gpus,
+                       int asked_for, int *off_gpu) {
     enum AVHWDeviceType type;
     AVBufferRef *render_dev;
+    int ret;
+
+    *off_gpu = 0;
 
     type = av_hwdevice_find_type_by_name(name);
     if (type == AV_HWDEVICE_TYPE_NONE) {
@@ -165,20 +266,70 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
             return AVERROR(ENOSYS);
         }
         return av_hwdevice_ctx_create_derived(device_ctx, type, render_dev, 0);
+
     case HWACCEL_ON_SAME_GPU:
-        if (!hwaccel_takes_node(type) || !node || !node[0]) {
+        if (!hwaccel_takes_node(type) || !gpus->own[0]) {
             return AVERROR(ENOSYS);
         }
-        return av_hwdevice_ctx_create(device_ctx, type, node, NULL, 0);
-    case HWACCEL_ON_ANY_GPU:
-        /* XXX */
-#if 0
-        return av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
-#endif
+        for (int i = 0; i < gpus->num; i++) {
+            if (!gpus->nodes[i].is_renderer) {
+                continue;
+            }
+            return open_on_node(device_ctx, type, &gpus->nodes[i]);
+        }
         return AVERROR(ENOSYS);
+
+    case HWACCEL_ON_ANY_GPU:
+        if (!hwaccel_takes_node(type)) {
+            if (!asked_for) {
+                return AVERROR(ENOSYS);
+            }
+            ret = av_hwdevice_ctx_create(device_ctx, type, NULL, NULL, 0);
+            if (ret >= 0) {
+                *off_gpu = hwaccel_would_be_off_gpu(gpus, type);
+            }
+            return ret;
+        }
+        ret = 0;
+        for (int i = 0; i < gpus->num; i++) {
+            int err;
+
+            if (gpus->nodes[i].is_renderer) {
+                continue;
+            }
+            err = open_on_node(device_ctx, type, &gpus->nodes[i]);
+            if (err >= 0) {
+                *off_gpu = gpus->own[0] != '\0';
+                return err;
+            }
+            ret = keep_best_error(ret, err);
+            *device_ctx = NULL;
+        }
+        return ret ? ret : AVERROR(ENOSYS);
     }
 
     return AVERROR_BUG;
+}
+
+static void hwaccel_report_failure(const char *name, const HwaccelGpus *gpus,
+                                   int err) {
+    enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
+    char tried[256] = "";
+
+    if (!hwaccel_takes_node(type) || !gpus->num) {
+        log_dead("hwaccel %s is not available! (%s)\n", name, av_err2str(err));
+        return;
+    }
+
+    for (int i = 0; i < gpus->num; i++) {
+        av_strlcatf(tried, sizeof(tried), "%s%s", i ? ", " : "",
+                    gpus->nodes[i].path);
+        if (gpus->nodes[i].driver[0]) {
+            av_strlcatf(tried, sizeof(tried), " (%s)", gpus->nodes[i].driver);
+        }
+    }
+    log_dead("hwaccel %s is not available on %s! (%s)\n", name, tried,
+             av_err2str(err));
 }
 
 static int hwaccel_codec_allowed(enum AVCodecID codec_id) {
@@ -299,9 +450,9 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
     const char *const *auto_hwaccels =
         renderer_api(renderer) == RENDERER_API_VULKAN ? auto_hwaccels_vk
                                                       : auto_hwaccels_other;
-    int another_gpu_exists;
+    HwaccelGpus gpus;
     int off_gpu_pays;
-    char node[64];
+    int off_gpu;
     int saved_level;
     int ret;
 
@@ -317,12 +468,16 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
         return 0;
     }
 
-    if (renderer_device_node(renderer, node, sizeof(node)) < 0) {
-        node[0] = '\0';
-    }
-    another_gpu_exists = node[0] && renderer_gpu_count() > 1;
+    hwaccel_list_gpus(&gpus);
     off_gpu_pays =
         software_decode_load(avctx, frame_rate) >= HWACCEL_OFF_GPU_LOAD;
+
+    if (!hwaccel && !off_gpu_pays && !renderer_maps_hw_frames(renderer)) {
+        log_verbose("Not using hwaccel: %s cannot take hardware frames "
+                    "without a copy back.\n",
+                    renderer_api_name(renderer));
+        return 0;
+    }
 
     saved_level = av_log_get_level();
     if (saved_level < AV_LOG_VERBOSE) {
@@ -330,25 +485,23 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
     }
 
     if (hwaccel) {
-        enum AVHWDeviceType type = av_hwdevice_find_type_by_name(hwaccel);
+        int why = 0;
 
         for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
              loc <= HWACCEL_ON_ANY_GPU; loc++) {
-            ret = try_hwaccel(device_ctx, hwaccel, loc, node);
+            ret = try_hwaccel(device_ctx, hwaccel, loc, &gpus, 1, &off_gpu);
             if (ret >= 0) {
                 av_log_set_level(saved_level);
-                media_info_set_hwaccel(hwaccel,
-                                       loc == HWACCEL_ON_ANY_GPU &&
-                                           another_gpu_exists &&
-                                           hwaccel_locatable(type, node));
+                media_info_set_hwaccel(hwaccel, off_gpu);
                 return 0;
             }
+            why = keep_best_error(why, ret);
             *device_ctx = NULL;
         }
         av_log_set_level(saved_level);
-        log_dead("hwaccel %s is not available!\n", hwaccel);
+        hwaccel_report_failure(hwaccel, &gpus, why);
 
-        return ret;
+        return why;
     }
 
     for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
@@ -356,7 +509,6 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
         for (int i = 0; auto_hwaccels[i]; i++) {
             const char *name = auto_hwaccels[i];
             enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
-            int off_gpu;
 
             if (type == AV_HWDEVICE_TYPE_NONE || !hwaccel_decodes(codec, type)) {
                 continue;
@@ -367,13 +519,12 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
                 continue;
             }
 
-            off_gpu = loc == HWACCEL_ON_ANY_GPU && another_gpu_exists &&
-                hwaccel_locatable(type, node);
-            if (off_gpu && !off_gpu_pays) {
+            if (loc == HWACCEL_ON_ANY_GPU &&
+                hwaccel_would_be_off_gpu(&gpus, type)) {
                 continue;
             }
 
-            ret = try_hwaccel(device_ctx, name, loc, node);
+            ret = try_hwaccel(device_ctx, name, loc, &gpus, 0, &off_gpu);
             if (!ret) {
                 av_log_set_level(saved_level);
                 media_info_set_hwaccel(name, off_gpu);

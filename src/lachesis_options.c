@@ -728,7 +728,7 @@ const OptionDef options[] = {
     {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl, d3d11)", "api"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
     {"gpu-params", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_params}, "backend configuration using a list of key=value pairs separated by ':'", "params"},
-    {"gpu-device", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_device}, "GPU to render on (or help)", "device"},
+    {"gpu-device", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_device}, "GPU to render on and to decode on (or help)", "device"},
     {"vulkan-swap-mode", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_vulkan_swap_mode}, "present mode", "mode", swap_modes},
     {"max-glsl-version", OPT_TYPE_INT, 0, {&max_glsl_version}, "cap the GLSL version libplacebo targets (0 for no cap)", "version"},
     {"icc-profile", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_icc_profile}, "manually specify an ICC profile", "path"},
