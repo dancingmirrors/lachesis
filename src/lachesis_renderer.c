@@ -471,7 +471,7 @@ static int read_sysfs_line(const char *path, char *buf, size_t size) {
         buf[--len] = '\0';
     }
 
-    return len ? 0 : AVERROR(ENODATA);
+    return len ? 0 : AVERROR_INVALIDDATA;
 }
 
 static int drm_node_driver(const char *node, char *buf, size_t size) {
@@ -494,7 +494,7 @@ static int drm_node_driver(const char *node, char *buf, size_t size) {
     name = strrchr(link, '/');
     name = name ? name + 1 : link;
     if (!*name) {
-        return AVERROR(ENODATA);
+        return AVERROR_INVALIDDATA;
     }
     av_strlcpy(buf, name, size);
 
