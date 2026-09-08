@@ -592,7 +592,7 @@ static int opt_hwaccel_codecs(void *optctx av_unused, const char *opt,
 
         exclude = entry[0] == '-';
         skip = exclude + strspn(entry + exclude, " \t");
-        if (n == skip) {
+        if (skip >= n) {
             continue;
         }
 

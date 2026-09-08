@@ -96,6 +96,7 @@
 #include "lachesis_demux.h"
 #include "lachesis_equalizer.h"
 #include "lachesis_filters.h"
+#include "lachesis_hwaccel.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
 #include "lachesis_interpolate.h"

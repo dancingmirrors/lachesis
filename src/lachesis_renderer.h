@@ -32,17 +32,6 @@
 
 typedef struct Renderer Renderer;
 
-typedef struct HwDownload {
-    AVBufferPool *pool;
-    enum AVPixelFormat format;
-    enum AVPixelFormat sw_format;
-    int width;
-    int height;
-} HwDownload;
-
-int hwdownload_frame(HwDownload *dl, AVFrame *dst, const AVFrame *src);
-void hwdownload_free(HwDownload *dl);
-
 enum RendererApi {
     RENDERER_API_AUTO,
     RENDERER_API_VULKAN,
@@ -160,17 +149,10 @@ int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
 
 /* NULL unless the backend can decode into its own memory. */
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);
+
 int renderer_device_node(Renderer *renderer, char *buf, size_t size);
 
-#define RENDERER_MAX_GPU_NODES 8
-
-typedef struct RendererGpuNode {
-    char path[64];
-    char driver[32];
-    int is_renderer;
-} RendererGpuNode;
-
-int renderer_gpu_nodes(Renderer *renderer, RendererGpuNode *nodes, int max);
+const char *renderer_wanted_device(void);
 
 /* Call only from the event loop. Safe to call with a NULL renderer. */
 int renderer_take_image_repaint(Renderer *renderer);

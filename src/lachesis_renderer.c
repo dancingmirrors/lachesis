@@ -24,6 +24,7 @@
 #include "lachesis_config.h"
 #include "lachesis_deinterlace.h"
 #include "lachesis_equalizer.h"
+#include "lachesis_hwaccel.h"
 #include "lachesis_icc.h"
 #include "lachesis_icon.h"
 #include "lachesis_log.h"
@@ -101,7 +102,6 @@
 #include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
 #include <libavutil/buffer.h>
-#include <libavutil/imgutils.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
 #include <libavutil/pixdesc.h>
@@ -134,9 +134,7 @@
 #define LACHESIS_CAN_ITERATE_LIBS 1
 #endif
 
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || \
-    defined(__NetBSD__) || defined(__DragonFly__)
-#define LACHESIS_HAVE_DRM_NODES 1
+#ifdef LACHESIS_HAVE_DRM_NODES
 #include <dirent.h>
 #ifdef __linux__
 #include <sys/sysmacros.h>
@@ -421,253 +419,6 @@ static inline int enable_debug(const AVDictionary *opt) {
     return debug;
 }
 
-#if LACHESIS_HAVE_VULKAN || LACHESIS_HAVE_D3D11 || \
-    defined(LACHESIS_HAVE_DRM_NODES)
-
-static int glob_match(const char *pattern, const char *text) {
-    const char *star = NULL;
-    const char *retry = text;
-
-    while (*text) {
-        if (*pattern == '?' || av_tolower(*pattern) == av_tolower(*text)) {
-            pattern++;
-            text++;
-        } else if (*pattern == '*') {
-            star = pattern++;
-            retry = text;
-        } else if (star) {
-            pattern = star + 1;
-            text = ++retry;
-        } else {
-            return 0;
-        }
-    }
-    while (*pattern == '*') {
-        pattern++;
-    }
-
-    return !*pattern;
-}
-
-#endif
-
-#ifdef LACHESIS_HAVE_DRM_NODES
-
-static int read_sysfs_line(const char *path, char *buf, size_t size) {
-    FILE *f = fopen(path, "r");
-    size_t len;
-
-    if (!f) {
-        return AVERROR(ENOENT);
-    }
-    if (!fgets(buf, (int)size, f)) {
-        fclose(f);
-        return AVERROR(EIO);
-    }
-    fclose(f);
-
-    len = strlen(buf);
-    while (len && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
-        buf[--len] = '\0';
-    }
-
-    return len ? 0 : AVERROR_INVALIDDATA;
-}
-
-static int drm_node_driver(const char *node, char *buf, size_t size) {
-    const char *base = strrchr(node, '/');
-    char path[128];
-    char link[256];
-    const char *name;
-    ssize_t len;
-
-    buf[0] = '\0';
-    base = base ? base + 1 : node;
-    snprintf(path, sizeof(path), "/sys/class/drm/%s/device/driver", base);
-
-    len = readlink(path, link, sizeof(link) - 1);
-    if (len <= 0) {
-        return AVERROR(ENOSYS);
-    }
-    link[len] = '\0';
-
-    name = strrchr(link, '/');
-    name = name ? name + 1 : link;
-    if (!*name) {
-        return AVERROR_INVALIDDATA;
-    }
-    av_strlcpy(buf, name, size);
-
-    return 0;
-}
-
-static const char *drm_node_vendor(const char *node) {
-    static const struct {
-        unsigned id;
-        const char *name;
-    } vendors[] = {
-        {0x1002, "AMD"},
-        {0x1022, "AMD"},
-        {0x10de, "NVIDIA"},
-        {0x13b5, "ARM"},
-        {0x1414, "Microsoft"},
-        {0x1af4, "Virtio"},
-        {0x5143, "Qualcomm"},
-        {0x8086, "Intel"},
-    };
-    const char *base = strrchr(node, '/');
-    char path[128];
-    char id[32];
-    unsigned vendor;
-
-    base = base ? base + 1 : node;
-    snprintf(path, sizeof(path), "/sys/class/drm/%s/device/vendor", base);
-    if (read_sysfs_line(path, id, sizeof(id)) < 0) {
-        return NULL;
-    }
-    vendor = (unsigned)strtoul(id, NULL, 0);
-
-    for (size_t i = 0; i < FF_ARRAY_ELEMS(vendors); i++) {
-        if (vendors[i].id == vendor) {
-            return vendors[i].name;
-        }
-    }
-
-    return NULL;
-}
-
-static int drm_driver_does_vaapi(const char *driver) {
-    static const char *const known[] = {
-        "amdgpu",
-        "i915",
-        "msm",
-        "nouveau",
-        "radeon",
-        "v3d",
-        "vc4",
-        "xe",
-    };
-
-    for (size_t i = 0; driver[0] && i < FF_ARRAY_ELEMS(known); i++) {
-        if (!strcmp(driver, known[i])) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-static int rank_gpu_node(const RendererGpuNode *node) {
-    char described[128];
-
-    if (node->is_renderer) {
-        return 0;
-    }
-    if (want_device) {
-        const char *vendor = drm_node_vendor(node->path);
-
-        snprintf(described, sizeof(described), "%s%s%s", vendor ? vendor : "",
-                 vendor ? " " : "", node->driver);
-        if (described[0] &&
-            (av_stristr(described, want_device) ||
-             glob_match(want_device, described))) {
-            return 1;
-        }
-    }
-
-    return drm_driver_does_vaapi(node->driver) ? 2 : 3;
-}
-
-static int list_gpu_nodes(const char *own, RendererGpuNode *nodes, int max) {
-    int ranks[RENDERER_MAX_GPU_NODES];
-    struct dirent *ent;
-    DIR *dir;
-    int num = 0;
-
-    if (max <= 0) {
-        return 0;
-    }
-    if (max > RENDERER_MAX_GPU_NODES) {
-        max = RENDERER_MAX_GPU_NODES;
-    }
-
-    if (own[0]) {
-        av_strlcpy(nodes[0].path, own, sizeof(nodes[0].path));
-        if (drm_node_driver(own, nodes[0].driver,
-                            sizeof(nodes[0].driver)) < 0) {
-            nodes[0].driver[0] = '\0';
-        }
-        nodes[0].is_renderer = 1;
-        num = 1;
-    }
-
-    dir = opendir("/dev/dri");
-    if (!dir) {
-        return num;
-    }
-
-    while ((ent = readdir(dir)) && num < max) {
-        RendererGpuNode *node = &nodes[num];
-
-        if (strncmp(ent->d_name, "renderD", 7)) {
-            continue;
-        }
-        av_strlcpy(node->path, "/dev/dri/", sizeof(node->path));
-        av_strlcat(node->path, ent->d_name, sizeof(node->path));
-        if (!strcmp(node->path, own)) {
-            continue;
-        }
-        if (drm_node_driver(node->path, node->driver,
-                            sizeof(node->driver)) < 0) {
-            node->driver[0] = '\0';
-        }
-        node->is_renderer = 0;
-        num++;
-    }
-    closedir(dir);
-
-    for (int i = 0; i < num; i++) {
-        ranks[i] = rank_gpu_node(&nodes[i]);
-    }
-    for (int i = 1; i < num; i++) {
-        RendererGpuNode hold = nodes[i];
-        int rank = ranks[i];
-        int j = i;
-
-        while (j > 0 && ranks[j - 1] > rank) {
-            nodes[j] = nodes[j - 1];
-            ranks[j] = ranks[j - 1];
-            j--;
-        }
-        nodes[j] = hold;
-        ranks[j] = rank;
-    }
-
-    return num;
-}
-
-int renderer_gpu_nodes(Renderer *renderer, RendererGpuNode *nodes, int max) {
-    char own[64];
-
-    if (renderer_device_node(renderer, own, sizeof(own)) < 0) {
-        own[0] = '\0';
-    }
-
-    return list_gpu_nodes(own, nodes, max);
-}
-
-#else /* !LACHESIS_HAVE_DRM_NODES */
-
-int renderer_gpu_nodes(Renderer *renderer, RendererGpuNode *nodes, int max) {
-    (void)renderer;
-    (void)nodes;
-    (void)max;
-
-    return 0;
-}
-
-#endif /* LACHESIS_HAVE_DRM_NODES */
-
 #if LACHESIS_HAVE_VULKAN
 
 static void hwctx_lock_queue(void *priv, uint32_t qf, uint32_t qidx) {
@@ -857,7 +608,7 @@ static int match_gpu_device(const GpuDeviceNames names,
         }
     }
     for (int i = 0; i < num; i++) {
-        if (wild ? glob_match(want, names[i])
+        if (wild ? hwaccel_glob_match(want, names[i])
                  : av_stristr(names[i], want) != NULL) {
             return i;
         }
@@ -868,7 +619,7 @@ static int match_gpu_device(const GpuDeviceNames names,
 
     snprintf(anywhere, sizeof(anywhere), "*%s*", want);
     for (int i = 0; i < num; i++) {
-        if (glob_match(anywhere, names[i])) {
+        if (hwaccel_glob_match(anywhere, names[i])) {
             return i;
         }
     }
@@ -4140,88 +3891,6 @@ static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
 
 #endif /* LACHESIS_HAVE_VULKAN */
 
-#define LACHESIS_READBACK_ALIGN 64
-
-static int hwdownload_alloc(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
-    const AVHWFramesContext *frames =
-        (const AVHWFramesContext *)src->hw_frames_ctx->data;
-    enum AVPixelFormat *formats;
-    int ret;
-
-    if (!dl->pool || dl->width != frames->width ||
-        dl->height != frames->height || dl->sw_format != frames->sw_format) {
-        ret = av_hwframe_transfer_get_formats(src->hw_frames_ctx,
-                                              AV_HWFRAME_TRANSFER_DIRECTION_FROM,
-                                              &formats, 0);
-        if (ret < 0) {
-            return ret;
-        }
-        ret = formats[0] == AV_PIX_FMT_NONE
-            ? AVERROR(ENOSYS)
-            : av_image_get_buffer_size(formats[0], frames->width,
-                                       frames->height,
-                                       LACHESIS_READBACK_ALIGN);
-        if (ret < 0) {
-            av_freep(&formats);
-            return ret;
-        }
-
-        av_buffer_pool_uninit(&dl->pool);
-        dl->pool = av_buffer_pool_init((size_t)ret, NULL);
-        if (!dl->pool) {
-            av_freep(&formats);
-            return AVERROR(ENOMEM);
-        }
-        dl->format = formats[0];
-        dl->sw_format = frames->sw_format;
-        dl->width = frames->width;
-        dl->height = frames->height;
-        av_freep(&formats);
-    }
-
-    dst->format = dl->format;
-    dst->width = dl->width;
-    dst->height = dl->height;
-
-    dst->buf[0] = av_buffer_pool_get(dl->pool);
-    if (!dst->buf[0]) {
-        return AVERROR(ENOMEM);
-    }
-
-    ret = av_image_fill_arrays(dst->data, dst->linesize, dst->buf[0]->data,
-                               dst->format, dst->width, dst->height,
-                               LACHESIS_READBACK_ALIGN);
-    if (ret < 0) {
-        av_buffer_unref(&dst->buf[0]);
-        return ret;
-    }
-
-    return 0;
-}
-
-int hwdownload_frame(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
-    int ret;
-
-    av_frame_unref(dst);
-    if (hwdownload_alloc(dl, dst, src) < 0) {
-        /* Let the transfer allocate for us rather than give up on the frame. */
-        av_frame_unref(dst);
-    }
-    ret = av_hwframe_transfer_data(dst, src, 0);
-    if (ret < 0) {
-        return ret;
-    }
-    dst->width = src->width;
-    dst->height = src->height;
-
-    return av_frame_copy_props(dst, src);
-}
-
-void hwdownload_free(HwDownload *dl) {
-    av_buffer_pool_uninit(&dl->pool);
-    memset(dl, 0, sizeof(*dl));
-}
-
 static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
     static int warned_download;
     int ret;
@@ -6636,6 +6305,10 @@ int renderer_device_node(Renderer *renderer, char *buf, size_t size) {
 #endif
 
     return AVERROR(ENOSYS);
+}
+
+const char *renderer_wanted_device(void) {
+    return want_device;
 }
 
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {
