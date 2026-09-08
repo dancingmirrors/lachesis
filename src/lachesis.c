@@ -3028,6 +3028,7 @@ static void video_refresh(void *opaque, double *remaining_time) {
             }
 
             deinterlace_retire_frame(is);
+            degrade_note_shown(is);
             frame_queue_next(&is->pictq);
             is->force_refresh = 1;
 

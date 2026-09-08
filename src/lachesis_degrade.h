@@ -31,6 +31,7 @@ void apply_degraded_decode(AVCodecContext *avctx, int level);
 void degrade_init(VideoState *is);
 void degrade_reset(VideoState *is);
 void degrade_note_stall(VideoState *is, int64_t stall_us);
+void degrade_note_shown(VideoState *is);
 void degrade_frame(VideoState *is, double dpts, int64_t decode_us,
                    int64_t budget_us, int had_packets);
 

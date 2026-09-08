@@ -254,6 +254,10 @@ typedef struct VideoState {
     int64_t degrade_read_ahead_us;
     int64_t degrade_late_since_us;
     double degrade_lag_peak;
+    unsigned degrade_shown;
+    unsigned degrade_shown_mark;
+    int64_t degrade_shown_us;
+    int degrade_held;
     int64_t degrade_calm_us;
     int64_t degrade_calm_mark_us;
     double catchup_kept_time;
@@ -270,7 +274,9 @@ typedef struct VideoState {
     double degrade_judder_rate;
     int degrade_serial;
     int degrade_deaf;
-    int64_t degrade_serial_us;
+    double degrade_speed;
+    int degrade_shape;
+    int64_t degrade_settle_us;
     int64_t last_content_skip_us;
     double content_skip_pts;
     int content_skip_serial;
