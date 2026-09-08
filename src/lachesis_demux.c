@@ -155,6 +155,7 @@ static int component_open(VideoState *is, int stream_index) {
     int sample_rate;
     AVChannelLayout ch_layout = {0};
     int spdif = 0;
+    int hwaccel_probe = 0;
     int ret = 0;
 
     if (stream_index < 0 || stream_index >= (int)ic->nb_streams) {
@@ -240,14 +241,19 @@ static int component_open(VideoState *is, int stream_index) {
         }
     }
 
-    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-        ret = hwaccel_open_device(&avctx->hw_device_ctx, codec, avctx,
+    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !is->hwaccel_off) {
+        const AVCodec *sw_codec = codec;
+
+        ret = hwaccel_open_device(&avctx->hw_device_ctx, &codec, avctx,
                                   av_guess_frame_rate(ic,
                                                       ic->streams[stream_index],
                                                       NULL));
         if (ret < 0) {
             goto fail;
         }
+        hwaccel_probe = codec != sw_codec;
+    } else if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+        media_info_set_hwaccel(NULL, 0);
     }
 
     if (avctx->hw_device_ctx) {
@@ -334,6 +340,7 @@ static int component_open(VideoState *is, int stream_index) {
         if ((ret = decoder_init(&is->viddec, avctx, &is->videoq, is->continue_read_thread)) < 0) {
             goto fail;
         }
+        is->viddec.hwaccel_probe = hwaccel_probe;
         if (format_lacks_timestamps(is->ic)) {
             is->viddec.start_pts = is->video_st->start_time;
             is->viddec.start_pts_tb = is->video_st->time_base;

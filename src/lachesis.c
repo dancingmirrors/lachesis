@@ -506,7 +506,13 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                     av_assert0(frame);
                     ret = avcodec_receive_frame(d->avctx, frame);
                     if (ret >= 0) {
+                        d->hwaccel_probe = 0;
                         frame->pts = frame->best_effort_timestamp;
+                    } else if (d->hwaccel_probe && ret != AVERROR(EAGAIN) &&
+                               ret != AVERROR_EOF) {
+                        d->hwaccel_probe = 0;
+                        d->hwaccel_failed = 1;
+                        return -1;
                     }
                     break;
                 case AVMEDIA_TYPE_AUDIO:
@@ -589,10 +595,18 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                 fd->pkt_pos = d->pkt->pos;
             }
 
-            if (avcodec_send_packet(d->avctx, d->pkt) == AVERROR(EAGAIN)) {
+            int sret = avcodec_send_packet(d->avctx, d->pkt);
+
+            if (sret == AVERROR(EAGAIN)) {
                 d->packet_pending = 1;
             } else {
                 av_packet_unref(d->pkt);
+            }
+            if (sret < 0 && sret != AVERROR(EAGAIN) && sret != AVERROR_EOF &&
+                d->hwaccel_probe) {
+                d->hwaccel_probe = 0;
+                d->hwaccel_failed = 1;
+                return -1;
             }
         }
     }
@@ -3934,6 +3948,36 @@ static void input_poll(VideoState *is) {
     }
 }
 
+static void hwaccel_check_fallback(VideoState *is) {
+    int stream_index;
+    double now;
+
+    if (!is || is->video_stream < 0 || !is->viddec.hwaccel_failed) {
+        return;
+    }
+
+    stream_index = is->video_stream;
+    is->hwaccel_off = 1;
+    is->viddec.hwaccel_failed = 0;
+    log_warn("Falling back to software decoding.\n");
+    stream_component_close(is, stream_index);
+    if (stream_component_open(is, stream_index) < 0) {
+        return;
+    }
+
+    if (!is->ic || !is->ic->pb ||
+        !(is->ic->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        SDL_GetAtomicInt(&is->seek_by_bytes) > 0) {
+        return;
+    }
+    now = effective_playhead(is);
+    if (isnan(now)) {
+        stream_seek_exact(is, is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0);
+    } else {
+        stream_seek_exact(is, (int64_t)(now * AV_TIME_BASE));
+    }
+}
+
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
 
@@ -3964,6 +4008,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
             audio_device_resume();
         }
         apply_present_feedback();
+        hwaccel_check_fallback(is);
         refresh_display_info(is);
         if (renderer_take_image_repaint(renderer)) {
             is->force_refresh = 1;

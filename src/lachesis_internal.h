@@ -155,6 +155,8 @@ typedef struct Decoder {
     int64_t wait_us;
     int exact_done_serial;
     int exact_dropped_serial;
+    int hwaccel_probe;
+    int hwaccel_failed;
 } Decoder;
 
 enum StreamOpenPhase {
@@ -302,6 +304,7 @@ typedef struct VideoState {
     int video_stream;
     AVStream *video_st;
     PacketQueue videoq;
+    int hwaccel_off;
     /* Maximum duration of a frame, above which we consider the jump a timestamp discontinuity. */
     double max_frame_duration;
     struct SwsContext *sub_convert_ctx;

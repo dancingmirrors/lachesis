@@ -628,6 +628,32 @@ static int hwaccel_decodes(const AVCodec *codec, enum AVHWDeviceType type) {
     }
 }
 
+/* For example, libdav1d outranks the native AV1 but decodes in software only. */
+static const AVCodec *hwaccel_decoder(const AVCodec *codec,
+                                      enum AVHWDeviceType type) {
+    void *iter = NULL;
+    const AVCodec *cur;
+
+    if (!codec || type == AV_HWDEVICE_TYPE_NONE) {
+        return NULL;
+    }
+    if (hwaccel_decodes(codec, type)) {
+        return codec;
+    }
+    if (video_codec_name) {
+        return NULL;
+    }
+
+    while ((cur = av_codec_iterate(&iter))) {
+        if (cur->id == codec->id && av_codec_is_decoder(cur) &&
+            hwaccel_decodes(cur, type)) {
+            return cur;
+        }
+    }
+
+    return NULL;
+}
+
 static unsigned decode_cap_for_codec(enum AVCodecID codec_id) {
     switch (codec_id) {
     case AV_CODEC_ID_H264:
@@ -692,7 +718,7 @@ static double software_decode_load(const AVCodecContext *avctx,
         (depth > 8 ? 1.4 : 1.0) / 1e6;
 }
 
-static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
+static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
                           const AVCodecContext *avctx, AVRational frame_rate) {
     static const char *auto_hwaccels_vk[] = {
         "vulkan", "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
@@ -736,6 +762,8 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
     }
 
     if (hwaccel) {
+        enum AVHWDeviceType type = av_hwdevice_find_type_by_name(hwaccel);
+        const AVCodec *hw_codec = hwaccel_decoder(*codec, type);
         int why = 0;
 
         for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
@@ -743,7 +771,15 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
             ret = try_hwaccel(device_ctx, hwaccel, loc, &gpus, 1, &off_gpu);
             if (ret >= 0) {
                 av_log_set_level(saved_level);
+                if (!hw_codec) {
+                    av_buffer_unref(device_ctx);
+                    log_warn("No decoder for %s can use hwaccel %s. "
+                             "Decoding in software.\n",
+                             avcodec_get_name(avctx->codec_id), hwaccel);
+                    return 0;
+                }
                 media_info_set_hwaccel(hwaccel, off_gpu);
+                *codec = hw_codec;
                 return 0;
             }
             why = keep_best_error(why, ret);
@@ -760,8 +796,9 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
         for (int i = 0; auto_hwaccels[i]; i++) {
             const char *name = auto_hwaccels[i];
             enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
+            const AVCodec *hw_codec = hwaccel_decoder(*codec, type);
 
-            if (type == AV_HWDEVICE_TYPE_NONE || !hwaccel_decodes(codec, type)) {
+            if (!hw_codec) {
                 continue;
             }
             if (type == AV_HWDEVICE_TYPE_VULKAN &&
@@ -780,6 +817,7 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec *codec,
             if (!ret) {
                 av_log_set_level(saved_level);
                 media_info_set_hwaccel(name, off_gpu);
+                *codec = hw_codec;
                 return 0;
             }
             *device_ctx = NULL;
@@ -833,20 +871,22 @@ static int hwaccel_usable(const AVCodec *codec, const AVBufferRef *device_ctx) {
     return hwaccel_decodes(codec, dev->type);
 }
 
-int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec *codec,
+int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,
                         const AVCodecContext *avctx, AVRational frame_rate) {
+    const AVCodec *sw_codec = *codec;
     int ret = create_hwaccel(device_ctx, codec, avctx, frame_rate);
 
     if (ret < 0) {
         return ret;
     }
     if (*device_ctx &&
-        (!hwaccel_usable(codec, *device_ctx) ||
+        (!hwaccel_usable(*codec, *device_ctx) ||
          !hwaccel_size_usable(*device_ctx,
                               FFMAX(avctx->coded_width, avctx->width),
                               FFMAX(avctx->coded_height, avctx->height)))) {
         av_buffer_unref(device_ctx);
         media_info_set_hwaccel(NULL, 0);
+        *codec = sw_codec;
     }
 
     return 0;

@@ -1008,12 +1008,9 @@ static const VkBackedExtension backed_extensions[] = {
        offsetof(VkPhysicalDeviceVideoMaintenance2FeaturesKHR, videoMaintenance2)},
      }},
 #endif
-#ifdef VK_KHR_video_decode_vp9
-    {VK_KHR_VIDEO_DECODE_VP9_EXTENSION_NAME, "videoDecodeVP9",
-     {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_DECODE_VP9_FEATURES_KHR,
-       offsetof(VkPhysicalDeviceVideoDecodeVP9FeaturesKHR, videoDecodeVP9)},
-     }},
-#endif
+    /* Due to the way libplacebo's vk_features_normalize() works, listing
+     * VK_KHR_video_decode_vp9 here would only cause us to withhold it.
+     */
 #ifdef VK_KHR_video_encode_av1
     {VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME, "videoEncodeAV1",
      {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_AV1_FEATURES_KHR,
