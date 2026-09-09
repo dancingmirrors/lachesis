@@ -48,6 +48,7 @@
 #include <SDL3/SDL.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_append.h"
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
 #include "lachesis_degrade.h"
@@ -873,6 +874,7 @@ int read_thread(void *arg) {
     AVDictionary *base_opts = NULL;
     AVFormatContext *kept_ic = NULL;
     int edit_list_fell_back = 0;
+    unsigned io_ops = 0;
 
     thread_set_priority(SDL_THREAD_PRIORITY_NORMAL, "reader");
 
@@ -911,8 +913,12 @@ int read_thread(void *arg) {
     if (is->archive_path && is->entry_name) {
         AVIOInterruptCB archive_interrupt = {decode_interrupt_cb, is};
 
+        if (append_io_local_file(is->archive_path)) {
+            is->append_io = append_io_create_reader(is->archive_path, is);
+        }
         is->archive_avio = archive_entry_open_avio(is->archive_path, is->entry_name,
-                                                   &archive_interrupt);
+                                                   &archive_interrupt,
+                                                   is->append_io);
         if (!is->archive_avio) {
             if (is->abort_request) {
             } else {
@@ -956,6 +962,14 @@ int read_thread(void *arg) {
             } else {
                 log_warn("yt-dlp failed, so trying direct open.\n");
             }
+        }
+    }
+    if (!is->archive_avio && !is->ytdl_vio &&
+        append_io_applies(is->filename, is->iformat)) {
+        is->append_io = append_io_create(is->filename, is);
+        if (is->append_io) {
+            ic->pb = append_io_pb(is->append_io);
+            ic->flags |= AVFMT_FLAG_CUSTOM_IO;
         }
     }
     if (is->abort_request) {
@@ -1484,12 +1498,22 @@ int read_thread(void *arg) {
             SDL_UnlockMutex(wait_mutex);
             continue;
         }
+        io_ops = append_io_ops(is->append_io);
         ret = av_read_frame(ic, pkt);
         if (ret < 0) {
-            if ((ret == AVERROR_EOF || avio_feof(ic->pb)) && !is->eof) {
+            int tried = append_io_ops(is->append_io) != io_ops;
+            int at_eof = ret == AVERROR_EOF || avio_feof(ic->pb);
+            int failed = ic->pb && ic->pb->error;
+
+            if (at_eof && tried && !failed && ic->pb &&
+                append_io_wait_growth(is->append_io)) {
+                ic->pb->eof_reached = 0;
+                continue;
+            }
+            if (at_eof && !is->eof) {
                 signal_eof(is, pkt);
             }
-            if (ic->pb && ic->pb->error) {
+            if (failed) {
                 goto fail;
             }
             SDL_LockMutex(wait_mutex);

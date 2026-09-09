@@ -1522,7 +1522,7 @@ static char *read_local_file(const char *path, size_t *out_len) {
 
 static char *read_archive_member(const char *archive_path, const char *entry_name,
                                  const char *name, size_t *out_len) {
-    AVIOContext *avio = archive_entry_open_avio(archive_path, entry_name, NULL);
+    AVIOContext *avio = archive_entry_open_avio(archive_path, entry_name, NULL, NULL);
     char *buf;
 
     *out_len = 0;

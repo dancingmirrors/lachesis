@@ -34,6 +34,7 @@
 #include <libavutil/mem.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_append.h"
 
 static int natural_compare(const char *a, const char *b) {
     const char *a0 = a, *b0 = b;
@@ -182,21 +183,74 @@ typedef struct {
     int64_t size;
     int64_t pos;
     AVIOInterruptCB interrupt;
+    struct AppendIO *reader;
+    uint8_t *block;
 } ArchiveIO;
 
 static int archive_interrupted(const ArchiveIO *io) {
     return io->interrupt.callback && io->interrupt.callback(io->interrupt.opaque);
 }
 
+static la_ssize_t archive_file_read(struct archive *arch, void *opaque,
+                                    const void **buf) {
+    ArchiveIO *io = opaque;
+    int expect_more = io->size > 0 && io->pos < io->size;
+    int64_t r;
+
+    *buf = io->block;
+    r = append_io_read(io->reader, io->block, ARCHIVE_IO_BUFSIZE, expect_more);
+    if (r < 0) {
+        archive_set_error(arch, EIO, "Could not read '%s'", io->archive_path);
+        return -1;
+    }
+
+    return (la_ssize_t)r;
+}
+
+static la_int64_t archive_file_seek(struct archive *arch, void *opaque,
+                                    la_int64_t offset, int whence) {
+    ArchiveIO *io = opaque;
+    int64_t r = append_io_seek(io->reader, offset, whence);
+
+    (void)arch;
+
+    return r < 0 ? ARCHIVE_FATAL : (la_int64_t)r;
+}
+
+static int archive_file_close(struct archive *arch, void *opaque) {
+    (void)arch;
+    (void)opaque;
+
+    return ARCHIVE_OK;
+}
+
+static int archive_io_start(ArchiveIO *io, struct archive *arch) {
+    if (!io->reader) {
+        return archive_read_open_filename(arch, io->archive_path,
+                                          ARCHIVE_IO_BUFSIZE);
+    }
+    if (append_io_seek(io->reader, 0, SEEK_SET) < 0) {
+        return ARCHIVE_FATAL;
+    }
+    archive_read_set_callback_data(arch, io);
+    archive_read_set_read_callback(arch, archive_file_read);
+    archive_read_set_seek_callback(arch, archive_file_seek);
+    archive_read_set_close_callback(arch, archive_file_close);
+
+    return archive_read_open1(arch);
+}
+
 static int archive_io_open(ArchiveIO *io) {
     struct archive *arch = archive_read_new();
+
+    io->size = -1;
     archive_read_support_filter_all(arch);
     archive_read_support_format_zip(arch);
     archive_read_support_format_rar(arch);
     archive_read_support_format_rar5(arch);
     archive_read_support_format_7zip(arch);
 
-    int r = archive_read_open_filename(arch, io->archive_path, ARCHIVE_IO_BUFSIZE);
+    int r = archive_io_start(io, arch);
     if (r != ARCHIVE_OK && r != ARCHIVE_WARN) {
         archive_read_free(arch);
         return -1;
@@ -238,6 +292,37 @@ static void archive_io_close(ArchiveIO *io) {
     }
 }
 
+static int archive_io_skip_to(ArchiveIO *io, int64_t target) {
+    uint8_t discard[4096];
+
+    while (io->pos < target) {
+        int want = (int)FFMIN((int64_t)sizeof(discard), target - io->pos);
+        la_ssize_t r = archive_read_data(io->arch, discard, want);
+
+        if (r <= 0) {
+            return -1;
+        }
+        io->pos += r;
+        if (archive_interrupted(io)) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int archive_io_restart(ArchiveIO *io) {
+    int64_t at = io->pos;
+
+    archive_io_close(io);
+    io->pos = 0;
+    if (archive_io_open(io) < 0) {
+        return -1;
+    }
+
+    return archive_io_skip_to(io, at);
+}
+
 static int archive_read_packet(void *opaque, uint8_t *buf, int buf_size) {
     ArchiveIO *io = opaque;
     if (!io->arch) {
@@ -248,6 +333,12 @@ static int archive_read_packet(void *opaque, uint8_t *buf, int buf_size) {
     }
 
     la_ssize_t r = archive_read_data(io->arch, buf, buf_size);
+    if (r <= 0 && io->reader && io->size > 0 && io->pos < io->size &&
+        append_io_wait_growth(io->reader)) {
+        if (archive_io_restart(io) == 0) {
+            r = archive_read_data(io->arch, buf, buf_size);
+        }
+    }
     if (r == 0) {
         return AVERROR_EOF;
     }
@@ -303,20 +394,8 @@ static int64_t archive_seek(void *opaque, int64_t offset, int whence) {
         }
     }
 
-    /* Seek forward by reading and discarding bytes. */
-    if (target > io->pos) {
-        uint8_t discard[4096];
-        while (io->pos < target) {
-            int want = (int)FFMIN((int64_t)sizeof(discard), target - io->pos);
-            la_ssize_t r = archive_read_data(io->arch, discard, want);
-            if (r <= 0) {
-                return -1;
-            }
-            io->pos += r;
-            if (archive_interrupted(io)) {
-                return -1;
-            }
-        }
+    if (target > io->pos && archive_io_skip_to(io, target) < 0) {
+        return -1;
     }
 
     return io->pos;
@@ -327,12 +406,14 @@ static void archive_io_free_cb(void *opaque) {
     archive_io_close(io);
     av_free(io->archive_path);
     av_free(io->entry_name);
+    av_free(io->block);
     av_free(io);
 }
 
 AVIOContext *archive_entry_open_avio(const char *archive_path,
                                      const char *entry_name,
-                                     const AVIOInterruptCB *interrupt) {
+                                     const AVIOInterruptCB *interrupt,
+                                     struct AppendIO *reader) {
     ArchiveIO *io = av_mallocz(sizeof(*io));
     if (!io) {
         return NULL;
@@ -342,8 +423,16 @@ AVIOContext *archive_entry_open_avio(const char *archive_path,
     io->entry_name = av_strdup(entry_name);
     io->size = -1;
     io->pos = 0;
+    io->reader = reader;
     if (interrupt) {
         io->interrupt = *interrupt;
+    }
+    if (reader) {
+        io->block = av_malloc(ARCHIVE_IO_BUFSIZE);
+        if (!io->block) {
+            archive_io_free_cb(io);
+            return NULL;
+        }
     }
 
     if (!io->archive_path || !io->entry_name) {

@@ -18,24 +18,29 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef LACHESIS_ARCHIVE_H
-#define LACHESIS_ARCHIVE_H
+#ifndef LACHESIS_APPEND_H
+#define LACHESIS_APPEND_H
 
+#include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 
-int natural_name_cmp(const void *a, const void *b);
-
-int is_supported_archive(const char *path);
-int archive_list_entries(const char *archive_path, char ***out, int *count);
-
-void archive_free_entries(char **names, int count);
+#include "lachesis_internal.h"
 
 struct AppendIO;
 
-AVIOContext *archive_entry_open_avio(const char *archive_path,
-                                     const char *entry_name,
-                                     const AVIOInterruptCB *interrupt,
-                                     struct AppendIO *reader);
-void archive_entry_close_avio(AVIOContext *avio);
+int append_io_local_file(const char *url);
+int append_io_applies(const char *url, const AVInputFormat *forced);
 
-#endif // LACHESIS_ARCHIVE_H
+struct AppendIO *append_io_create(const char *url, VideoState *is);
+struct AppendIO *append_io_create_reader(const char *url, VideoState *is);
+void append_io_free(struct AppendIO **pa);
+AVIOContext *append_io_pb(struct AppendIO *a);
+
+unsigned append_io_ops(const struct AppendIO *a);
+int append_io_wait_growth(struct AppendIO *a);
+
+int64_t append_io_read(struct AppendIO *a, void *buf, size_t size,
+                       int expect_more);
+int64_t append_io_seek(struct AppendIO *a, int64_t offset, int whence);
+
+#endif /* LACHESIS_APPEND_H */

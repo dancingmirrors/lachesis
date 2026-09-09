@@ -89,6 +89,7 @@
 #endif
 
 #include "lachesis_alloc.h"
+#include "lachesis_append.h"
 #include "lachesis_archive.h"
 #include "lachesis_audio.h"
 #include "lachesis_degrade.h"
@@ -1470,6 +1471,7 @@ static int stream_close(VideoState *is) {
     av_freep(&is->ytdl_audio_url);
     archive_entry_close_avio(is->archive_avio);
     is->archive_avio = NULL;
+    append_io_free(&is->append_io);
 
     packet_queue_destroy(&is->videoq);
     packet_queue_destroy(&is->audioq);

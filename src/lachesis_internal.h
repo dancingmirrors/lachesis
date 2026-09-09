@@ -323,6 +323,7 @@ typedef struct VideoState {
     char *archive_path;
     char *entry_name;
     AVIOContext *archive_avio;
+    struct AppendIO *append_io;
     int ytdl_forced;
     char *ytdl_source_url;
     char *ytdl_audio_url;
