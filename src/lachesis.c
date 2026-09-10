@@ -1539,6 +1539,15 @@ static volatile sig_atomic_t quit_signal_polled;
 
 static int64_t shutdown_started;
 static int64_t shutdown_marked;
+static int64_t slowest_loop_turn;
+static int64_t last_loop_turn;
+
+static void note_loop_turn(int64_t elapsed) {
+    last_loop_turn = elapsed;
+    if (elapsed > slowest_loop_turn) {
+        slowest_loop_turn = elapsed;
+    }
+}
 
 static void shutdown_begin(void) {
     shutdown_started = shutdown_marked = av_gettime_relative();
@@ -1561,6 +1570,10 @@ static void shutdown_finish(void) {
     log_finish_line();
     terminal_restore_now();
     shutdown_step("the exit");
+    log_verbose("Shutdown: teardown took %.1f ms (the event loop's last turn "
+                "took %.1f ms and its slowest this session was %.1f ms).\n",
+                (av_gettime_relative() - shutdown_started) / 1000.0,
+                last_loop_turn / 1000.0, slowest_loop_turn / 1000.0);
     log_status_finish();
 }
 
@@ -1599,8 +1612,6 @@ av_noreturn void do_exit(VideoState *is) {
     if (renderer) {
         renderer_quiesce(renderer, teardown_must_be_full());
         shutdown_step("quiescing the renderer");
-        renderer_save_cache(renderer);
-        shutdown_step("saving the shader cache");
     }
     if (is) {
         if (teardown_must_be_full()) {
@@ -3983,6 +3994,7 @@ static void hwaccel_check_fallback(VideoState *is) {
 
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
     double remaining_time = 0.0;
+    int64_t turn_started;
 
     quit_signal_polled = 1;
     refresh_window_title(is);
@@ -4002,6 +4014,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
                 SDL_DelayNS(ns);
             }
         }
+        turn_started = av_gettime_relative();
         remaining_time = REFRESH_RATE;
         refresh_status_line(is);
         ab_loop_check(is);
@@ -4022,6 +4035,7 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
         }
         finish_raise();
         SDL_PumpEvents();
+        note_loop_turn(av_gettime_relative() - turn_started);
         input_poll(is);
     }
 }

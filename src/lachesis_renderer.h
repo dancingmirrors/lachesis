@@ -187,8 +187,6 @@ void renderer_quiesce(Renderer *renderer, int drain_gpu);
 
 int renderer_release_frames(Renderer *renderer);
 
-void renderer_save_cache(Renderer *renderer);
-
 int renderer_destroy(Renderer *renderer);
 
 int renderer_enable_360(Renderer *renderer, enum View360Layout layout,
