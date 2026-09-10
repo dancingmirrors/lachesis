@@ -41,8 +41,10 @@
 
 #if defined(_WIN32)
 #include <windows.h>
+#define LACHESIS_GETPID() GetCurrentProcessId()
 #else
 #include <unistd.h>
+#define LACHESIS_GETPID() getpid()
 #endif
 
 #include <libplacebo/config.h>
@@ -108,15 +110,20 @@
 
 #define LACHESIS_HAVE_PL_CACHE 1
 #include <libplacebo/cache.h>
+#include <stdatomic.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <time.h>
 #ifdef _WIN32
 #include <direct.h>
+#include <sys/utime.h>
 #define LACHESIS_PATH_SEP "\\"
+#define lachesis_utime _utime
 #else
 #include <dirent.h>
+#include <utime.h>
 #define LACHESIS_PATH_SEP "/"
+#define lachesis_utime utime
 #endif
 #define LACHESIS_SHADER_CACHE_LIMIT (64u << 20)
 
@@ -3004,23 +3011,21 @@ static int resolve_cache_dir(const AVDictionary *opt, char *buf, size_t size) {
     return -1;
 }
 
-#define CACHE_PRUNE_AGE (24 * 60 * 60)
 #define CACHE_KEY_DIGITS 16
 #define CACHE_PATH_MAX (4096 + 128)
+#define CACHE_TEMP_AGE (24 * 60 * 60)
 
 #ifndef S_ISREG
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #endif
 
-#if defined(pl_cache_get_dir) && defined(pl_cache_set_dir)
-#define lachesis_cache_get_dir pl_cache_get_dir
-#define lachesis_cache_set_dir pl_cache_set_dir
-#else
 #define CACHE_FILE_HEAD 40
 #define CACHE_COUNT_OFF 12
 #define CACHE_KEY_OFF 16
 #define CACHE_SIZE_OFF 24
 #define CACHE_LOAD_PAD 4
+
+static atomic_uint cache_write_seq;
 
 static void cache_keep(void *data) {
     (void)data;
@@ -3072,6 +3077,7 @@ static void lachesis_cache_set_dir(void *priv, pl_cache_obj obj) {
                          .size = obj.size,
                          .free = cache_keep};
     const char *prefix = priv;
+    char tmp[CACHE_PATH_MAX + 64];
     char path[CACHE_PATH_MAX];
     pl_cache one;
     FILE *f;
@@ -3089,16 +3095,42 @@ static void lachesis_cache_set_dir(void *priv, pl_cache_obj obj) {
         fclose(f);
         return;
     }
-    if (!(f = fopen(path, "wb"))) {
+    snprintf(tmp, sizeof(tmp), "%s.%" PRIuMAX ".%x.tmp", path,
+             (uintmax_t)LACHESIS_GETPID(),
+             atomic_fetch_add_explicit(&cache_write_seq, 1u,
+                                       memory_order_relaxed));
+    if (!(f = fopen(tmp, "wb"))) {
         return;
     }
     one = pl_cache_create(&pl_cache_default_params);
     pl_cache_set(one, &copy);
     ok = pl_cache_save_file(one, f) == 1 && !ferror(f);
     pl_cache_destroy(&one);
-    if (fclose(f) || !ok) {
-        remove(path);
+    if (fclose(f)) {
+        ok = 0;
     }
+    if (ok) {
+#if defined(_WIN32)
+        ok = MoveFileExA(tmp, path, MOVEFILE_REPLACE_EXISTING) != 0;
+#else
+        ok = rename(tmp, path) == 0;
+#endif
+    }
+    if (!ok) {
+        remove(tmp);
+    }
+}
+
+#define CACHE_TOUCH_AGE (24 * 60 * 60)
+
+static void cache_touch(const char *path) {
+    struct stat st;
+
+    if (stat(path, &st) ||
+        (int64_t)time(NULL) - (int64_t)st.st_mtime < CACHE_TOUCH_AGE) {
+        return;
+    }
+    lachesis_utime(path, NULL);
 }
 
 static pl_cache_obj lachesis_cache_get_dir(void *priv, uint64_t key) {
@@ -3138,11 +3170,12 @@ static pl_cache_obj lachesis_cache_get_dir(void *priv, uint64_t key) {
     fclose(f);
     if (!obj.size) {
         remove(path);
+    } else {
+        cache_touch(path);
     }
 
     return obj;
 }
-#endif /* pl_cache_get_dir */
 
 struct CacheEntry {
     char *path;
@@ -3160,8 +3193,12 @@ static int cache_entry_cmp(const void *a, const void *b) {
     return 0;
 }
 
+#define CACHE_NAME_OBJECT 1
+#define CACHE_NAME_TEMP 2
+
 static int cache_name_matches(const RendererContext *ctx, const char *name) {
     size_t leaf = strlen(ctx->cache_leaf);
+    size_t rest;
 
     if (strncmp(name, ctx->cache_leaf, leaf)) {
         return 0;
@@ -3174,8 +3211,15 @@ static int cache_name_matches(const RendererContext *ctx, const char *name) {
             return 0;
         }
     }
+    name += CACHE_KEY_DIGITS;
+    if (!name[0]) {
+        return CACHE_NAME_OBJECT;
+    }
+    rest = strlen(name);
 
-    return !name[CACHE_KEY_DIGITS];
+    return name[0] == '.' && rest >= 4 && !strcmp(name + rest - 4, ".tmp")
+        ? CACHE_NAME_TEMP
+        : 0;
 }
 
 static void cache_note(struct CacheEntry **entries, unsigned *num,
@@ -3210,9 +3254,13 @@ static void cache_note(struct CacheEntry **entries, unsigned *num,
 static void cache_prune(RendererContext *ctx) {
     struct CacheEntry *entries = NULL;
     unsigned have = 0, num = 0;
-    uint64_t kept = 0;
     int64_t now = (int64_t)time(NULL);
-    int dropped = 0;
+    uint64_t kept = 0;
+    int dropped = 0, swept = 0;
+
+    if (!ctx->cache_dir || !ctx->cache_prefix) {
+        return;
+    }
 
 #if defined(_WIN32)
     {
@@ -3226,19 +3274,36 @@ static void cache_prune(RendererContext *ctx) {
             return;
         }
         do {
-            ULARGE_INTEGER used, size;
+            ULARGE_INTEGER used, wrote, size;
+            int kind = cache_name_matches(ctx, found.cFileName);
+            int64_t stamp;
 
-            if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ||
-                !cache_name_matches(ctx, found.cFileName)) {
+            if ((found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !kind) {
                 continue;
             }
             used.LowPart = found.ftLastAccessTime.dwLowDateTime;
             used.HighPart = found.ftLastAccessTime.dwHighDateTime;
+            wrote.LowPart = found.ftLastWriteTime.dwLowDateTime;
+            wrote.HighPart = found.ftLastWriteTime.dwHighDateTime;
+            if (wrote.QuadPart > used.QuadPart) {
+                used = wrote;
+            }
             size.LowPart = found.nFileSizeLow;
             size.HighPart = found.nFileSizeHigh;
+            stamp = (int64_t)(used.QuadPart / 10000000ULL) - 11644473600LL;
+            if (kind == CACHE_NAME_TEMP) {
+                if (now - stamp > CACHE_TEMP_AGE) {
+                    char path[CACHE_PATH_MAX];
+
+                    snprintf(path, sizeof(path), "%s" LACHESIS_PATH_SEP "%s",
+                             ctx->cache_dir, found.cFileName);
+                    remove(path);
+                    swept++;
+                }
+                continue;
+            }
             cache_note(&entries, &num, &have, ctx->cache_dir, found.cFileName,
-                       size.QuadPart,
-                       (int64_t)(used.QuadPart / 10000000ULL) - 11644473600LL);
+                       size.QuadPart, stamp);
         } while (FindNextFileA(search, &found));
         FindClose(search);
     }
@@ -3253,13 +3318,21 @@ static void cache_prune(RendererContext *ctx) {
         while ((ent = readdir(dir))) {
             char path[CACHE_PATH_MAX];
             struct stat st;
+            int kind = cache_name_matches(ctx, ent->d_name);
 
-            if (!cache_name_matches(ctx, ent->d_name)) {
+            if (!kind) {
                 continue;
             }
             snprintf(path, sizeof(path), "%s" LACHESIS_PATH_SEP "%s",
                      ctx->cache_dir, ent->d_name);
             if (stat(path, &st) || !S_ISREG(st.st_mode)) {
+                continue;
+            }
+            if (kind == CACHE_NAME_TEMP) {
+                if (now - (int64_t)st.st_mtime > CACHE_TEMP_AGE) {
+                    remove(path);
+                    swept++;
+                }
                 continue;
             }
             cache_note(&entries, &num, &have, ctx->cache_dir, ent->d_name,
@@ -3273,8 +3346,7 @@ static void cache_prune(RendererContext *ctx) {
     if (num) {
         qsort(entries, num, sizeof(*entries), cache_entry_cmp);
         for (unsigned i = 0; i < num; i++) {
-            if (kept + entries[i].size > LACHESIS_SHADER_CACHE_LIMIT &&
-                now - entries[i].used > CACHE_PRUNE_AGE) {
+            if (kept + entries[i].size > LACHESIS_SHADER_CACHE_LIMIT) {
                 remove(entries[i].path);
                 dropped++;
             } else {
@@ -3286,38 +3358,111 @@ static void cache_prune(RendererContext *ctx) {
     av_freep(&entries);
 
     if (dropped) {
-        log_verbose("Dropped %d stale shader cache object%s.\n", dropped,
-                    dropped == 1 ? "" : "s");
+        log_verbose("Dropped %d shader cache object%s to stay within budget.\n",
+                    dropped, dropped == 1 ? "" : "s");
+    }
+    if (swept) {
+        log_verbose("Swept %d abandoned shader cache temporar%s.\n", swept,
+                    swept == 1 ? "y" : "ies");
     }
 }
 
 struct CacheMigration {
-    const RendererContext *ctx;
+    RendererContext *ctx;
     int written;
 };
 
+static int cache_migrated(const RendererContext *ctx, pl_cache_obj want) {
+    pl_cache_obj have = lachesis_cache_get_dir(ctx->cache_prefix, want.key);
+    int ok = have.data && have.size == want.size &&
+        !memcmp(have.data, want.data, want.size);
+
+    if (have.free) {
+        have.free(have.data);
+    }
+
+    return ok;
+}
+
 static void cache_migrate_obj(void *priv, pl_cache_obj obj) {
     struct CacheMigration *migration = priv;
+    RendererContext *ctx = migration->ctx;
+    pl_cache_obj seed = {.key = obj.key, .data = obj.data, .size = obj.size};
     char path[CACHE_PATH_MAX];
-    struct stat st;
 
-    lachesis_cache_set_dir(migration->ctx->cache_prefix, obj);
-    snprintf(path, sizeof(path), "%s%016" PRIx64, migration->ctx->cache_prefix,
-             obj.key);
-    if (!stat(path, &st) && S_ISREG(st.st_mode)) {
+    pl_cache_set(ctx->shader_cache, &seed);
+
+    if (cache_migrated(ctx, obj)) {
         migration->written++;
+        return;
     }
+    snprintf(path, sizeof(path), "%s%016" PRIx64, ctx->cache_prefix, obj.key);
+    remove(path);
+    lachesis_cache_set_dir(ctx->cache_prefix, obj);
+    migration->written += cache_migrated(ctx, obj);
 }
+
+static int cache_migrate_tries(const char *blob, int bump) {
+    char path[CACHE_PATH_MAX + 32];
+    int tries = 0;
+    FILE *f;
+
+    snprintf(path, sizeof(path), "%s.tries", blob);
+    if (bump < 0) {
+        remove(path);
+        return 0;
+    }
+    if ((f = fopen(path, "rb"))) {
+        if (fscanf(f, "%d", &tries) != 1 || tries < 0) {
+            tries = 0;
+        }
+        fclose(f);
+    }
+    if (!bump) {
+        return tries;
+    }
+    tries += bump;
+    if ((f = fopen(path, "wb"))) {
+        fprintf(f, "%d\n", tries);
+        fclose(f);
+    }
+
+    return tries;
+}
+
+static int cache_migrate_retire(const char *blob, const char *spent) {
+#if defined(_WIN32)
+    if (!MoveFileExA(blob, spent, MOVEFILE_REPLACE_EXISTING)) {
+        return 0;
+    }
+#else
+    if (rename(blob, spent)) {
+        return 0;
+    }
+#endif
+    cache_migrate_tries(blob, -1);
+
+    return 1;
+}
+
+#define CACHE_MIGRATE_TRIES 3
 
 static void cache_migrate(RendererContext *ctx) {
     struct CacheMigration migration = {.ctx = ctx};
+    char spent[CACHE_PATH_MAX + 32];
     char path[CACHE_PATH_MAX];
-    int loaded, held = 0;
+    int loaded, held = 0, tries;
     pl_cache blob;
     FILE *f;
 
     snprintf(path, sizeof(path), "%.*s.bin",
              (int)(strlen(ctx->cache_prefix) - 1), ctx->cache_prefix);
+    snprintf(spent, sizeof(spent), "%s.unmigrated", path);
+
+    if (cache_migrate_tries(path, 0) >= CACHE_MIGRATE_TRIES) {
+        cache_migrate_retire(path, spent);
+        return;
+    }
     if (!(f = fopen(path, "rb"))) {
         return;
     }
@@ -3339,11 +3484,25 @@ static void cache_migrate(RendererContext *ctx) {
 
     if (loaded <= 0 || migration.written == held) {
         remove(path);
-    } else {
+        cache_migrate_tries(path, -1);
+        return;
+    }
+
+    tries = cache_migrate_tries(path, 1);
+    if (tries < CACHE_MIGRATE_TRIES) {
         log_warn("Kept the old shader cache because only %d of its %d objects could "
                  "be unpacked.\n",
                  migration.written, held);
+        return;
     }
+    if (!cache_migrate_retire(path, spent)) {
+        log_warn("Could not unpack %d of the old shader cache's %d objects.\n",
+                 held - migration.written, held);
+        return;
+    }
+    log_warn("Gave up unpacking the old shader cache after %d attempts. Keeping it "
+             "as %s.\n",
+             tries, spent);
 }
 
 /* Any failure simply leaves rendering uncached. */
@@ -5573,6 +5732,7 @@ static void destroy(Renderer *renderer) {
 #if LACHESIS_HAVE_PL_CACHE
         pl_gpu_set_cache(ctx->gpu, NULL);
         pl_cache_destroy(&ctx->shader_cache);
+        cache_prune(ctx);
         av_freep(&ctx->cache_dir);
         av_freep(&ctx->cache_prefix);
 #endif
