@@ -2041,6 +2041,11 @@ int video_thread(void *arg) {
             if (ret < 0) {
                 SDL_Event event;
                 SDL_zero(event);
+                log_dead("Failed to configure the video filters for %dx%d %s: "
+                         "%s.\n",
+                         raw_w, raw_h,
+                         av_get_pix_fmt_name(raw_format) ? av_get_pix_fmt_name(raw_format) : "?",
+                         av_err2str(ret));
                 event.type = FF_QUIT_EVENT;
                 event.user.code = FF_QUIT_REASON_ERROR;
                 event.user.data1 = is;

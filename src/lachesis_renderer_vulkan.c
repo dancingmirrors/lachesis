@@ -1050,6 +1050,26 @@ static void add_queue_family(AVVulkanDeviceContext *hwctx, int *nb_qf,
     (*nb_qf)++;
 }
 
+#if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 20, 100)
+/* XXX: Or -gpu-params create_by_placebo=0. */
+static const char *fallback_device_extensions[] = {
+    VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
+    VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME,
+#ifdef VK_KHR_video_decode_h264
+    VK_KHR_VIDEO_DECODE_H264_EXTENSION_NAME,
+#endif
+#ifdef VK_KHR_video_decode_h265
+    VK_KHR_VIDEO_DECODE_H265_EXTENSION_NAME,
+#endif
+#ifdef VK_KHR_video_decode_av1
+    VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME,
+#endif
+#ifdef VK_KHR_video_maintenance1
+    VK_KHR_VIDEO_MAINTENANCE_1_EXTENSION_NAME,
+#endif
+};
+#endif
+
 static int create_vk_by_placebo(Renderer *renderer,
                                 const char **ext, unsigned num_ext,
                                 const AVDictionary *opt, int present_timing) {
@@ -1095,6 +1115,9 @@ static int create_vk_by_placebo(Renderer *renderer,
     }
     opt_exts = dev_exts;
     num_opt_exts = num_dev_exts;
+#else
+    opt_exts = fallback_device_extensions;
+    num_opt_exts = FF_ARRAY_ELEMS(fallback_device_extensions);
 #endif
 
     if (present_timing || !want_host_image_copy(opt)) {

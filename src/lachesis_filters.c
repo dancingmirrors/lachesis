@@ -150,7 +150,13 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
             (ret = av_opt_set_array(filt_out, "pixel_formats",
                                     AV_OPT_SEARCH_CHILDREN, 0, nb_pix_fmts,
                                     AV_OPT_TYPE_PIXEL_FMT, pix_fmts)) < 0) {
-            goto fail;
+#if LIBAVFILTER_VERSION_INT < AV_VERSION_INT(10, 6, 100)
+            ret = av_opt_set_bin(filt_out, "pix_fmts", (const uint8_t *)pix_fmts,
+                                 (int)(nb_pix_fmts * sizeof(*pix_fmts)),
+                                 AV_OPT_SEARCH_CHILDREN);
+            if (ret < 0)
+#endif
+                goto fail;
         }
     }
 
