@@ -21,7 +21,6 @@
 #include "lachesis_config.h"
 
 #include <inttypes.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +32,8 @@
 #include <libavutil/dict.h>
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
+
+#include <SDL3/SDL.h>
 
 #include "lachesis_alloc.h"
 #include "lachesis_cache.h"
@@ -129,7 +130,7 @@ static int resolve_cache_dir(const AVDictionary *opt, char *buf, size_t size) {
 #define CACHE_SIZE_OFF 24
 #define CACHE_LOAD_PAD 4
 
-static atomic_uint cache_write_seq;
+static SDL_AtomicInt cache_write_seq;
 
 static void cache_keep(void *data) {
     (void)data;
@@ -201,8 +202,7 @@ static void lachesis_cache_set_dir(void *priv, pl_cache_obj obj) {
     }
     snprintf(tmp, sizeof(tmp), "%s.%" PRIuMAX ".%x.tmp", path,
              (uintmax_t)LACHESIS_GETPID(),
-             atomic_fetch_add_explicit(&cache_write_seq, 1u,
-                                       memory_order_relaxed));
+             (unsigned)SDL_AddAtomicInt(&cache_write_seq, 1));
     if (!(f = fopen(tmp, "wb"))) {
         return;
     }
