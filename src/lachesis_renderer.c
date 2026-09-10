@@ -3012,6 +3012,138 @@ static int resolve_cache_dir(const AVDictionary *opt, char *buf, size_t size) {
 #define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
 #endif
 
+#if defined(pl_cache_get_dir) && defined(pl_cache_set_dir)
+#define lachesis_cache_get_dir pl_cache_get_dir
+#define lachesis_cache_set_dir pl_cache_set_dir
+#else
+#define CACHE_FILE_HEAD 40
+#define CACHE_COUNT_OFF 12
+#define CACHE_KEY_OFF 16
+#define CACHE_SIZE_OFF 24
+#define CACHE_LOAD_PAD 4
+
+static void cache_keep(void *data) {
+    (void)data;
+}
+
+static uint32_t cache_u32(const uint8_t *at) {
+    uint32_t v;
+
+    memcpy(&v, at, sizeof(v));
+
+    return v;
+}
+
+static uint64_t cache_u64(const uint8_t *at) {
+    uint64_t v;
+
+    memcpy(&v, at, sizeof(v));
+
+    return v;
+}
+
+static pl_cache_obj cache_unpack(const uint8_t *blob, size_t size, uint64_t key) {
+    pl_cache_obj obj = {.key = key};
+    uint64_t payload;
+    pl_cache one;
+
+    if (size < CACHE_FILE_HEAD) {
+        return obj;
+    }
+    payload = cache_u64(blob + CACHE_SIZE_OFF);
+    if (cache_u32(blob + CACHE_COUNT_OFF) != 1 ||
+        cache_u64(blob + CACHE_KEY_OFF) != key || !payload ||
+        payload > size - CACHE_FILE_HEAD ||
+        payload > LACHESIS_SHADER_CACHE_LIMIT) {
+        return obj;
+    }
+    one = pl_cache_create(&pl_cache_default_params);
+    if (pl_cache_load(one, blob, size + CACHE_LOAD_PAD) == 1) {
+        pl_cache_get(one, &obj);
+    }
+    pl_cache_destroy(&one);
+
+    return obj;
+}
+
+static void lachesis_cache_set_dir(void *priv, pl_cache_obj obj) {
+    pl_cache_obj copy = {.key = obj.key,
+                         .data = obj.data,
+                         .size = obj.size,
+                         .free = cache_keep};
+    const char *prefix = priv;
+    char path[CACHE_PATH_MAX];
+    pl_cache one;
+    FILE *f;
+    int ok;
+
+    if (!prefix || !prefix[0]) {
+        return;
+    }
+    snprintf(path, sizeof(path), "%s%016" PRIx64, prefix, obj.key);
+    if (!obj.size) {
+        remove(path);
+        return;
+    }
+    if ((f = fopen(path, "rb"))) {
+        fclose(f);
+        return;
+    }
+    if (!(f = fopen(path, "wb"))) {
+        return;
+    }
+    one = pl_cache_create(&pl_cache_default_params);
+    pl_cache_set(one, &copy);
+    ok = pl_cache_save_file(one, f) == 1 && !ferror(f);
+    pl_cache_destroy(&one);
+    if (fclose(f) || !ok) {
+        remove(path);
+    }
+}
+
+static pl_cache_obj lachesis_cache_get_dir(void *priv, uint64_t key) {
+    pl_cache_obj obj = {.key = key};
+    const char *prefix = priv;
+    char path[CACHE_PATH_MAX];
+    uint8_t *blob;
+    long size;
+    FILE *f;
+
+    if (!prefix || !prefix[0]) {
+        return (pl_cache_obj){0};
+    }
+    snprintf(path, sizeof(path), "%s%016" PRIx64, prefix, key);
+    if (!(f = fopen(path, "rb"))) {
+        return (pl_cache_obj){0};
+    }
+    if (fseek(f, 0, SEEK_END) || (size = ftell(f)) < 0 || fseek(f, 0, SEEK_SET)) {
+        fclose(f);
+        return (pl_cache_obj){0};
+    }
+    if ((uint64_t)size >
+        LACHESIS_SHADER_CACHE_LIMIT + CACHE_FILE_HEAD + CACHE_LOAD_PAD) {
+        fclose(f);
+        remove(path);
+        return (pl_cache_obj){0};
+    }
+    if (!(blob = av_malloc((size_t)size + CACHE_LOAD_PAD))) {
+        fclose(f);
+        return (pl_cache_obj){0};
+    }
+    if (fread(blob, 1, (size_t)size, f) == (size_t)size) {
+        memset(blob + size, 0, CACHE_LOAD_PAD);
+        obj = cache_unpack(blob, (size_t)size, key);
+    }
+    av_free(blob);
+    fclose(f);
+    if (!obj.size) {
+        remove(path);
+    }
+
+    return obj;
+}
+#endif /* pl_cache_get_dir */
+
 struct CacheEntry {
     char *path;
     uint64_t size;
@@ -3169,7 +3301,7 @@ static void cache_migrate_obj(void *priv, pl_cache_obj obj) {
     char path[CACHE_PATH_MAX];
     struct stat st;
 
-    pl_cache_set_dir(migration->ctx->cache_prefix, obj);
+    lachesis_cache_set_dir(migration->ctx->cache_prefix, obj);
     snprintf(path, sizeof(path), "%s%016" PRIx64, migration->ctx->cache_prefix,
              obj.key);
     if (!stat(path, &st) && S_ISREG(st.st_mode)) {
@@ -3245,8 +3377,8 @@ static void cache_setup(RendererContext *ctx, const AVDictionary *opt) {
     ctx->shader_cache = pl_cache_create(pl_cache_params(
             .log = ctx->log_ctx,
             .max_total_size = LACHESIS_SHADER_CACHE_LIMIT,
-            .get = pl_cache_get_dir,
-            .set = pl_cache_set_dir,
+            .get = lachesis_cache_get_dir,
+            .set = lachesis_cache_set_dir,
             .priv = ctx->cache_prefix));
     if (!ctx->shader_cache) {
         av_freep(&ctx->cache_dir);
