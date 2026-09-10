@@ -42,6 +42,7 @@
 
 #include "lachesis_math.h"
 #include "lachesis_playlist.h"
+#include "lachesis_queue.h"
 #include "lachesis_renderer.h"
 
 #define FFP_MIX_MAXVOLUME 128
@@ -55,32 +56,11 @@
 #define AUDIO_START_MAX_WAIT_US (10 * 1000000)
 #define AUDIO_RESYNC_MAX_WAIT_US (2 * 1000000)
 
-typedef struct MyAVPacketList {
-    AVPacket *pkt;
-    int serial;
-} MyAVPacketList;
-
-typedef struct PacketQueue {
-    AVFifo *pkt_list;
-    int nb_packets;
-    int size;
-    int64_t duration;
-    int abort_request;
-    int serial;
-    SDL_Mutex *mutex;
-    SDL_Condition *cond;
-} PacketQueue;
-
 #define DEGRADE_NONE 0
 #define DEGRADE_FILTER 1
 #define DEGRADE_CHEAP 2
 #define DEGRADE_SKIP 3
 #define DEGRADE_MAX DEGRADE_SKIP
-
-#define VIDEO_PICTURE_QUEUE_SIZE 3
-#define SUBPICTURE_QUEUE_SIZE 16
-#define SAMPLE_QUEUE_SIZE 9
-#define FRAME_QUEUE_SIZE FFMAX(SAMPLE_QUEUE_SIZE, FFMAX(VIDEO_PICTURE_QUEUE_SIZE, SUBPICTURE_QUEUE_SIZE))
 
 typedef struct AudioParams {
     int freq;
@@ -100,64 +80,11 @@ typedef struct Clock {
     int *queue_serial;
 } Clock;
 
-typedef struct FrameData {
-    int64_t pkt_pos;
-} FrameData;
-
-typedef struct Frame {
-    AVFrame *frame;
-    AVSubtitle sub;
-    /* Identifies the frame to libplacebo's mix cache. */
-    uint64_t id;
-    int serial;
-    double pts;
-    double duration;
-    int64_t pos;
-    int width;
-    int height;
-    int format;
-    AVRational sar;
-    int uploaded;
-} Frame;
-
-typedef struct FrameQueue {
-    Frame queue[FRAME_QUEUE_SIZE];
-    int rindex;
-    int windex;
-    int size;
-    int max_size;
-    int keep_last;
-    int rindex_shown;
-    SDL_Mutex *mutex;
-    SDL_Condition *cond;
-    PacketQueue *pktq;
-} FrameQueue;
-
 enum {
     AV_SYNC_AUDIO_MASTER,
     AV_SYNC_VIDEO_MASTER,
     AV_SYNC_EXTERNAL_CLOCK,
 };
-
-typedef struct Decoder {
-    AVPacket *pkt;
-    PacketQueue *queue;
-    AVCodecContext *avctx;
-    int pkt_serial;
-    int finished;
-    int packet_pending;
-    SDL_Condition *empty_queue_cond;
-    int64_t start_pts;
-    AVRational start_pts_tb;
-    int64_t next_pts;
-    AVRational next_pts_tb;
-    SDL_Thread *decoder_tid;
-    int64_t wait_us;
-    int exact_done_serial;
-    int exact_dropped_serial;
-    int hwaccel_probe;
-    int hwaccel_failed;
-} Decoder;
 
 enum StreamOpenPhase {
     STREAM_OPEN_STARTING,
@@ -411,22 +338,9 @@ void exact_seek_cancel(VideoState *is);
 double aligned_start_pts(VideoState *is);
 int exact_seek_drop_video(VideoState *is, double pts);
 int exact_seek_drop_audio(VideoState *is, double pts, double duration);
-Frame *frame_queue_peek(FrameQueue *f);
-Frame *frame_queue_peek_last(FrameQueue *f);
-int frame_queue_nb_remaining(FrameQueue *f);
-int64_t frame_queue_last_pos(FrameQueue *f);
 
-int packet_queue_put(PacketQueue *q, AVPacket *pkt);
-int packet_queue_put_nullpacket(PacketQueue *q, AVPacket *pkt, int stream_index);
-int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial);
-void packet_queue_flush(PacketQueue *q);
 int stream_has_enough_packets(const VideoState *is, AVStream *st, int stream_id,
                               PacketQueue *queue);
-int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_Condition *empty_queue_cond);
-int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void *arg);
-void decoder_destroy(Decoder *d);
-void decoder_abort(Decoder *d, FrameQueue *fq);
-int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub);
 int video_thread(void *arg);
 void apply_degraded_decode(AVCodecContext *avctx, int level);
 const char *degrade_status(const VideoState *is);
@@ -462,10 +376,6 @@ static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int
     *out_h = (int)FFMAX(2, sh & ~(int64_t)1);
 }
 
-Frame *frame_queue_peek_writable(FrameQueue *f);
-Frame *frame_queue_peek_readable(FrameQueue *f);
-void frame_queue_push(FrameQueue *f);
-void frame_queue_next(FrameQueue *f);
 double get_clock(Clock *c);
 void set_clock(Clock *c, double pts, int serial);
 void set_clock_at(Clock *c, double pts, int serial, double time);

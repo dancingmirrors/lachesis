@@ -234,6 +234,7 @@ add_sources(
     "src/lachesis_osd.c",
     "src/lachesis_playlist.c",
     "src/lachesis_present.c",
+    "src/lachesis_queue.c",
     "src/lachesis_rc.c",
     "src/lachesis_renderer.c",
     "src/lachesis_renderer_d3d11.c",
