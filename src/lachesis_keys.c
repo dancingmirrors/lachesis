@@ -49,6 +49,7 @@
 #include "lachesis_screenshot.h"
 #include "lachesis_seek.h"
 #include "lachesis_single.h"
+#include "lachesis_view.h"
 
 #define SDL_VOLUME_STEP (10.0)
 #define SEEK_MIN_STEP (0.001)

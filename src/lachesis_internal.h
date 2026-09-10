@@ -367,14 +367,6 @@ void video_prepare_overlays(VideoState *is);
 
 void thread_set_priority(SDL_ThreadPriority priority, const char *who);
 
-void calculate_display_rect(SDL_Rect *rect, SDL_Rect *clip, SDL_Rect *plain,
-                            int scr_xleft, int scr_ytop, int scr_width, int scr_height,
-                            int pic_width, int pic_height, AVRational pic_sar);
-
-float view_zoom_step(VideoState *is, int direction);
-float view_zoom_reset(VideoState *is);
-void view_pan_by(VideoState *is, float dx, float dy);
-
 #define FF_QUIT_EVENT (SDL_EVENT_USER + 2)
 #define FF_RENDER_FAULT_EVENT (SDL_EVENT_USER + 3)
 #define FF_SCREENSHOT_EVENT (SDL_EVENT_USER + 4)
