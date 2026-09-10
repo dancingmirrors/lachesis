@@ -279,6 +279,19 @@ double effective_playhead(VideoState *is) {
     return pos;
 }
 
+double subtitle_playhead(VideoState *is) {
+    if (video_stream_advances(is) && !is->is_still_image &&
+        is->pictq.rindex_shown) {
+        double pts = frame_queue_peek_last(&is->pictq)->pts;
+
+        if (!isnan(pts)) {
+            return pts;
+        }
+    }
+
+    return effective_playhead(is);
+}
+
 void check_external_clock_speed(VideoState *is) {
     if ((is->video_stream >= 0 && is->videoq.nb_packets <= EXTERNAL_CLOCK_MIN_FRAMES) ||
         (is->audio_stream >= 0 && is->audioq.nb_packets <= EXTERNAL_CLOCK_MIN_FRAMES)) {

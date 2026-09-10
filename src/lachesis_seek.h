@@ -49,6 +49,7 @@ double playhead_length(const VideoState *is);
 double playhead_elapsed(const VideoState *is, double pos);
 double playhead_clamp(const VideoState *is, double pos);
 double effective_playhead(VideoState *is);
+double subtitle_playhead(VideoState *is);
 double aligned_start_pts(VideoState *is);
 
 void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
