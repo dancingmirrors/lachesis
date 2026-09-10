@@ -47,6 +47,7 @@
 #include "lachesis_present.h"
 #include "lachesis_renderer.h"
 #include "lachesis_screenshot.h"
+#include "lachesis_seek.h"
 #include "lachesis_single.h"
 
 #define SDL_VOLUME_STEP (10.0)

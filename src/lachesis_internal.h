@@ -50,6 +50,7 @@
 /* No A/V sync correction is done if below this threshold. */
 #define AV_NOSYNC_THRESHOLD 10.0
 #define AV_SYNC_THRESHOLD_MIN 0.04
+#define AV_SYNC_THRESHOLD_MAX 0.1
 /* Number of audio samples over which the audio difference average is computed. */
 #define AUDIO_DIFF_AVG_NB 20
 /* How long audio waits for the first picture at startup and after a seek. */
@@ -322,23 +323,6 @@ typedef struct VideoState {
 extern SDL_Window *window;
 extern Renderer *renderer;
 
-extern double ab_loop_a;
-extern double ab_loop_b;
-int ab_loop_defining(void);
-
-double get_master_clock(VideoState *is);
-double effective_playhead(VideoState *is);
-double playhead_origin(const VideoState *is);
-double playhead_length(const VideoState *is);
-double playhead_elapsed(const VideoState *is, double pos);
-double playhead_clamp(const VideoState *is, double pos);
-int video_stream_advances(VideoState *is);
-void exact_seek_arm(VideoState *is, int64_t target);
-void exact_seek_cancel(VideoState *is);
-double aligned_start_pts(VideoState *is);
-int exact_seek_drop_video(VideoState *is, double pts);
-int exact_seek_drop_audio(VideoState *is, double pts, double duration);
-
 int stream_has_enough_packets(const VideoState *is, AVStream *st, int stream_id,
                               PacketQueue *queue);
 int video_thread(void *arg);
@@ -376,12 +360,6 @@ static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int
     *out_h = (int)FFMAX(2, sh & ~(int64_t)1);
 }
 
-double get_clock(Clock *c);
-void set_clock(Clock *c, double pts, int serial);
-void set_clock_at(Clock *c, double pts, int serial, double time);
-void sync_clock_to_slave(Clock *c, Clock *slave);
-void external_clock_reseat(VideoState *is, Clock *slave);
-int get_master_sync_type(VideoState *is);
 int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                           AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
 
@@ -405,8 +383,6 @@ void view_pan_by(VideoState *is, float dx, float dy);
 #define FF_QUIT_REASON_EOF 0
 #define FF_QUIT_REASON_ERROR 1
 
-#define PLAYBACK_SPEED_STEP 0.1
-
 extern enum View360Layout view360_layout;
 extern enum View360Projection view360_projection;
 
@@ -423,7 +399,6 @@ void sbs360_reset_view(void);
 extern int deinterlace;
 extern enum SupersampleLevel supersample_level;
 extern int frame_interpolation;
-extern double playback_speed;
 extern int screen_width;
 extern int screen_height;
 extern int default_width;
@@ -437,17 +412,9 @@ int pipeline_setup_begin(VideoState *is);
 void pipeline_setup_end(VideoState *is);
 
 av_noreturn void do_exit(VideoState *is);
-void toggle_pause(VideoState *is);
 void toggle_mute(VideoState *is);
 void update_volume(VideoState *is, int sign, double step);
-void step_to_next_frame(VideoState *is);
-void frame_step(VideoState *is);
-void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
-void stream_seek_exact(VideoState *is, int64_t pos);
 void stream_cycle_channel(VideoState *is, int codec_type);
-void set_playback_speed(VideoState *is, double speed);
-void reanchor_clocks(VideoState *is);
-void ab_loop_toggle(VideoState *is);
 void toggle_fullscreen(VideoState *is);
 void note_fullscreen_state(VideoState *is);
 void note_window_resized(VideoState *is, int w, int h);

@@ -44,6 +44,7 @@
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
+#include "lachesis_seek.h"
 #include "lachesis_subtitles.h"
 
 #define ASS_EVENT_MAX 8192

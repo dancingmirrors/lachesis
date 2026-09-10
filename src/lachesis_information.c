@@ -36,6 +36,7 @@
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_present.h"
+#include "lachesis_seek.h"
 #include "lachesis_supersample.h"
 
 static const char *active_hwaccel = NULL;

@@ -56,6 +56,7 @@
 #include "lachesis_normalize.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
+#include "lachesis_seek.h"
 
 static SDL_AudioDeviceID audio_dev;
 static SDL_AudioStream *audio_stream_dev;

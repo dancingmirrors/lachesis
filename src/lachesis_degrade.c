@@ -31,6 +31,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
+#include "lachesis_seek.h"
 
 #define DEGRADE_LATE_SECS 0.05
 #define DEGRADE_STEP_SECS 0.80

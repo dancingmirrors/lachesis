@@ -28,6 +28,7 @@
 #include "lachesis_interpolate.h"
 #include "lachesis_options.h"
 #include "lachesis_present.h"
+#include "lachesis_seek.h"
 
 #define RATE_MATCH_TOLERANCE 0.01
 #define RATE_MATCH_HOLD 5

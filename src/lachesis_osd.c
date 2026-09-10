@@ -36,6 +36,7 @@
 #include "lachesis_ass.h"
 #include "lachesis_log.h"
 #include "lachesis_osd.h"
+#include "lachesis_seek.h"
 #include "lachesis_subtitles.h"
 
 #define OSD_STATUS_DURATION_MS 1000

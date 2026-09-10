@@ -31,6 +31,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_options.h"
 #include "lachesis_present.h"
+#include "lachesis_seek.h"
 
 int deinterlace = 0;
 

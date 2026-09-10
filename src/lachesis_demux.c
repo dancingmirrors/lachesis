@@ -60,6 +60,7 @@
 #include "lachesis_network.h"
 #include "lachesis_options.h"
 #include "lachesis_playlist.h"
+#include "lachesis_seek.h"
 #include "lachesis_subtitles.h"
 
 #define MAX_QUEUE_SIZE (15 * 1024 * 1024)
