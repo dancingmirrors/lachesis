@@ -1,8 +1,4 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Placeholder application icon for lachesis. Intentionally simple: a dark
-     rounded "frame" with a play glyph. Swap this file for real artwork when
-     it exists; the installed name (lachesis.svg) and the desktop entry's
-     Icon=lachesis key are all that matter. -->
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
   <title>lachesis</title>
   <defs>
