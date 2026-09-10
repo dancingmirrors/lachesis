@@ -66,6 +66,7 @@ static int ass_track_converted;
 static double ass_style_scale = 1.0;
 
 static int ass_text_readorder;
+static int ass_refill_pending;
 
 static SDL_Surface *ass_surface;
 static int ass_surface_x, ass_surface_y;
@@ -104,6 +105,7 @@ static void ass_engine_uninit_locked(void) {
     ass_canvas_w = ass_canvas_h = 0;
     ass_track_converted = 0;
     ass_style_scale = 1.0;
+    ass_refill_pending = 0;
     ass_events_changed_locked();
 }
 
@@ -232,6 +234,15 @@ static int ass_route_emoji_locked(const char *in, char *out, size_t outsz) {
     return 1;
 }
 
+static void ass_refill_locked(void) {
+    if (!ass_refill_pending) {
+        return;
+    }
+    ass_refill_pending = 0;
+    ass_flush_events(ass_track);
+    ass_text_readorder = 0;
+}
+
 static int subtitle_is_text(const AVSubtitle *sub) {
     for (unsigned i = 0; i < sub->num_rects; i++) {
         enum AVSubtitleType type = sub->rects[i]->type;
@@ -275,6 +286,7 @@ static int subtitles_feed(const AVSubtitle *sub, double pts) {
             char routed[ASS_EVENT_MAX];
             const char *line = rect->ass;
 
+            ass_refill_locked();
             if (ass_route_emoji_locked(rect->ass, routed, sizeof(routed))) {
                 line = routed;
             }
@@ -283,8 +295,11 @@ static int subtitles_feed(const AVSubtitle *sub, double pts) {
             consumed = 1;
         } else if (rect->type == SUBTITLE_TEXT && rect->text) {
             char line[4096];
-            int n = snprintf(line, sizeof(line), "%d,0,Default,,0,0,0,,%s",
-                             ass_text_readorder++, rect->text);
+            int n;
+
+            ass_refill_locked();
+            n = snprintf(line, sizeof(line), "%d,0,Default,,0,0,0,,%s",
+                         ass_text_readorder++, rect->text);
 
             if (n > 0) {
                 char *p = line;
@@ -383,6 +398,7 @@ void subtitles_track_close(void) {
     }
     ass_track_converted = 0;
     ass_style_scale = 1.0;
+    ass_refill_pending = 0;
     ass_surface_stale = 1;
     ass_generation++;
     ass_events_changed_locked();
@@ -394,11 +410,7 @@ void subtitles_track_flush(void) {
         return;
     }
     SDL_LockMutex(ass_lock);
-    if (ass_track) {
-        ass_flush_events(ass_track);
-    }
-    ass_text_readorder = 0;
-    ass_events_changed_locked();
+    ass_refill_pending = ass_track != NULL;
     SDL_UnlockMutex(ass_lock);
 }
 
