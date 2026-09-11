@@ -378,6 +378,14 @@ int renderer_match_gpu_device(const GpuDeviceNames names,
                               const enum GpuClass *classes, int num,
                               const char *want);
 
+void icc_setup(RendererContext *ctx, SDL_Window *window,
+               const AVDictionary *opt);
+void icc_forget(RendererContext *ctx);
+void icc_track_luma(RendererContext *ctx, float max_luma);
+int icc_load_display(RendererContext *ctx, SDL_Window *window);
+void cal_drop(RendererContext *ctx);
+int hdr_refresh(RendererContext *ctx, SDL_Window *window);
+
 #if LACHESIS_HAVE_VULKAN
 int vk_backend_create(RendererContext *ctx, SDL_Window *window,
                       AVDictionary *opt);
