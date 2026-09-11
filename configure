@@ -250,6 +250,7 @@ add_sources(
     "src/lachesis_video.c",
     "src/lachesis_view.c",
     "src/lachesis_view360.c",
+    "src/lachesis_window.c",
 )
 
 finish()
