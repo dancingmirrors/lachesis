@@ -247,6 +247,7 @@ add_sources(
     "src/lachesis_subtitles.c",
     "src/lachesis_supersample.c",
     "src/lachesis_terminal.c",
+    "src/lachesis_video.c",
     "src/lachesis_view.c",
     "src/lachesis_view360.c",
 )

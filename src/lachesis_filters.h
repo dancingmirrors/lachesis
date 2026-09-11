@@ -26,6 +26,8 @@
 
 int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vfilters, AVFrame *frame, int force_autoscale);
 int check_filtergraph(const char *desc);
+int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
+                          AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
 int filtergraph_output_oversize(AVFilterContext *filt_out);
 
 void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,

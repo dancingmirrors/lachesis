@@ -50,6 +50,7 @@
 
 #include "lachesis_alloc.h"
 #include "lachesis_audio.h"
+#include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"

@@ -360,9 +360,6 @@ static inline void fit_within_max_dim(int w, int h, int max_dim, int *out_w, int
     *out_h = (int)FFMAX(2, sh & ~(int64_t)1);
 }
 
-int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
-                          AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
-
 void video_prepare_overlays(VideoState *is);
 
 void thread_set_priority(SDL_ThreadPriority priority, const char *who);
