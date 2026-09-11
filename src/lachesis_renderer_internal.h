@@ -32,6 +32,7 @@
 #include "lachesis_view360.h"
 /* clang-format on */
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -385,6 +386,16 @@ void icc_track_luma(RendererContext *ctx, float max_luma);
 int icc_load_display(RendererContext *ctx, SDL_Window *window);
 void cal_drop(RendererContext *ctx);
 int hdr_refresh(RendererContext *ctx, SDL_Window *window);
+
+int convert_frame(Renderer *renderer, AVFrame *frame);
+bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
+                     struct pl_frame *out);
+bool map_video_frame(RendererContext *ctx, AVFrame *frame,
+                     struct pl_frame *out);
+const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
+                                     struct pl_frame *out,
+                                     const struct pl_frame *cur, AVFrame *frame,
+                                     const AVFrame *self);
 
 #if LACHESIS_HAVE_VULKAN
 int vk_backend_create(RendererContext *ctx, SDL_Window *window,
