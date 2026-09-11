@@ -242,6 +242,7 @@ add_sources(
     "src/lachesis_renderer_d3d11.c",
     "src/lachesis_renderer_frame.c",
     "src/lachesis_renderer_opengl.c",
+    "src/lachesis_renderer_vo.c",
     "src/lachesis_renderer_vulkan.c",
     "src/lachesis_scale.c",
     "src/lachesis_screenshot.c",

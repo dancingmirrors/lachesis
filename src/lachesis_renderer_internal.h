@@ -110,6 +110,13 @@
 
 #define LACHESIS_D3D11_VIEW_POOLS 6
 
+#define VO_HANDOFF_WAIT_MS 8
+#define VO_WINDOW_WAIT_MS 60
+#define VO_BORROW_WAIT_MS 250
+#define VO_DRAIN_WAIT_MS 1000
+#define VO_CAPTURE_WAIT_MS 1000
+#define VO_STOP_WAIT_MS 500
+
 struct Renderer {
     const AVClass *class;
 
@@ -352,6 +359,18 @@ typedef struct RendererContext {
     struct pl_hdr_metadata display_hdr;
 } RendererContext;
 
+static inline void vo_state_lock(RendererContext *ctx) {
+    if (ctx->vo.lock) {
+        SDL_LockMutex(ctx->vo.lock);
+    }
+}
+
+static inline void vo_state_unlock(RendererContext *ctx) {
+    if (ctx->vo.lock) {
+        SDL_UnlockMutex(ctx->vo.lock);
+    }
+}
+
 extern int renderer_allow_software_gpu;
 extern int renderer_want_translucent;
 extern const char *renderer_want_device;
@@ -396,6 +415,19 @@ const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
                                      struct pl_frame *out,
                                      const struct pl_frame *cur, AVFrame *frame,
                                      const AVFrame *self);
+
+int renderer_draw_frame(Renderer *renderer, AVFrame *frame,
+                        RenderParams *params);
+int renderer_draw_blank(Renderer *renderer, RenderParams *params);
+int renderer_apply_360(RendererContext *ctx, enum View360Layout layout,
+                       enum View360Projection projection);
+
+int vo_start(RendererContext *ctx);
+int vo_stop(RendererContext *ctx);
+int vo_borrow(RendererContext *ctx, int timeout_ms);
+void vo_release(RendererContext *ctx);
+int vo_submit(RendererContext *ctx, AVFrame *frame, RenderParams *params,
+              int blank);
 
 #if LACHESIS_HAVE_VULKAN
 int vk_backend_create(RendererContext *ctx, SDL_Window *window,
