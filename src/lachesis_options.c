@@ -130,6 +130,7 @@ int enable_360eqtb = 0;
 int is_fullscreen = 1;
 int start_windowed = 0;
 int window_resize = 0;
+int window_recenter = 1;
 float autofit_larger = 0.85f;
 int global_muted = 0;
 int ytdl_disable = 0;
@@ -209,6 +210,7 @@ static int opt_bad_value(const char *opt, const char *arg,
 }
 
 static const char *const edit_list_modes[] = {"auto", "off", NULL};
+static const char *const recenter_modes[] = {"yes", "no", NULL};
 static const char *const archive_jump_modes[] = {"first", "last", NULL};
 static const char *const sync_types[] = {"audio", "video", "ext", NULL};
 static const char *const swap_modes[] = {"fifo", "fifo-relaxed", "mailbox",
@@ -307,6 +309,18 @@ static int opt_single(void *optctx av_unused, const char *opt, const char *arg) 
         return opt_bad_value(opt, arg, single_modes);
     }
     single_mode = i;
+
+    return 0;
+}
+
+static int opt_recenter(void *optctx av_unused, const char *opt,
+                        const char *arg) {
+    int i = opt_value_index(arg, recenter_modes);
+
+    if (i < 0) {
+        return opt_bad_value(opt, arg, recenter_modes);
+    }
+    window_recenter = i == 0;
 
     return 0;
 }
@@ -678,6 +692,7 @@ const OptionDef options[] = {
     {"windowed", OPT_TYPE_BOOL, 0, {&start_windowed}, "start windowed instead of fullscreen"},
     {"autofit", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_autofit}, "limit windowed size to this fraction of the display (default 0.85)", "fraction"},
     {"resize-window", OPT_TYPE_BOOL, 0, {&window_resize}, "disable a fixed window size"},
+    {"recenter", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL | OPT_STRICT_VALUE, {.func_arg = opt_recenter}, "recenter the window when it resizes or leaves fullscreen (default yes)", "mode", recenter_modes, "yes", "no"},
     {"an", OPT_TYPE_BOOL, 0, {&audio_disable}, "disable audio"},
     {"vn", OPT_TYPE_BOOL, 0, {&video_disable}, "disable video"},
     {"sn", OPT_TYPE_BOOL, 0, {&subtitle_disable}, "disable subtitles"},
@@ -1082,6 +1097,7 @@ static const struct {
     {"sn", "sub-offset", OPT_DISABLES},
 
     {"nodisp", "windowed", OPT_DISABLES},
+    {"nodisp", "recenter", OPT_DISABLES},
     {"nodisp", "autofit", OPT_DISABLES},
     {"nodisp", "alwaysontop", OPT_DISABLES},
     {"nodisp", "window-title", OPT_DISABLES},

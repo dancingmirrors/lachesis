@@ -337,9 +337,19 @@ void note_display_info_change(VideoState *is) {
     refresh_display_info(is);
 }
 
-static void apply_window_geometry(int w, int h) {
+static int window_ever_windowed;
+
+static int recenter_wanted(void) {
+    return window_recenter || !window_ever_windowed;
+}
+
+static void apply_window_geometry(int w, int h, int recenter) {
+    window_ever_windowed = 1;
     want_window_size(w, h);
     SDL_SetWindowSize(window, w, h);
+    if (!recenter) {
+        return;
+    }
     if (!SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED,
                                SDL_WINDOWPOS_CENTERED)) {
         SDL_ClearError();
@@ -424,7 +434,8 @@ void video_follow_content_size(VideoState *is) {
         if (!is_fullscreen) {
             int held = hold_output();
 
-            apply_window_geometry(default_width, default_height);
+            apply_window_geometry(default_width, default_height,
+                                  recenter_wanted());
             SDL_SyncWindow(window);
             update_screen_size();
             video_adopt_window_size(is);
@@ -469,7 +480,7 @@ static void place_window(void) {
     window_rotate = noted_rotate = video_rotate;
     SDL_SetWindowFullscreen(window, is_fullscreen);
     if (!is_fullscreen) {
-        apply_window_geometry(default_width, default_height);
+        apply_window_geometry(default_width, default_height, recenter_wanted());
     }
     SDL_ShowWindow(window);
     drop_output(held);
@@ -544,6 +555,9 @@ void note_fullscreen_state(VideoState *is) {
                 fullscreen ? "into" : "out of");
     held = hold_output();
     is_fullscreen = fullscreen;
+    if (!is_fullscreen) {
+        window_ever_windowed = 1;
+    }
     if (!is_fullscreen && is->video_st && is->pictq.rindex_shown &&
         (!window_content_sized || window_resize)) {
         size_default_for_content(frame_queue_peek_last(&is->pictq));
@@ -566,7 +580,7 @@ void toggle_fullscreen(VideoState *is) {
     is_fullscreen = !is_fullscreen;
     SDL_SetWindowFullscreen(window, is_fullscreen);
     if (!is_fullscreen) {
-        apply_window_geometry(default_width, default_height);
+        apply_window_geometry(default_width, default_height, recenter_wanted());
     }
     SDL_SyncWindow(window);
     update_screen_size();

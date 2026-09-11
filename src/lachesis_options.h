@@ -125,6 +125,7 @@ extern int display_disable;
 extern int benchmark;
 extern int alwaysontop;
 extern int window_resize;
+extern int window_recenter;
 extern int startup_volume;
 extern int av_sync_type;
 extern int av_sync_type_explicit;
