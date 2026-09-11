@@ -219,6 +219,7 @@ add_sources(
     "src/lachesis_deinterlace.c",
     "src/lachesis_delete.c",
     "src/lachesis_demux.c",
+    "src/lachesis_display.c",
     "src/lachesis_equalizer.c",
     "src/lachesis_filters.c",
     "src/lachesis_hwaccel.c",
