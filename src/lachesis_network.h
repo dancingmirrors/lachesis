@@ -22,12 +22,19 @@
 #ifndef LACHESIS_NETWORK_H
 #define LACHESIS_NETWORK_H
 
+#include <libavformat/avformat.h>
 #include <libavformat/avio.h>
 #include <libavutil/dict.h>
 
 #include "lachesis_internal.h"
 
 void set_ytdl_http_opts(AVDictionary **opts);
+
+#define TLS_VERIFY_OPT "tls_verify"
+int tls_verify_enabled(void);
+void set_tls_opts(AVDictionary **opts);
+void set_tls_io_open(struct AVFormatContext *ic);
+void tls_warn_verify(const char *url, int err);
 
 int ytdl_resolve(VideoState *is, const char *url, char **video_url,
                  char **audio_url);

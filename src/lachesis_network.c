@@ -27,13 +27,17 @@
 
 #include <SDL3/SDL.h>
 
+#include <libavformat/avformat.h>
 #include <libavformat/avio.h>
+#include <libavformat/version.h>
 #include <libavutil/avstring.h>
 #include <libavutil/bprint.h>
 #include <libavutil/error.h>
+#include <libavutil/macros.h>
 #include <libavutil/mem.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_renderer.h"
 
@@ -72,6 +76,71 @@ static char *build_default_ytdl_format(void) {
     return av_asprintf("%sb", sel);
 }
 
+int tls_verify_enabled(void) {
+    if (tls_verify_opt >= 0) {
+        return tls_verify_opt;
+    }
+
+    return LIBAVFORMAT_VERSION_MAJOR >= 63;
+}
+
+void set_tls_opts(AVDictionary **opts) {
+    av_dict_set(opts, TLS_VERIFY_OPT, tls_verify_enabled() ? "1" : "0",
+                AV_DICT_MATCH_CASE | AV_DICT_DONT_OVERWRITE);
+}
+
+static int (*io_open_inner)(AVFormatContext *s, AVIOContext **pb,
+                            const char *url, int flags, AVDictionary **opts);
+
+static int tls_io_open(AVFormatContext *s, AVIOContext **pb, const char *url,
+                       int flags, AVDictionary **opts) {
+    AVDictionary *own = NULL;
+    int ret;
+
+    if (opts) {
+        set_tls_opts(opts);
+
+        return io_open_inner(s, pb, url, flags, opts);
+    }
+    set_tls_opts(&own);
+    ret = io_open_inner(s, pb, url, flags, &own);
+    av_dict_free(&own);
+
+    return ret;
+}
+
+void set_tls_io_open(AVFormatContext *ic) {
+    if (!ic || ic->io_open == tls_io_open) {
+        return;
+    }
+    io_open_inner = ic->io_open;
+    ic->io_open = tls_io_open;
+}
+
+static int url_is_tls(const char *url) {
+    static const char *const schemes[] = {"https://", "tls://", "rtsps://",
+                                          "rtmps://"};
+
+    if (!url) {
+        return 0;
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(schemes); i++) {
+        if (!av_strncasecmp(url, schemes[i], strlen(schemes[i]))) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+void tls_warn_verify(const char *url, int err) {
+    if (err != AVERROR(EIO) || !tls_verify_enabled() || !url_is_tls(url)) {
+        return;
+    }
+    log_warn("If this host has a self-signed, expired, or mismatched "
+             "certificate, -tls-verify=no opens it anyway.\n");
+}
+
 void set_ytdl_http_opts(AVDictionary **opts) {
     av_dict_set(opts, "reconnect", "1", 0);
     av_dict_set(opts, "reconnect_streamed", "1", 0);
@@ -104,6 +173,7 @@ static int ytdl_chunked_interrupt(void *arg) {
 static int ytdl_chunked_open_inner(struct YtdlChunkedIO *c) {
     AVDictionary *opts = NULL;
     set_ytdl_http_opts(&opts);
+    set_tls_opts(&opts);
     AVIOInterruptCB cb = {ytdl_chunked_interrupt, c->is};
     int ret = avio_open2(&c->inner, c->url, AVIO_FLAG_READ, &cb, &opts);
     av_dict_free(&opts);

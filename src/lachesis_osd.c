@@ -679,14 +679,7 @@ static double osd_sub_reserved_top(const OsdLayout *L) {
 }
 
 static int osd_text_subtitles_present(const VideoState *is) {
-    const AVCodecDescriptor *d;
-
-    if (!is->subtitle_st || !is->subtitle_st->codecpar) {
-        return 0;
-    }
-    d = avcodec_descriptor_get(is->subtitle_st->codecpar->codec_id);
-
-    return d && (d->props & AV_CODEC_PROP_TEXT_SUB);
+    return is->subtitle_st && subtitles_track_attached();
 }
 
 static void osd_draw_info(VideoState *is, OsdLayout *L) {

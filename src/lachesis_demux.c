@@ -411,6 +411,7 @@ static AVFormatContext *new_format_context(VideoState *is) {
     if (ic) {
         ic->interrupt_callback.callback = decode_interrupt_cb;
         ic->interrupt_callback.opaque = is;
+        set_tls_io_open(ic);
     }
 
     return ic;
@@ -1007,6 +1008,7 @@ int read_thread(void *arg) {
         if (ignore_editlist) {
             av_dict_set(&fmt_opts, "ignore_editlist", "1", AV_DICT_DONT_OVERWRITE);
         }
+        set_tls_opts(&fmt_opts);
         {
             const char *open_url = (is->archive_path && is->entry_name)
                 ? is->entry_name
@@ -1026,6 +1028,7 @@ int read_thread(void *arg) {
         if (ignore_editlist) {
             av_dict_set(&fmt_opts, "ignore_editlist", NULL, AV_DICT_MATCH_CASE);
         }
+        av_dict_set(&fmt_opts, TLS_VERIFY_OPT, NULL, AV_DICT_MATCH_CASE);
         if (!err) {
             if (is->abort_request) {
                 ret = -1;
@@ -1058,6 +1061,7 @@ int read_thread(void *arg) {
             if (!is->abort_request) {
                 print_error(is->filename, err);
                 playlist_warn_unsafe_disabled(is->filename, 1);
+                tls_warn_verify(is->ytdl_source_url ? NULL : is->filename, err);
             } else {
             }
             ret = -1;
@@ -1238,6 +1242,7 @@ int read_thread(void *arg) {
         if (aic) {
             aic->interrupt_callback.callback = audio_interrupt_cb;
             aic->interrupt_callback.opaque = is;
+            set_tls_io_open(aic);
             AVDictionary *audio_opts = NULL;
             int audio_open_ret;
             is->ytdl_aio = ytdl_chunked_create(is->ytdl_audio_url, is);
@@ -1246,6 +1251,7 @@ int read_thread(void *arg) {
                 aic->flags |= AVFMT_FLAG_CUSTOM_IO;
             } else {
                 set_ytdl_http_opts(&audio_opts);
+                set_tls_opts(&audio_opts);
             }
             if (edit_list_fell_back || no_edit_list) {
                 av_dict_set(&audio_opts, "ignore_editlist", "1", 0);

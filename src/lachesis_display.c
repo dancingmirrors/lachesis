@@ -152,10 +152,20 @@ static void prepare_subtitles(VideoState *is, Frame *vp) {
                 sub_rect->h = av_clip((int)((int64_t)src_h * plane_h / sp->height), 1, plane_h - sub_rect->y);
             }
 
-            is->sub_convert_ctx = sws_getCachedContext(is->sub_convert_ctx,
-                                                       src_w, src_h, AV_PIX_FMT_PAL8,
-                                                       sub_rect->w, sub_rect->h, AV_PIX_FMT_RGBA,
-                                                       0, NULL, NULL, NULL);
+            if (!is->sub_convert_ctx || is->sub_convert_src_w != src_w ||
+                is->sub_convert_src_h != src_h ||
+                is->sub_convert_dst_w != sub_rect->w ||
+                is->sub_convert_dst_h != sub_rect->h) {
+                is->sub_convert_ctx =
+                    sws_getCachedContext(is->sub_convert_ctx,
+                                         src_w, src_h, AV_PIX_FMT_PAL8,
+                                         sub_rect->w, sub_rect->h, AV_PIX_FMT_RGBA,
+                                         SWS_BICUBIC, NULL, NULL, NULL);
+                is->sub_convert_src_w = src_w;
+                is->sub_convert_src_h = src_h;
+                is->sub_convert_dst_w = sub_rect->w;
+                is->sub_convert_dst_h = sub_rect->h;
+            }
             if (!is->sub_convert_ctx) {
                 return;
             }

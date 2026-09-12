@@ -98,6 +98,29 @@ typedef struct SpdifContext {
 
 static SpdifContext spdif;
 
+/* clang-format off */
+#define LACHESIS_CH_LAYOUT_9POINT1POINT6                                  \
+    (AV_CH_FRONT_LEFT | AV_CH_FRONT_RIGHT | AV_CH_FRONT_CENTER |          \
+     AV_CH_LOW_FREQUENCY | AV_CH_BACK_LEFT | AV_CH_BACK_RIGHT |           \
+     AV_CH_FRONT_LEFT_OF_CENTER | AV_CH_FRONT_RIGHT_OF_CENTER |           \
+     AV_CH_SIDE_LEFT | AV_CH_SIDE_RIGHT | AV_CH_TOP_FRONT_LEFT |          \
+     AV_CH_TOP_FRONT_RIGHT | AV_CH_TOP_BACK_LEFT | AV_CH_TOP_BACK_RIGHT | \
+     AV_CH_TOP_SIDE_LEFT | AV_CH_TOP_SIDE_RIGHT)
+/* clang-format on */
+
+static void channel_layout_default(AVChannelLayout *layout, int nb_channels) {
+    if (nb_channels == 16) {
+        const AVChannelLayout pinned =
+            AV_CHANNEL_LAYOUT_MASK(16, LACHESIS_CH_LAYOUT_9POINT1POINT6);
+
+        *layout = pinned;
+
+        return;
+    }
+
+    av_channel_layout_default(layout, nb_channels);
+}
+
 static const struct {
     const char *name;
     enum AVCodecID id;
@@ -377,7 +400,7 @@ static int spdif_output_params(const AVCodecParameters *par, int want_hd) {
     }
     spdif.frame_bytes = spdif.channels * (int)sizeof(int16_t);
     av_channel_layout_uninit(&spdif.ch_layout);
-    av_channel_layout_default(&spdif.ch_layout, spdif.channels);
+    channel_layout_default(&spdif.ch_layout, spdif.channels);
 
     return 1;
 }
@@ -1065,11 +1088,11 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
     if (env) {
         wanted_nb_channels = atoi(env);
         av_channel_layout_uninit(wanted_channel_layout);
-        av_channel_layout_default(wanted_channel_layout, wanted_nb_channels);
+        channel_layout_default(wanted_channel_layout, wanted_nb_channels);
     }
     if (wanted_channel_layout->order != AV_CHANNEL_ORDER_NATIVE) {
         av_channel_layout_uninit(wanted_channel_layout);
-        av_channel_layout_default(wanted_channel_layout, wanted_nb_channels);
+        channel_layout_default(wanted_channel_layout, wanted_nb_channels);
     }
     wanted_nb_channels = wanted_channel_layout->nb_channels;
     wanted_spec.channels = wanted_nb_channels;

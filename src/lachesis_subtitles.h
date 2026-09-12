@@ -47,6 +47,7 @@ void subtitles_uninit(void);
 void subtitles_reap(void);
 
 int subtitles_track_attached(void);
+void subtitles_clear_at(double pts);
 int subtitles_visible_at(double now);
 int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
                      const SDL_Rect *video_rect, double now,

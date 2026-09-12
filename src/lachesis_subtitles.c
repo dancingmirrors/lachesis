@@ -20,6 +20,7 @@
 
 #include <limits.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -68,6 +69,10 @@ static double ass_style_scale = 1.0;
 static int ass_text_readorder;
 static int ass_refill_pending;
 
+#define ASS_OPEN_EVENT_MS 30000
+static int ass_open_base = -1;
+static int ass_open_end;
+
 static SDL_Surface *ass_surface;
 static int ass_surface_x, ass_surface_y;
 static int ass_surface_stale;
@@ -78,6 +83,8 @@ static unsigned ass_visible_serial;
 static long long ass_visible_from, ass_visible_until;
 static int ass_visible_cached;
 static int ass_visible_valid;
+static unsigned ass_visible_epoch = 1;
+static unsigned ass_fit_epoch;
 
 static void ass_events_changed_locked(void) {
     ass_events_serial++;
@@ -106,6 +113,7 @@ static void ass_engine_uninit_locked(void) {
     ass_track_converted = 0;
     ass_style_scale = 1.0;
     ass_refill_pending = 0;
+    ass_open_base = -1;
     ass_events_changed_locked();
 }
 
@@ -241,6 +249,32 @@ static void ass_refill_locked(void) {
     ass_refill_pending = 0;
     ass_flush_events(ass_track);
     ass_text_readorder = 0;
+    ass_open_base = -1;
+}
+
+static int ass_close_open_events_locked(long long now_ms) {
+    int touched = 0, still_open = 0;
+    int end;
+
+    if (ass_open_base < 0 || !ass_track) {
+        return 0;
+    }
+    end = FFMIN(ass_open_end, ass_track->n_events);
+    for (int i = ass_open_base; i < end; i++) {
+        ASS_Event *e = &ass_track->events[i];
+
+        if (e->Start >= now_ms) {
+            still_open = 1;
+        } else if (e->Start + e->Duration > now_ms) {
+            e->Duration = now_ms - e->Start;
+            touched = 1;
+        }
+    }
+    if (!still_open) {
+        ass_open_base = -1;
+    }
+
+    return touched;
 }
 
 static int subtitle_is_text(const AVSubtitle *sub) {
@@ -257,7 +291,8 @@ static int subtitle_is_text(const AVSubtitle *sub) {
 
 static int subtitles_feed(const AVSubtitle *sub, double pts) {
     long long start_ms, duration_ms;
-    int consumed = 0;
+    int open_ended, prepared = 0, touched = 0, consumed = 0;
+    int base = 0;
 
     if (!sub->num_rects) {
         return 0;
@@ -275,29 +310,41 @@ static int subtitles_feed(const AVSubtitle *sub, double pts) {
 
     start_ms = (long long)(pts * 1000.0) + sub->start_display_time;
     duration_ms = (long long)sub->end_display_time - (long long)sub->start_display_time;
-    if (duration_ms < 0) {
-        duration_ms = 0;
+    open_ended = duration_ms <= 0 || sub->end_display_time == UINT32_MAX;
+    if (open_ended) {
+        duration_ms = ASS_OPEN_EVENT_MS;
     }
 
     for (unsigned i = 0; i < sub->num_rects; i++) {
         const AVSubtitleRect *rect = sub->rects[i];
+        int as_ass = rect->type == SUBTITLE_ASS && rect->ass;
+        int as_text = rect->type == SUBTITLE_TEXT && rect->text;
 
-        if (rect->type == SUBTITLE_ASS && rect->ass) {
+        if (!as_ass && !as_text) {
+            continue;
+        }
+
+        if (!prepared) {
+            prepared = 1;
+            ass_refill_locked();
+            touched = ass_close_open_events_locked(start_ms);
+            base = ass_track->n_events;
+        }
+
+        if (as_ass) {
             char routed[ASS_EVENT_MAX];
             const char *line = rect->ass;
 
-            ass_refill_locked();
             if (ass_route_emoji_locked(rect->ass, routed, sizeof(routed))) {
                 line = routed;
             }
             ass_process_chunk(ass_track, (char *)line, (int)strlen(line),
                               start_ms, duration_ms);
             consumed = 1;
-        } else if (rect->type == SUBTITLE_TEXT && rect->text) {
+        } else {
             char line[4096];
             int n;
 
-            ass_refill_locked();
             n = snprintf(line, sizeof(line), "%d,0,Default,,0,0,0,,%s",
                          ass_text_readorder++, rect->text);
 
@@ -317,7 +364,13 @@ static int subtitles_feed(const AVSubtitle *sub, double pts) {
             }
         }
     }
-    if (consumed) {
+    if (consumed && open_ended && base < ass_track->n_events) {
+        if (ass_open_base < 0 || ass_open_end != base) {
+            ass_open_base = base;
+        }
+        ass_open_end = ass_track->n_events;
+    }
+    if (consumed || touched) {
         ass_events_changed_locked();
     }
     SDL_UnlockMutex(ass_lock);
@@ -339,6 +392,9 @@ int subtitles_track_open(AVCodecContext *avctx) {
 
     desc = avcodec_descriptor_get(avctx->codec_id);
     is_text = desc && (desc->props & AV_CODEC_PROP_TEXT_SUB);
+    if (!is_text && avctx->subtitle_header && avctx->subtitle_header_size > 0) {
+        is_text = 1;
+    }
 
     subtitles_track_close();
 
@@ -399,9 +455,21 @@ void subtitles_track_close(void) {
     ass_track_converted = 0;
     ass_style_scale = 1.0;
     ass_refill_pending = 0;
+    ass_open_base = -1;
     ass_surface_stale = 1;
     ass_generation++;
     ass_events_changed_locked();
+    SDL_UnlockMutex(ass_lock);
+}
+
+void subtitles_clear_at(double pts) {
+    if (!ass_have_lock()) {
+        return;
+    }
+    SDL_LockMutex(ass_lock);
+    if (ass_track && ass_close_open_events_locked((long long)(pts * 1000.0))) {
+        ass_events_changed_locked();
+    }
     SDL_UnlockMutex(ass_lock);
 }
 
@@ -454,24 +522,13 @@ int subtitles_track_attached(void) {
     return attached;
 }
 
-int subtitles_visible_at(double now) {
-    long long now_ms;
+static void ass_visible_refresh_locked(long long now_ms) {
     long long from = LLONG_MIN, until = LLONG_MAX;
     int visible = 0;
 
-    if (!ass_lock || isnan(now)) {
-        return 0;
-    }
-
-    now_ms = (long long)(now * 1000.0);
-
-    SDL_LockMutex(ass_lock);
     if (ass_visible_valid && ass_visible_serial == ass_events_serial &&
         now_ms >= ass_visible_from && now_ms < ass_visible_until) {
-        visible = ass_visible_cached;
-        SDL_UnlockMutex(ass_lock);
-
-        return visible;
+        return;
     }
 
     if (ass_track) {
@@ -496,6 +553,19 @@ int subtitles_visible_at(double now) {
     ass_visible_until = until;
     ass_visible_cached = visible;
     ass_visible_valid = 1;
+    ass_visible_epoch++;
+}
+
+int subtitles_visible_at(double now) {
+    int visible;
+
+    if (!ass_lock || isnan(now)) {
+        return 0;
+    }
+
+    SDL_LockMutex(ass_lock);
+    ass_visible_refresh_locked((long long)(now * 1000.0));
+    visible = ass_visible_cached;
     SDL_UnlockMutex(ass_lock);
 
     return visible;
@@ -567,13 +637,17 @@ static int ass_composite_locked(ASS_Image *img, int frame_w, int frame_h) {
         return 0;
     }
 
-    if (ass_surface) {
+    if (ass_surface &&
+        (ass_surface->w != b.x1 - b.x0 || ass_surface->h != b.y1 - b.y0)) {
         SDL_DestroySurface(ass_surface);
+        ass_surface = NULL;
     }
-    ass_surface = SDL_CreateSurface(b.x1 - b.x0, b.y1 - b.y0,
-                                    SDL_PIXELFORMAT_RGBA32);
     if (!ass_surface) {
-        return 0;
+        ass_surface = SDL_CreateSurface(b.x1 - b.x0, b.y1 - b.y0,
+                                        SDL_PIXELFORMAT_RGBA32);
+        if (!ass_surface) {
+            return 0;
+        }
     }
     SDL_ClearSurface(ass_surface, 0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -661,9 +735,15 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
     }
 
     img = ass_render_frame(ass_renderer, ass_track, now_ms, &changed);
-    if (ass_track_converted && (changed || geometry_changed)) {
-        img = ass_fit_locked(now_ms, frame_w, frame_h, img);
-        changed = 1;
+    if (ass_track_converted) {
+        ass_visible_refresh_locked(now_ms);
+        if (geometry_changed || ass_fit_epoch != ass_visible_epoch) {
+            if (img) {
+                ass_fit_epoch = ass_visible_epoch;
+            }
+            img = ass_fit_locked(now_ms, frame_w, frame_h, img);
+            changed = 1;
+        }
     }
     if (!img) {
         if (ass_surface) {
@@ -716,6 +796,11 @@ int subtitle_thread(void *arg) {
                 pts = sp->sub.pts / (double)AV_TIME_BASE;
             }
             pts += is->sub_ts_offset / (double)AV_TIME_BASE;
+
+            if (!sp->sub.num_rects &&
+                is->subdec.pkt_serial == is->subtitleq.serial) {
+                subtitles_clear_at(pts);
+            }
 
             if (subtitle_is_text(&sp->sub)) {
                 if (is->subdec.pkt_serial == is->subtitleq.serial &&

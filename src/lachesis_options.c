@@ -137,6 +137,7 @@ int global_muted = 0;
 int ytdl_disable = 0;
 const char *ytdl_path = NULL;
 const char *ytdl_format = NULL;
+int tls_verify_opt = -1;
 int allow_delete = 0;
 int terminal_quit_disable = 0;
 double display_fps_override = 0.0;
@@ -212,6 +213,7 @@ static int opt_bad_value(const char *opt, const char *arg,
 
 static const char *const edit_list_modes[] = {"auto", "off", NULL};
 static const char *const recenter_modes[] = {"yes", "no", NULL};
+static const char *const tls_verify_modes[] = {"yes", "no", NULL};
 static const char *const archive_jump_modes[] = {"first", "last", NULL};
 static const char *const sync_types[] = {"audio", "video", "ext", NULL};
 static const char *const swap_modes[] = {"fifo", "fifo-relaxed", "mailbox",
@@ -321,6 +323,18 @@ static int opt_single(void *optctx av_unused, const char *opt, const char *arg) 
         return opt_bad_value(opt, arg, single_modes);
     }
     single_mode = i;
+
+    return 0;
+}
+
+static int opt_tls_verify(void *optctx av_unused, const char *opt,
+                          const char *arg) {
+    int i = opt_value_index(arg, tls_verify_modes);
+
+    if (i < 0) {
+        return opt_bad_value(opt, arg, tls_verify_modes);
+    }
+    tls_verify_opt = i == 0;
 
     return 0;
 }
@@ -779,6 +793,7 @@ const OptionDef options[] = {
     {"no-ytdl", OPT_TYPE_BOOL, 0, {&ytdl_disable}, "disable yt-dlp integration"},
     {"ytdl-path", OPT_TYPE_STRING, 0, {&ytdl_path}, "path to the yt-dlp binary", "path"},
     {"ytdl-format", OPT_TYPE_STRING, 0, {&ytdl_format}, "yt-dlp format selection string", "format"},
+    {"tls-verify", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL | OPT_STRICT_VALUE, {.func_arg = opt_tls_verify}, "check the certificate of an HTTPS stream (default yes from FFmpeg 9.0)", "mode", tls_verify_modes, "yes", "no"},
     {"delete", OPT_TYPE_BOOL, 0, {&allow_delete}, "enable permanent file deletion"},
     {"no-terminal-quit", OPT_TYPE_BOOL, 0, {&terminal_quit_disable}, "disable the terminal quit keybinding"},
     {"display-fps", OPT_TYPE_DOUBLE, 0, {&display_fps_override}, "override the detected display refresh rate", "fps"},

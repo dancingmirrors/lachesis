@@ -201,6 +201,7 @@ extern int global_muted;
 extern int ytdl_disable;
 extern const char *ytdl_path;
 extern const char *ytdl_format;
+extern int tls_verify_opt;
 extern int allow_delete;
 extern int terminal_quit_disable;
 extern int allow_volume_boost;
