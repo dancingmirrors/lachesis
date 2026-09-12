@@ -212,6 +212,7 @@ add_sources(
     "src/lachesis_alloc.c",
     "src/lachesis_append.c",
     "src/lachesis_archive.c",
+    "src/lachesis_aspect.c",
     "src/lachesis_ass.c",
     "src/lachesis_audio.c",
     "src/lachesis_cache.c",

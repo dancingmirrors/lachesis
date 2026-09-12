@@ -35,6 +35,7 @@
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
 
+#include "lachesis_aspect.h"
 #include "lachesis_delete.h"
 #include "lachesis_equalizer.h"
 #include "lachesis_internal.h"
@@ -484,6 +485,14 @@ void event_loop(VideoState **pis) {
                 }
                 break;
             case SDLK_A:
+                if (event.key.mod & SDL_KMOD_SHIFT) {
+                    if (refuse_without_video(cur_stream)) {
+                        break;
+                    }
+                    osd_show_message("Aspect: %s", aspect_override_cycle());
+                    cur_stream->force_refresh = 1;
+                    break;
+                }
                 stream_cycle_channel(cur_stream, AVMEDIA_TYPE_AUDIO);
                 break;
             case SDLK_V:

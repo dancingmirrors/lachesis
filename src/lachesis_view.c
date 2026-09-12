@@ -23,6 +23,7 @@
 
 #include <libavutil/mathematics.h>
 
+#include "lachesis_aspect.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_view.h"
@@ -49,7 +50,7 @@ typedef struct DisplaySizes {
 static void display_sizes(int scr_width, int scr_height, int pic_width,
                           int pic_height, AVRational pic_sar,
                           DisplaySizes *out) {
-    AVRational aspect_ratio = pic_sar;
+    AVRational aspect_ratio;
     int64_t width, height;
 
     if (pic_width < 1) {
@@ -61,6 +62,8 @@ static void display_sizes(int scr_width, int scr_height, int pic_width,
     scr_width = FFMAX(scr_width, 1);
     scr_height = FFMAX(scr_height, 1);
 
+    aspect_ratio = pic_sar;
+
     if (video_rotate == 90 || video_rotate == 270) {
         int tmp = pic_width;
         pic_width = pic_height;
@@ -69,6 +72,8 @@ static void display_sizes(int scr_width, int scr_height, int pic_width,
             aspect_ratio = av_make_q(aspect_ratio.den, aspect_ratio.num);
         }
     }
+
+    aspect_ratio = aspect_override_sar(pic_width, pic_height, aspect_ratio);
 
     if (aspect_ratio.num <= 0 || aspect_ratio.den <= 0) {
         aspect_ratio = av_make_q(1, 1);

@@ -140,7 +140,6 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     int ret;
     AVFilterContext *filt_src = NULL, *filt_out = NULL, *last_filter = NULL;
     AVFilterContext *autoscale_ctx = NULL;
-    AVCodecParameters *codecpar = is->video_st->codecpar;
     AVRational fr = av_guess_frame_rate(is->ic, is->video_st, NULL);
     int max_dim;
     AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
@@ -165,7 +164,7 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     par->time_base = is->video_st->time_base;
     par->width = frame->width;
     par->height = frame->height;
-    par->sample_aspect_ratio = codecpar->sample_aspect_ratio;
+    par->sample_aspect_ratio = av_guess_sample_aspect_ratio(is->ic, is->video_st, frame);
     par->color_space = frame->colorspace;
     par->color_range = frame->color_range;
 #if LIBAVFILTER_VERSION_INT >= AV_VERSION_INT(11, 8, 100)

@@ -36,6 +36,7 @@
 #include <SDL3/SDL.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_aspect.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -77,7 +78,7 @@ static float window_points_scale(void) {
 static void window_size_for_content(int pic_width, int pic_height,
                                     AVRational sar, int rotate, int *out_w,
                                     int *out_h) {
-    AVRational aspect_ratio = sar;
+    AVRational aspect_ratio;
     int64_t width, height;
     int64_t max_width = INT64_MAX, max_height = INT64_MAX;
     float density = window_points_scale();
@@ -90,6 +91,8 @@ static void window_size_for_content(int pic_width, int pic_height,
         pic_height = 1;
     }
 
+    aspect_ratio = sar;
+
     if (rotate == 90 || rotate == 270) {
         int tmp = pic_width;
         pic_width = pic_height;
@@ -98,6 +101,8 @@ static void window_size_for_content(int pic_width, int pic_height,
             aspect_ratio = av_make_q(aspect_ratio.den, aspect_ratio.num);
         }
     }
+
+    aspect_ratio = aspect_override_sar(pic_width, pic_height, aspect_ratio);
 
     if (aspect_ratio.num <= 0 || aspect_ratio.den <= 0) {
         aspect_ratio = av_make_q(1, 1);
@@ -135,15 +140,21 @@ static int window_rotate;
 
 static int noted_rotate;
 
+static AVRational content_sar(const Frame *vp) {
+    return aspect_override_sar(vp->width, vp->height, vp->sar);
+}
+
 static int content_size_is_current(const Frame *vp) {
+    AVRational sar = content_sar(vp);
+
     return vp->width == sized_for_width && vp->height == sized_for_height &&
-        vp->sar.num == sized_for_sar.num && vp->sar.den == sized_for_sar.den;
+        sar.num == sized_for_sar.num && sar.den == sized_for_sar.den;
 }
 
 static void note_content_size(const Frame *vp) {
     sized_for_width = vp->width;
     sized_for_height = vp->height;
-    sized_for_sar = vp->sar;
+    sized_for_sar = content_sar(vp);
 }
 
 static int window_content_sized;

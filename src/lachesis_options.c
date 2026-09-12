@@ -52,6 +52,7 @@
 #include <libswscale/swscale.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_aspect.h"
 #include "lachesis_audio.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
@@ -249,6 +250,17 @@ static int opt_rotate(void *optctx av_unused, const char *opt, const char *arg) 
     }
 
     video_rotate = (int)(((deg % 360) + 360) % 360);
+
+    return 0;
+}
+
+static int opt_aspect(void *optctx av_unused, const char *opt, const char *arg) {
+    if (!aspect_override_set(arg)) {
+        log_dead("-%s wants an aspect ratio such as 16:9 or 1.85, or square, "
+                 "or off, not '%s'.\n",
+                 opt, arg);
+        return AVERROR(EINVAL);
+    }
 
     return 0;
 }
@@ -740,6 +752,7 @@ const OptionDef options[] = {
     {"vcodec", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_vcodec}, "force a video decoder", "decoder_name"},
     {"no-autorotate", OPT_TYPE_BOOL, 0, {&disable_autorotate}, "disable automatic rotation"},
     {"rotate", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_rotate}, "rotate clockwise by multiples of 90 degrees", "degrees"},
+    {"aspect", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_aspect}, "override the video aspect ratio", "ratio"},
     {"gpu-api", OPT_TYPE_STRING, 0, {&gpu_api_name}, "GPU backend to use (auto, vulkan, opengl, d3d11)", "api"},
     {"no-vulkan", OPT_TYPE_BOOL, 0, {&no_vulkan}, "disable the Vulkan renderer"},
     {"gpu-params", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_gpu_params}, "backend configuration using a list of key=value pairs separated by ':'", "params"},
@@ -1062,6 +1075,7 @@ static const struct {
     {"vn", "vf", OPT_DISABLES},
     {"vn", "r", OPT_DISABLES},
     {"vn", "rotate", OPT_DISABLES},
+    {"vn", "aspect", OPT_DISABLES},
     {"vn", "no-autorotate", OPT_DISABLES},
     {"vn", "deinterlace", OPT_DISABLES},
     {"vn", "interpolate", OPT_DISABLES},

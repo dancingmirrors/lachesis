@@ -27,6 +27,7 @@
 #include <libavutil/attributes.h>
 #include <libavutil/time.h>
 
+#include "lachesis_aspect.h"
 #include "lachesis_deinterlace.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -146,6 +147,9 @@ void print_stream_info(const VideoState *is) {
     if (is->video_st) {
         media_info_video_line(is, line, sizeof(line));
         log_info("Video: %s\n", line);
+        if (aspect_override_active()) {
+            log_info("Aspect override: %s\n", aspect_override_label());
+        }
     }
 
     if (is->audio_st) {
@@ -273,6 +277,9 @@ void format_media_info(const VideoState *is, char *buf, size_t bufsz) {
     if (is->video_st) {
         media_info_video_line(is, sub, sizeof(sub));
         MI_LINE("Video: %s", sub);
+        if (aspect_override_active()) {
+            MI_LINE("Aspect override: %s", aspect_override_label());
+        }
     }
     if (is->audio_st) {
         media_info_audio_line(is, sub, sizeof(sub));
