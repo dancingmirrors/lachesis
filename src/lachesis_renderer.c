@@ -1021,7 +1021,9 @@ static struct pl_render_params base_render_params(const RendererContext *ctx,
                                                   const RenderParams *params,
                                                   const ImageState *image,
                                                   struct pl_color_adjustment *adjustment) {
+    /* clang-format off */
     return (struct pl_render_params){
+        PL_RENDER_DEFAULTS
         .upscaler = pick_upscaler(ctx, image),
         .downscaler = pick_downscaler(ctx, params, image),
         .color_adjustment = adjustment,
@@ -1034,6 +1036,7 @@ static struct pl_render_params base_render_params(const RendererContext *ctx,
         .disable_linear_scaling = ctx->benchmark,
         .skip_anti_aliasing = ctx->benchmark,
     };
+    /* clang-format on */
 }
 
 #define IMAGE_SETTLE_US 250000
@@ -1162,6 +1165,7 @@ int renderer_draw_frame(Renderer *renderer, AVFrame *frame,
     }
 
     pl_color_space_from_avframe(&hint, frame);
+    pl_color_space_infer(&hint);
     if (!ctx->have_hint || !pl_color_space_equal(&hint, &ctx->last_hint)) {
         pl_swapchain_colorspace_hint(ctx->swapchain, &hint);
         ctx->last_hint = hint;

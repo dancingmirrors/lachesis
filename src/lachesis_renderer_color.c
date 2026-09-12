@@ -74,10 +74,16 @@ void cal_drop(RendererContext *ctx) {
 #define DISPLAY_GAMMA 2.2f
 #define CAL_RAMP_SIZE 256
 
-static void white_point_gains(double kelvin, float gain[3]) {
+static double white_point_gains(double kelvin, float gain[3]) {
     const struct pl_raw_primaries *prim =
         pl_raw_primaries_get(PL_COLOR_PRIM_BT_709);
-    struct pl_cie_xy white = pl_white_from_temp((float)kelvin);
+    struct pl_cie_xy white;
+#if PL_API_VER < 357
+    if (kelvin < 2500.0) {
+        kelvin = 2500.0;
+    }
+#endif
+    white = pl_white_from_temp((float)kelvin);
     pl_matrix3x3 xyz2rgb = pl_get_xyz2rgb_matrix(prim);
     float rgb[3];
     float top;
@@ -91,6 +97,8 @@ static void white_point_gains(double kelvin, float gain[3]) {
     for (int i = 0; i < 3; i++) {
         gain[i] = top > 0.0f ? fmaxf(rgb[i] / top, 0.0f) : 1.0f;
     }
+
+    return kelvin;
 }
 
 static int cal_read_vcgt(RendererContext *ctx) {
@@ -129,7 +137,8 @@ static void cal_build(RendererContext *ctx) {
             ctx->icc_obj->gamma <= 3.0f) {
             gamma = ctx->icc_obj->gamma;
         }
-        white_point_gains(ctx->white_point, gain);
+        double applied = white_point_gains(ctx->white_point, gain);
+
         for (int i = 0; i < 3; i++) {
             scale[i] = powf(gain[i], 1.0f / gamma);
         }
@@ -139,8 +148,13 @@ static void cal_build(RendererContext *ctx) {
         }
         log_verbose("Adapting the picture to a white point of %.0f K "
                     "(red %.3f, green %.3f, blue %.3f).\n",
-                    ctx->white_point, (double)gain[0], (double)gain[1],
+                    applied, (double)gain[0], (double)gain[1],
                     (double)gain[2]);
+        if (applied != ctx->white_point) {
+            log_warn("This libplacebo cannot go below %.0f K, so the requested "
+                     "%.0f K was not applied.\n",
+                     applied, ctx->white_point);
+        }
     }
     if (!ctx->cal_ramp.data) {
         return;

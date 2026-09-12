@@ -209,9 +209,10 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
     }
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 11, 100)
-    if ((ret = av_opt_set_array(filt_out, "alphamodes", AV_OPT_SEARCH_CHILDREN,
-                                0, FF_ARRAY_ELEMS(supported_alpha_modes),
-                                AV_OPT_TYPE_INT, supported_alpha_modes)) < 0) {
+    ret = av_opt_set_array(filt_out, "alphamodes", AV_OPT_SEARCH_CHILDREN, 0,
+                           FF_ARRAY_ELEMS(supported_alpha_modes),
+                           AV_OPT_TYPE_INT, supported_alpha_modes);
+    if (ret < 0 && ret != AVERROR_OPTION_NOT_FOUND) {
         goto fail;
     }
 #endif
