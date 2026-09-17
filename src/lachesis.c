@@ -1,0 +1,1679 @@
+/*
+ * Copyright © 2003 Fabrice Bellard
+ * Copyright © 2026 dancingmirrors@icloud.com
+ *
+ * This file is part of lachesis.
+ *
+ * lachesis is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * lachesis is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with lachesis; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#include "lachesis_config.h"
+#include "version.h"
+
+#include <libplacebo/config.h>
+
+#include <errno.h>
+#include <inttypes.h>
+#include <limits.h>
+#include <math.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavdevice/avdevice.h>
+#include <libavformat/avformat.h>
+#include <libavutil/attributes.h>
+#include <libavutil/avassert.h>
+#include <libavutil/avstring.h>
+#include <libavutil/bprint.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/dict.h>
+#include <libavutil/fifo.h>
+#include <libavutil/film_grain_params.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/mem.h>
+#include <libavutil/opt.h>
+#include <libavutil/parseutils.h>
+#include <libavutil/pixdesc.h>
+#include <libavutil/samplefmt.h>
+#include <libavutil/time.h>
+#include <libavutil/tx.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
+
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
+
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_events.h>
+#include <SDL3/SDL_keycode.h>
+#include <SDL3/SDL_mouse.h>
+#include <SDL3/SDL_mutex.h>
+
+#include <stdbool.h>
+#include <strings.h>
+#include <sys/stat.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+/* clang-format off */
+#include <direct.h>
+#include <io.h>
+#include <windows.h>
+#include <shellapi.h>
+/* clang-format on */
+#undef main /* We don't want SDL to override our main(). */
+#define PATH_SEPARATOR '\\'
+#else
+#include <unistd.h>
+#define PATH_SEPARATOR '/'
+#endif
+
+#include "lachesis_alloc.h"
+#include "lachesis_append.h"
+#include "lachesis_archive.h"
+#include "lachesis_audio.h"
+#include "lachesis_degrade.h"
+#include "lachesis_deinterlace.h"
+#include "lachesis_demux.h"
+#include "lachesis_display.h"
+#include "lachesis_equalizer.h"
+#include "lachesis_filters.h"
+#include "lachesis_hwaccel.h"
+#include "lachesis_information.h"
+#include "lachesis_internal.h"
+#include "lachesis_interpolate.h"
+#include "lachesis_keys.h"
+#include "lachesis_log.h"
+#include "lachesis_network.h"
+#include "lachesis_normalize.h"
+#include "lachesis_options.h"
+#include "lachesis_osd.h"
+#include "lachesis_playlist.h"
+#include "lachesis_present.h"
+#include "lachesis_rc.h"
+#include "lachesis_renderer.h"
+#include "lachesis_screenshot.h"
+#include "lachesis_seek.h"
+#include "lachesis_single.h"
+#include "lachesis_subtitles.h"
+#include "lachesis_terminal.h"
+#include "lachesis_view.h"
+#include "lachesis_view360.h"
+#include "lachesis_window.h"
+
+const char program_name[] = "lachesis";
+const int program_birth_year = 2003;
+
+static void init_dynload(void) {
+#ifdef _WIN32
+    /* Remove the current working directory from the DLL search path as a security precaution. */
+    SetDllDirectoryW(L"");
+#endif
+}
+
+#ifdef _WIN32
+static int win32_handle_valid(HANDLE handle) {
+    return handle && handle != INVALID_HANDLE_VALUE;
+}
+
+static void win32_attach_console(void) {
+    static const DWORD ids[] = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
+    static const char *const devices[] = {"CONIN$", "CONOUT$", "CONOUT$"};
+    static const char *const modes[] = {"r", "w", "w"};
+    FILE *streams[] = {stdin, stdout, stderr};
+    HANDLE inherited[FF_ARRAY_ELEMS(ids)];
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ids); i++) {
+        inherited[i] = GetStdHandle(ids[i]);
+    }
+
+    if (!AttachConsole(ATTACH_PARENT_PROCESS) &&
+        GetLastError() != ERROR_ACCESS_DENIED) {
+        return;
+    }
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(ids); i++) {
+        intptr_t handle;
+
+        if (win32_handle_valid(inherited[i])) {
+            SetStdHandle(ids[i], inherited[i]);
+            continue;
+        }
+        if (!freopen(devices[i], modes[i], streams[i])) {
+            continue;
+        }
+        handle = _get_osfhandle(_fileno(streams[i]));
+        if (handle != -1 && handle != -2) {
+            SetStdHandle(ids[i], (HANDLE)handle);
+        }
+    }
+}
+#endif
+
+#ifdef _WIN32
+static void win32_argv_to_utf8(int *argc_p, char ***argv_p) {
+    int wargc = 0;
+    wchar_t **wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
+    if (!wargv) {
+        return;
+    }
+    char **uargv = av_calloc((size_t)wargc + 1, sizeof(*uargv));
+    if (!uargv) {
+        LocalFree(wargv);
+        return;
+    }
+    for (int i = 0; i < wargc; i++) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+        if (n <= 0) {
+            goto fail;
+        }
+        uargv[i] = av_malloc((size_t)n);
+        if (!uargv[i]) {
+            goto fail;
+        }
+        WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, uargv[i], n, NULL, NULL);
+    }
+    LocalFree(wargv);
+    for (int i = 0; i < wargc; i++) {
+        alloc_track_disown(uargv[i]);
+    }
+    alloc_track_disown(uargv);
+    *argc_p = wargc;
+    *argv_p = uargv;
+    return;
+
+fail:
+    for (int i = 0; i < wargc; i++) {
+        av_free(uargv[i]);
+    }
+    av_free(uargv);
+    LocalFree(wargv);
+}
+#endif
+
+#define REFRESH_RATE 0.01
+
+#define CURSOR_HIDE_DELAY 1000000
+
+static const char *input_filename;
+
+static int pause_next_stream = 0;
+
+static char **input_args = NULL;
+static int n_input_args = 0;
+
+int default_width = 640;
+int default_height = 480;
+int screen_width = 0;
+int screen_height = 0;
+
+int lachesis_quiet;
+int64_t cursor_last_shown;
+int cursor_hidden = 0;
+int frame_interpolation = 0;
+int fatal_error_pending = 0;
+int exit_status = 0;
+enum View360Layout view360_layout = VIEW360_LAYOUT_OFF;
+enum View360Projection view360_projection = VIEW360_PROJECTION_PANINI;
+float sbs360_yaw = 0.0f;
+float sbs360_pitch = VIEW360_DEFAULT_PITCH;
+float sbs360_roll = 0.0f;
+float sbs360_hfov = VIEW360_DEFAULT_HFOV;
+
+void sbs360_reset_view(void) {
+    sbs360_yaw = view360_default_yaw(view360_layout);
+    sbs360_pitch = VIEW360_DEFAULT_PITCH;
+    sbs360_roll = 0.0f;
+    sbs360_hfov = view360_default_hfov(view360_projection);
+}
+
+SDL_Window *window;
+
+Renderer *renderer;
+
+void thread_set_priority(SDL_ThreadPriority priority, const char *who) {
+    if (SDL_SetCurrentThreadPriority(priority)) {
+        return;
+    }
+    log_verbose("Couldn't set the %s thread priority: %s\n", who, SDL_GetError());
+    SDL_ClearError();
+}
+
+static void stream_component_close(VideoState *is, int stream_index) {
+    AVFormatContext *ic = is->ic;
+    AVCodecParameters *codecpar;
+
+    if (stream_index < 0 || stream_index >= (int)ic->nb_streams) {
+        return;
+    }
+    codecpar = ic->streams[stream_index]->codecpar;
+
+    switch (codecpar->codec_type) {
+    case AVMEDIA_TYPE_AUDIO:
+        decoder_abort(&is->auddec, &is->sampq);
+        audio_device_close();
+        decoder_destroy(&is->auddec);
+        swr_free(&is->swr_ctx);
+        av_freep(&is->audio_buf1);
+        is->audio_buf1_size = 0;
+        is->audio_buf = NULL;
+        break;
+    case AVMEDIA_TYPE_VIDEO:
+        decoder_abort(&is->viddec, &is->pictq);
+        decoder_destroy(&is->viddec);
+        degrade_reset(is);
+        break;
+    case AVMEDIA_TYPE_SUBTITLE:
+        decoder_abort(&is->subdec, &is->subpq);
+        decoder_destroy(&is->subdec);
+        subtitles_track_close();
+        break;
+    default:
+        break;
+    }
+
+    ic->streams[stream_index]->discard = AVDISCARD_ALL;
+    switch (codecpar->codec_type) {
+    case AVMEDIA_TYPE_AUDIO:
+        is->audio_st = NULL;
+        is->audio_stream = -1;
+        break;
+    case AVMEDIA_TYPE_VIDEO:
+        is->video_st = NULL;
+        is->video_stream = -1;
+        break;
+    case AVMEDIA_TYPE_SUBTITLE:
+        is->subtitle_st = NULL;
+        is->subtitle_stream = -1;
+        break;
+    default:
+        break;
+    }
+}
+
+#define READER_JOIN_TIMEOUT_US (2 * 1000 * 1000)
+
+#define MAX_ABANDONED_STREAMS 8
+
+static VideoState *abandoned_streams[MAX_ABANDONED_STREAMS];
+static int num_abandoned_streams;
+static int abandoned_untracked;
+
+static int abandoned_threads_live(void) {
+    if (abandoned_untracked) {
+        return 1;
+    }
+    for (int i = 0; i < num_abandoned_streams; i++) {
+        VideoState *is = abandoned_streams[i];
+
+        if (is->read_tid && !SDL_GetAtomicInt(&is->read_thread_done)) {
+            return 1;
+        }
+        if (is->audio_read_tid && !SDL_GetAtomicInt(&is->audio_read_thread_done)) {
+            return 1;
+        }
+        if (is->sub_read_tid && !SDL_GetAtomicInt(&is->sub_read_thread_done)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+#define PIPELINE_LOCK_TIMEOUT_US (2 * 1000 * 1000)
+#define ABANDON_LOCK_TIMEOUT_US (250 * 1000)
+
+static int pipeline_lock(VideoState *is, int64_t timeout_us) {
+    int64_t deadline = av_gettime_relative() + timeout_us;
+
+    while (!SDL_TryLockMutex(is->pipeline_mutex)) {
+        if (av_gettime_relative() >= deadline) {
+            return 0;
+        }
+        SDL_Delay(1);
+    }
+
+    return 1;
+}
+
+int pipeline_setup_begin(VideoState *is) {
+    if (!pipeline_lock(is, PIPELINE_LOCK_TIMEOUT_US)) {
+        return 0;
+    }
+    if (is->abort_request) {
+        SDL_UnlockMutex(is->pipeline_mutex);
+        return 0;
+    }
+
+    return 1;
+}
+
+void pipeline_setup_end(VideoState *is) {
+    SDL_UnlockMutex(is->pipeline_mutex);
+}
+
+static int reader_join(SDL_Thread **tid, SDL_AtomicInt *done, int64_t deadline) {
+    if (!*tid) {
+        return 1;
+    }
+    while (!SDL_GetAtomicInt(done)) {
+        if (av_gettime_relative() >= deadline) {
+            return 0;
+        }
+        SDL_Delay(1);
+    }
+    SDL_WaitThread(*tid, NULL);
+    *tid = NULL;
+
+    return 1;
+}
+
+static void stream_abandon(VideoState *is) {
+    is->abandoned = 1;
+
+    packet_queue_abort(&is->videoq);
+    packet_queue_abort(&is->audioq);
+    packet_queue_abort(&is->subtitleq);
+    SDL_SignalCondition(is->continue_read_thread);
+
+    if (pipeline_lock(is, ABANDON_LOCK_TIMEOUT_US)) {
+        renderer_release_frames(renderer);
+        if (is->audio_stream >= 0) {
+            decoder_abort(&is->auddec, &is->sampq);
+            audio_device_close();
+            decoder_destroy(&is->auddec);
+        }
+        if (is->video_stream >= 0) {
+            decoder_abort(&is->viddec, &is->pictq);
+            decoder_destroy(&is->viddec);
+        }
+        if (is->subtitle_stream >= 0 || is->sub_ic) {
+            decoder_abort(&is->subdec, &is->subpq);
+            decoder_destroy(&is->subdec);
+            subtitles_track_close();
+        }
+        SDL_UnlockMutex(is->pipeline_mutex);
+    } else {
+        abandoned_untracked = 1;
+    }
+
+    if (is->read_tid) {
+        SDL_DetachThread(is->read_tid);
+    }
+    if (is->audio_read_tid) {
+        SDL_DetachThread(is->audio_read_tid);
+    }
+    if (is->sub_read_tid) {
+        SDL_DetachThread(is->sub_read_tid);
+    }
+    if (num_abandoned_streams < MAX_ABANDONED_STREAMS) {
+        abandoned_streams[num_abandoned_streams++] = is;
+    } else {
+        abandoned_untracked = 1;
+    }
+}
+
+static void stream_detach(VideoState *is) {
+    is->abort_request = 1;
+    packet_queue_abort(&is->videoq);
+    packet_queue_abort(&is->audioq);
+    packet_queue_abort(&is->subtitleq);
+    frame_queue_signal(&is->pictq);
+    frame_queue_signal(&is->sampq);
+    frame_queue_signal(&is->subpq);
+    SDL_SignalCondition(is->continue_read_thread);
+
+    if (pipeline_lock(is, ABANDON_LOCK_TIMEOUT_US)) {
+        audio_device_close();
+        SDL_UnlockMutex(is->pipeline_mutex);
+    }
+}
+
+static int stream_close(VideoState *is) {
+    int64_t deadline;
+    int joined;
+
+    is->abort_request = 1;
+    SDL_SignalCondition(is->continue_read_thread);
+
+    deadline = av_gettime_relative() + READER_JOIN_TIMEOUT_US;
+    joined = reader_join(&is->read_tid, &is->read_thread_done, deadline);
+    joined &= reader_join(&is->audio_read_tid, &is->audio_read_thread_done, deadline);
+    joined &= reader_join(&is->sub_read_tid, &is->sub_read_thread_done, deadline);
+    if (!joined) {
+        stream_abandon(is);
+        return 0;
+    }
+
+    renderer_release_frames(renderer);
+
+    if (is->audio_stream >= 0) {
+        if (is->audio_ic) {
+            AVFormatContext *save = is->ic;
+            is->ic = is->audio_ic;
+            stream_component_close(is, is->audio_stream);
+            is->ic = save;
+        } else {
+            stream_component_close(is, is->audio_stream);
+        }
+    }
+    if (is->video_stream >= 0) {
+        stream_component_close(is, is->video_stream);
+    }
+    if (is->subtitle_stream >= 0) {
+        stream_component_close(is, is->subtitle_stream);
+    } else if (is->sub_ic) {
+        decoder_abort(&is->subdec, &is->subpq);
+        decoder_destroy(&is->subdec);
+        subtitles_track_close();
+        is->subtitle_st = NULL;
+    }
+
+    avformat_close_input(&is->ic);
+    avformat_close_input(&is->audio_ic);
+    avformat_close_input(&is->sub_ic);
+    ytdl_chunked_free(&is->ytdl_vio);
+    ytdl_chunked_free(&is->ytdl_aio);
+    av_freep(&is->ytdl_source_url);
+    av_freep(&is->ytdl_audio_url);
+    archive_entry_close_avio(is->archive_avio);
+    is->archive_avio = NULL;
+    append_io_free(&is->append_io);
+
+    packet_queue_destroy(&is->videoq);
+    packet_queue_destroy(&is->audioq);
+    packet_queue_destroy(&is->subtitleq);
+
+    frame_queue_destroy(&is->pictq);
+    frame_queue_destroy(&is->sampq);
+    frame_queue_destroy(&is->subpq);
+    deinterlace_close(is);
+    SDL_DestroyCondition(is->continue_read_thread);
+    SDL_DestroyMutex(is->pipeline_mutex);
+    sws_freeContext(is->sub_convert_ctx);
+    av_free(is->filename);
+    av_free(is->archive_path);
+    av_free(is->entry_name);
+    av_freep(&is->sub_rgba);
+    av_free(is);
+
+    return 1;
+}
+
+static void uninit_opts(void) {
+    av_dict_free(&format_opts);
+    for (int i = 0; i < nb_vfilters; i++) {
+        av_freep(&vfilters_list[i]);
+    }
+    av_freep(&vfilters_list);
+    nb_vfilters = 0;
+    av_freep(&video_codec_name);
+    av_freep(&audio_codec_name);
+    av_freep(&subtitle_codec_name);
+    av_freep(&hwaccel);
+    av_freep(&hwaccel_codecs);
+    av_freep(&afilters_opt);
+    av_freep(&audio_spdif_opt);
+    av_freep(&gpu_api_name);
+    av_freep(&gpu_params);
+    av_freep(&gpu_device);
+    av_freep(&vulkan_swap_mode);
+    av_freep(&shader_cache_dir);
+    av_freep(&icc_profile);
+    av_freep(&icc_intent);
+    av_freep(&video_background);
+    av_freep(&ytdl_path);
+    av_freep(&ytdl_format);
+    for (int i = 0; i < AVMEDIA_TYPE_NB; i++) {
+        av_freep(&wanted_stream_spec[i]);
+    }
+    av_freep(&window_title);
+    av_freep(&window_title_auto);
+    window_uninit();
+    av_freep(&input_filename);
+    playlist_clear();
+    for (int i = 0; i < n_input_args; i++) {
+        av_freep(&input_args[i]);
+    }
+    av_freep(&input_args);
+    n_input_args = 0;
+}
+
+static volatile sig_atomic_t quit_signal;
+static volatile sig_atomic_t quit_signal_polled;
+
+static int64_t shutdown_started;
+static int64_t shutdown_marked;
+static int64_t slowest_loop_turn;
+static int64_t last_loop_turn;
+
+static void note_loop_turn(int64_t elapsed) {
+    last_loop_turn = elapsed;
+    if (elapsed > slowest_loop_turn) {
+        slowest_loop_turn = elapsed;
+    }
+}
+
+static void shutdown_begin(void) {
+    shutdown_started = shutdown_marked = av_gettime_relative();
+}
+
+static void shutdown_step(const char *what) {
+    int64_t now = av_gettime_relative();
+
+    log_verbose("Shutdown: %s took %.1f ms (%.1f ms in).\n", what,
+                (now - shutdown_marked) / 1000.0,
+                (now - shutdown_started) / 1000.0);
+    shutdown_marked = now;
+}
+
+static int teardown_must_be_full(void) {
+    return alloc_track_active();
+}
+
+static void shutdown_finish(void) {
+    log_finish_line();
+    terminal_restore_now();
+    shutdown_step("the exit");
+    log_verbose("Shutdown: teardown took %.1f ms (the event loop's last turn "
+                "took %.1f ms and its slowest this session was %.1f ms).\n",
+                (av_gettime_relative() - shutdown_started) / 1000.0,
+                last_loop_turn / 1000.0, slowest_loop_turn / 1000.0);
+    log_status_finish();
+}
+
+static av_noreturn void exit_now(int status) {
+    shutdown_finish();
+    alloc_track_report();
+    _Exit(status);
+}
+
+av_noreturn void do_exit(VideoState *is) {
+    int status = quit_signal ? 123 : exit_status;
+    int stranded_renderer = 0;
+    int abandoned;
+
+    refresh_status_line(is);
+    if (!log_status_available()) {
+        print_exit_position(is);
+    }
+    quit_signal_polled = 0;
+    shutdown_begin();
+
+    if (is) {
+        is->abort_request = 1;
+        packet_queue_abort(&is->videoq);
+        packet_queue_abort(&is->audioq);
+        packet_queue_abort(&is->subtitleq);
+        SDL_SignalCondition(is->continue_read_thread);
+    }
+    if (!teardown_must_be_full()) {
+        audio_device_abandon();
+    }
+
+    single_shutdown();
+    shutdown_step("the single instance listener");
+
+    if (renderer) {
+        renderer_quiesce(renderer, teardown_must_be_full());
+        shutdown_step("quiescing the renderer");
+    }
+    if (is) {
+        if (teardown_must_be_full()) {
+            stream_close(is);
+        } else {
+            stream_detach(is);
+        }
+        shutdown_step("closing the stream");
+    }
+    abandoned = !screenshot_shutdown();
+    shutdown_step("draining screenshots");
+    abandoned |= abandoned_threads_live();
+
+    if (abandoned || !teardown_must_be_full()) {
+        exit_now(status);
+    }
+
+    if (renderer) {
+        if (renderer_destroy(renderer)) {
+            av_freep(&renderer);
+        } else {
+            stranded_renderer = 1;
+        }
+        shutdown_step("destroying the renderer");
+    }
+    if (window && !stranded_renderer) {
+        SDL_DestroyWindow(window);
+    }
+    if (stranded_renderer) {
+        exit_now(status);
+    }
+    uninit_opts();
+    avformat_network_deinit();
+    subtitles_uninit();
+    osd_uninit();
+    SDL_Quit();
+    shutdown_step("the rest of the teardown");
+    alloc_track_complete();
+    shutdown_finish();
+    exit(status);
+}
+
+static void sigterm_handler(int sig) {
+    if (!quit_signal_polled || quit_signal) {
+        log_status_break();
+        terminal_restore_now();
+        _Exit(123);
+    }
+    quit_signal = sig;
+}
+
+static VideoState *stream_open(const char *filename,
+                               const AVInputFormat *iformat,
+                               const char *archive_path,
+                               const char *entry_name,
+                               int from_playlist) {
+    VideoState *is;
+    int vol, vol_max_pct;
+
+    is = av_mallocz(sizeof(VideoState));
+    if (!is) {
+        return NULL;
+    }
+    video_adopt_window_size(is);
+    is->last_render_serial = -1;
+    is->observed_pos = LACHESIS_NAN;
+    SDL_SetAtomicInt(&is->seek_by_bytes, -1);
+    is->last_video_stream = is->video_stream = -1;
+    is->last_audio_stream = is->audio_stream = -1;
+    is->last_subtitle_stream = is->subtitle_stream = -1;
+    media_info_reset();
+    note_media_window_title(filename, archive_path, entry_name);
+    is->ytdl_forced = !strncmp(filename, "ytdl://", 7);
+    is->filename = av_strdup(filename);
+    if (!is->filename) {
+        goto fail;
+    }
+    is->open_started_us = av_gettime_relative();
+    is->iformat = iformat;
+    is->from_playlist = from_playlist;
+    is->archive_path = NULL;
+    is->entry_name = NULL;
+    /* These must be set before read_thread is created. */
+    if (archive_path && entry_name) {
+        is->archive_path = av_strdup(archive_path);
+        is->entry_name = av_strdup(entry_name);
+        if (!is->archive_path || !is->entry_name) {
+            goto fail;
+        }
+    }
+    is->ytop = 0;
+    is->xleft = 0;
+
+    if (frame_queue_init(&is->pictq, &is->videoq, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0) {
+        goto fail;
+    }
+    if (frame_queue_init(&is->subpq, &is->subtitleq, SUBPICTURE_QUEUE_SIZE, 0) < 0) {
+        goto fail;
+    }
+    if (frame_queue_init(&is->sampq, &is->audioq, SAMPLE_QUEUE_SIZE, 1) < 0) {
+        goto fail;
+    }
+
+    if (packet_queue_init(&is->videoq) < 0 ||
+        packet_queue_init(&is->audioq) < 0 ||
+        packet_queue_init(&is->subtitleq) < 0) {
+        goto fail;
+    }
+
+    if (!(is->continue_read_thread = SDL_CreateCondition())) {
+        goto fail;
+    }
+    if (!(is->pipeline_mutex = SDL_CreateMutex())) {
+        goto fail;
+    }
+
+    init_clock(&is->vidclk, &is->videoq.serial);
+    init_clock(&is->audclk, &is->audioq.serial);
+    init_clock(&is->extclk, &is->extclk.serial);
+    is->audio_clock_serial = -1;
+    is->exact_seek_backoff_target = LACHESIS_NAN;
+    is->audio_catchup_pts = LACHESIS_NAN;
+    is->audio_catchup_serial = -1;
+    is->audio_catchup_checked_serial = -1;
+    is->pictq_last_serial = -1;
+    is->decode_span_pts = LACHESIS_NAN;
+    is->decode_span_serial = -1;
+
+    is->last_av_diff = LACHESIS_NAN;
+    is->start_playhead = LACHESIS_NAN;
+    exact_seek_cancel(is);
+    if (video_background) {
+        int type = parse_video_background(
+            video_background, is->render_params.video_background_color);
+
+        av_assert0(type >= 0);
+        is->render_params.video_background_type = type;
+        is->render_params.video_background_explicit = 1;
+    }
+    vol_max_pct = allow_volume_boost ? VOLUME_BOOST_MAX_PCT : 100;
+    is->audio_volume_max = allow_volume_boost
+        ? (FFP_MIX_MAXVOLUME * VOLUME_BOOST_MAX_PCT + 50) / 100
+        : FFP_MIX_MAXVOLUME;
+    vol = av_clip(startup_volume, 0, vol_max_pct);
+    vol = av_clip((FFP_MIX_MAXVOLUME * vol + 50) / 100, 0, is->audio_volume_max);
+    is->audio_volume = vol;
+    is->muted = global_muted;
+    is->av_sync_type = av_sync_type;
+    is->begin_paused = pause_next_stream;
+    pause_next_stream = 0;
+    degrade_init(is);
+    is->read_tid = SDL_CreateThread(read_thread, "read_thread", is);
+    if (!is->read_tid) {
+    fail:
+        stream_close(is);
+        return NULL;
+    }
+
+    return is;
+}
+
+static void playlist_skip_unreachable(void) {
+    while (playlist_pos < playlist_size &&
+           !playlist_entry_is_reachable(playlist_pos)) {
+        playlist_pos++;
+    }
+    if (playlist_pos >= playlist_size) {
+        exit_status = 1;
+        do_exit(NULL);
+    }
+}
+
+static VideoState *stream_open_playlist_entry(int pos) {
+    const PlaylistEntry *e = playlist_get(pos);
+
+    if (!e) {
+        return NULL;
+    }
+
+    return stream_open(e->display_path, file_iformat, e->archive_path,
+                       e->entry_name, e->from_playlist);
+}
+
+static int startup_window_flags(void) {
+    int win_flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+        SDL_WINDOW_RESIZABLE | SDL_WINDOW_FULLSCREEN;
+
+    if (alwaysontop) {
+        win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
+    }
+
+    return win_flags;
+}
+
+int display_max_texture_size(void) {
+    if (max_texture_size) {
+        return max_texture_size > 0 ? max_texture_size : 0;
+    }
+
+    return renderer_max_texture_size(renderer);
+}
+
+static AVDictionary *build_renderer_options(void) {
+    AVDictionary *dict = NULL;
+
+    if (gpu_params) {
+        if (av_dict_parse_string(&dict, gpu_params, "=", ":", 0) < 0) {
+            fatal_quit("Failed to parse '%s'.\n", gpu_params);
+        }
+    }
+    if (vulkan_swap_mode) {
+        av_dict_set(&dict, "present_mode", vulkan_swap_mode, 0);
+    }
+    if (benchmark) {
+        av_dict_set(&dict, "present_mode", "immediate", 0);
+        av_dict_set(&dict, "benchmark", "1", 0);
+    }
+    if (no_shader_cache) {
+        av_dict_set(&dict, "cache", "0", 0);
+    }
+    if (shader_cache_dir && !no_shader_cache) {
+        av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
+    }
+    if (icc_profile) {
+        av_dict_set(&dict, "icc_profile", icc_profile, 0);
+    }
+    if (icc_auto) {
+        av_dict_set(&dict, "icc_auto", "1", 0);
+    }
+    if (icc_intent) {
+        av_dict_set(&dict, "icc_intent", icc_intent, 0);
+    }
+    if (icc_vcgt) {
+        av_dict_set(&dict, "icc_vcgt", "1", 0);
+    }
+    if (color_temperature != COLOR_TEMPERATURE_NEUTRAL) {
+        char buf[32];
+
+        snprintf(buf, sizeof(buf), "%g", color_temperature);
+        av_dict_set(&dict, "color_temperature", buf, 0);
+    }
+    if (no_display_hdr) {
+        av_dict_set(&dict, "display_hdr", "0", 0);
+    }
+    if (max_glsl_version > 0) {
+        char buf[16];
+
+        snprintf(buf, sizeof(buf), "%d", max_glsl_version);
+        av_dict_set(&dict, "max_glsl_version", buf, 0);
+    }
+
+    return dict;
+}
+
+static unsigned renderer_faulted_apis;
+
+static void open_renderer(enum RendererApi api) {
+    RendererOpenParams params = {0};
+    AVDictionary *dict = build_renderer_options();
+    char *title = startup_window_title(input_filename);
+    char why[512];
+    int ret;
+
+    params.title = title ? title : program_name;
+    params.width = default_width;
+    params.height = default_height;
+    params.window_flags = startup_window_flags();
+    params.api = api;
+    params.exclude = renderer_faulted_apis;
+    params.translucent = video_background_translucent();
+    params.device = gpu_device;
+    if (no_vulkan) {
+        params.exclude |= 1u << RENDERER_API_VULKAN;
+    }
+    params.opt = dict;
+
+    window_placed = 0;
+    ret = renderer_open(&params, &window, &renderer, why, sizeof(why));
+    av_dict_free(&dict);
+    av_free(title);
+
+    if (ret < 0) {
+        const char *driver = SDL_GetCurrentVideoDriver();
+
+        fatal_quit("Failed to create a window and a GPU renderer on the "
+                   "\"%s\" video driver: %s.\n",
+                   driver ? driver : "none", why);
+    }
+
+    if (view360_enabled() &&
+        renderer_enable_360(renderer, view360_layout, view360_projection) < 0) {
+        fatal_quit("Failed to enable the 360° shader!\n");
+    }
+
+    if (supersample_level != SUPERSAMPLE_OFF &&
+        renderer_set_supersample(renderer, supersample_level) < 0) {
+        fatal_quit("Failed to enable the supersample shader!\n");
+    }
+
+    present_update_display_mode();
+    renderer_drop_present_feedback(renderer);
+    update_screen_size();
+    if (no_vsync_snap || benchmark || !renderer_is_vsync_blocked(renderer)) {
+        present_disable_snap();
+    } else {
+        present_restore_snap();
+    }
+}
+
+void render_fault_fallback(VideoState **pis) {
+    double resume_at = LACHESIS_NAN;
+    int keep_paused;
+
+    if (!renderer) {
+        return;
+    }
+
+    /* Avoid an infinite loop. */
+    renderer_faulted_apis |= 1u << renderer_api(renderer);
+    if (gpu_api != RENDERER_API_AUTO &&
+        (renderer_faulted_apis & (1u << gpu_api))) {
+        log_dead("The %s renderer faulted and there is nothing to fall back to.\n",
+                 renderer_api_name(renderer));
+        do_exit(*pis);
+    }
+
+    keep_paused = *pis && (*pis)->paused;
+    renderer_quiesce(renderer, 1);
+    if (*pis) {
+        if (render_ever_worked() && SDL_GetAtomicInt(&(*pis)->seek_by_bytes) <= 0) {
+            resume_at = effective_playhead(*pis);
+        }
+        if (!stream_close(*pis)) {
+            *pis = NULL;
+            log_dead("The %s renderer faulted while a stream could not be "
+                     "closed.\n",
+                     renderer_api_name(renderer));
+            do_exit(NULL);
+        }
+        *pis = NULL;
+    }
+    SDL_FlushEvents(FF_QUIT_EVENT, FF_QUIT_EVENT);
+
+    if (!renderer_destroy(renderer)) {
+        log_dead("The %s renderer is stuck presenting and cannot be replaced.\n",
+                 renderer_api_name(renderer));
+        do_exit(*pis);
+    }
+    av_freep(&renderer);
+    if (window) {
+        SDL_DestroyWindow(window);
+        window = NULL;
+    }
+    osd_invalidate_textures();
+
+    open_renderer(gpu_api);
+    present_reset();
+
+    render_fault_forget();
+
+    playlist_reopen_current(pis, keep_paused, resume_at);
+}
+
+static void reread_from_playhead(VideoState *is) {
+    double now;
+
+    if (SDL_GetAtomicInt(&is->seek_by_bytes) > 0) {
+        return;
+    }
+    now = effective_playhead(is);
+    if (isnan(now)) {
+        return;
+    }
+
+    stream_seek_exact(is, (int64_t)(now * AV_TIME_BASE));
+}
+
+void stream_cycle_channel(VideoState *is, int codec_type) {
+    AVFormatContext *ic = is->ic;
+    int start_index, stream_index;
+    int old_index;
+    AVStream *st;
+    AVProgram *p = NULL;
+    int nb_streams;
+
+    if (!ic) {
+        return;
+    }
+    nb_streams = ic->nb_streams;
+
+    if (codec_type == AVMEDIA_TYPE_VIDEO) {
+        start_index = is->last_video_stream;
+        old_index = is->video_stream;
+    } else if (codec_type == AVMEDIA_TYPE_AUDIO) {
+        start_index = is->last_audio_stream;
+        old_index = is->audio_stream;
+    } else {
+        start_index = is->last_subtitle_stream;
+        old_index = is->subtitle_stream;
+    }
+    stream_index = start_index;
+
+    if (codec_type != AVMEDIA_TYPE_VIDEO && is->video_stream != -1) {
+        p = av_find_program_from_stream(ic, NULL, is->video_stream);
+        if (p) {
+            nb_streams = p->nb_stream_indexes;
+            for (start_index = 0; start_index < nb_streams; start_index++) {
+                if ((int)p->stream_index[start_index] == stream_index) {
+                    break;
+                }
+            }
+            if (start_index == nb_streams) {
+                start_index = -1;
+            }
+            stream_index = start_index;
+        }
+    }
+
+    for (;;) {
+        if (++stream_index >= nb_streams) {
+            if (codec_type == AVMEDIA_TYPE_SUBTITLE) {
+                stream_index = -1;
+                is->last_subtitle_stream = -1;
+                goto the_end;
+            }
+            if (start_index == -1) {
+                return;
+            }
+            stream_index = 0;
+        }
+        if (stream_index == start_index) {
+            return;
+        }
+        st = is->ic->streams[p ? (int)p->stream_index[stream_index] : stream_index];
+        if (st->codecpar->codec_type == codec_type) {
+            /* Check that parameters are okay. */
+            switch (codec_type) {
+            case AVMEDIA_TYPE_AUDIO:
+                if (st->codecpar->sample_rate != 0 &&
+                    st->codecpar->ch_layout.nb_channels != 0) {
+                    goto the_end;
+                }
+                break;
+            case AVMEDIA_TYPE_VIDEO:
+            case AVMEDIA_TYPE_SUBTITLE:
+                goto the_end;
+            default:
+                break;
+            }
+        }
+    }
+the_end:
+    if (p && stream_index != -1) {
+        stream_index = p->stream_index[stream_index];
+    }
+    if (codec_type == AVMEDIA_TYPE_SUBTITLE && is->sub_ic) {
+        close_external_subtitle(is);
+    }
+    stream_component_close(is, old_index);
+    stream_component_open(is, stream_index);
+    if (codec_type == AVMEDIA_TYPE_SUBTITLE && stream_index >= 0) {
+        reread_from_playhead(is);
+    }
+}
+
+static void input_poll(VideoState *is) {
+    terminal_input_poll();
+    single_poll();
+    if (quit_signal) {
+        do_exit(is);
+    }
+}
+
+static void hwaccel_check_fallback(VideoState *is) {
+    int stream_index;
+    double now;
+
+    if (!is || is->video_stream < 0 || !is->viddec.hwaccel_failed) {
+        return;
+    }
+
+    stream_index = is->video_stream;
+    is->hwaccel_off = 1;
+    is->viddec.hwaccel_failed = 0;
+    log_warn("Falling back to software decoding.\n");
+    stream_component_close(is, stream_index);
+    if (stream_component_open(is, stream_index) < 0) {
+        return;
+    }
+
+    if (!is->ic || !is->ic->pb ||
+        !(is->ic->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
+        SDL_GetAtomicInt(&is->seek_by_bytes) > 0) {
+        return;
+    }
+    now = effective_playhead(is);
+    if (isnan(now)) {
+        stream_seek_exact(is, is->ic->start_time != AV_NOPTS_VALUE ? is->ic->start_time : 0);
+    } else {
+        stream_seek_exact(is, (int64_t)(now * AV_TIME_BASE));
+    }
+}
+
+void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
+    double remaining_time = 0.0;
+    int64_t turn_started;
+
+    quit_signal_polled = 1;
+    refresh_window_title(is);
+    refresh_status_line(is);
+    SDL_PumpEvents();
+    input_poll(is);
+    while (SDL_PeepEvents(event, 1, SDL_GETEVENT, SDL_EVENT_FIRST, SDL_EVENT_LAST) <= 0) {
+        if (!cursor_hidden && av_gettime_relative() - cursor_last_shown > CURSOR_HIDE_DELAY) {
+            SDL_HideCursor();
+            cursor_hidden = 1;
+        }
+        if (!benchmark && remaining_time > 0.0) {
+            uint64_t ns = (uint64_t)(remaining_time * 1000000000.0);
+            if (remaining_time < REFRESH_RATE) {
+                SDL_DelayPrecise(ns);
+            } else {
+                SDL_DelayNS(ns);
+            }
+        }
+        turn_started = av_gettime_relative();
+        remaining_time = REFRESH_RATE;
+        refresh_status_line(is);
+        ab_loop_check(is);
+        if (is->audio_start_pending &&
+            av_gettime_relative() > is->audio_start_deadline_us) {
+            is->audio_start_pending = 0;
+            audio_device_resume();
+        }
+        apply_present_feedback();
+        hwaccel_check_fallback(is);
+        refresh_display_info(is);
+        if (renderer_take_image_repaint(renderer)) {
+            is->force_refresh = 1;
+        }
+        if (!is->paused || is->step || is->force_refresh || !is->window_opened ||
+            osd_wants_repaint(is, av_gettime_relative() / 1000000.0)) {
+            video_refresh(is, &remaining_time);
+        }
+        finish_raise();
+        SDL_PumpEvents();
+        note_loop_turn(av_gettime_relative() - turn_started);
+        input_poll(is);
+    }
+}
+
+int pause_to_carry(const VideoState *is) {
+    if (!is) {
+        return 0;
+    }
+
+    return is->is_still_image ? is->begin_paused : is->paused;
+}
+
+void playlist_switch(VideoState **pis, int new_pos) {
+    if (new_pos < 0 || new_pos >= playlist_size) {
+        return;
+    }
+    int keep_paused = pause_to_carry(*pis);
+    stream_close(*pis);
+    *pis = NULL;
+    ab_loop_reset();
+    reset_playback_speed();
+    playlist_pos = new_pos;
+    av_freep(&window_title_auto);
+    pause_next_stream = keep_paused;
+    VideoState *is = stream_open_playlist_entry(playlist_pos);
+    if (!is) {
+        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
+        do_exit(NULL);
+    }
+    print_current_file(is);
+    *pis = is;
+}
+
+int playlist_close_current(VideoState **pis, double *resume_at) {
+    VideoState *is = *pis;
+
+    *resume_at = LACHESIS_NAN;
+    if (!is) {
+        return 1;
+    }
+    if (SDL_GetAtomicInt(&is->seek_by_bytes) <= 0) {
+        *resume_at = effective_playhead(is);
+    }
+    *pis = NULL;
+
+    return stream_close(is);
+}
+
+void playlist_reopen_current(VideoState **pis, int keep_paused, double resume_at) {
+    pause_next_stream = keep_paused;
+    *pis = stream_open_playlist_entry(playlist_pos);
+    if (!*pis) {
+        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
+        do_exit(NULL);
+    }
+    if (!isnan(resume_at) && resume_at > 0) {
+        stream_seek(*pis, (int64_t)(resume_at * AV_TIME_BASE), 0, 0);
+    }
+    (*pis)->force_refresh = 1;
+}
+
+void playlist_drop_current(VideoState **pis, int keep_paused) {
+    int removed = playlist_pos;
+    playlist_remove_at(removed);
+
+    if (playlist_size == 0) {
+        do_exit(NULL);
+    }
+
+    int next = removed < playlist_size ? removed : playlist_size - 1;
+    ab_loop_reset();
+    reset_playback_speed();
+    playlist_nav_dir = 1;
+    playlist_pos = next;
+    av_freep(&window_title_auto);
+    pause_next_stream = keep_paused;
+    VideoState *nis = stream_open_playlist_entry(playlist_pos);
+    if (!nis) {
+        log_dead("Failed to open playlist entry %d!\n", playlist_pos);
+        do_exit(NULL);
+    }
+    print_current_file(nis);
+    *pis = nis;
+    nis->force_refresh = 1;
+}
+
+static int opt_input_file(void *optctx av_unused, const char *filename) {
+    char **tmp;
+
+    if (!strcmp(filename, "-")) {
+        filename = "fd:";
+    }
+
+    tmp = av_realloc_array(input_args, n_input_args + 1, sizeof(*input_args));
+    if (!tmp) {
+        return AVERROR(ENOMEM);
+    }
+    input_args = tmp;
+    input_args[n_input_args] = av_strdup(filename);
+    if (!input_args[n_input_args]) {
+        return AVERROR(ENOMEM);
+    }
+    n_input_args++;
+
+    return 0;
+}
+
+static int add_input_file(const char *filename) {
+    /* Keep input_filename pointing to the first file. */
+    if (!input_filename) {
+        input_filename = av_strdup(filename);
+        if (!input_filename) {
+            return AVERROR(ENOMEM);
+        }
+    }
+
+    struct stat st;
+    if (stat(filename, &st) == 0 && S_ISDIR(st.st_mode)) {
+        playlist_add_directory(filename);
+        return 0;
+    }
+
+    return playlist_add_input(filename);
+}
+
+enum VideoDriverList {
+    VIDEO_DRIVERS_ALL,
+    VIDEO_DRIVERS_NO_WAYLAND,
+    VIDEO_DRIVERS_PREFER_WAYLAND,
+};
+
+static int have_video_driver(const char *name) {
+    int num = SDL_GetNumVideoDrivers();
+
+    for (int i = 0; i < num; i++) {
+        const char *have = SDL_GetVideoDriver(i);
+
+        if (have && !strcmp(have, name)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int want_video_driver(const char *name, enum VideoDriverList which,
+                             int pass) {
+    int wayland = !strcmp(name, "wayland");
+
+    if (pass == 0) {
+        return wayland && which == VIDEO_DRIVERS_PREFER_WAYLAND;
+    }
+    if (wayland) {
+        return which == VIDEO_DRIVERS_ALL;
+    }
+    if (!strcmp(name, "dummy") || !strcmp(name, "evdev") ||
+        !strcmp(name, "offscreen")) {
+        return which == VIDEO_DRIVERS_ALL;
+    }
+
+    return 1;
+}
+
+static const char *video_driver_list(char *buf, size_t size,
+                                     enum VideoDriverList which) {
+    const char *sep = which == VIDEO_DRIVERS_ALL ? ", " : ",";
+    int num = SDL_GetNumVideoDrivers();
+
+    buf[0] = '\0';
+    for (int pass = 0; pass < 2; pass++) {
+        for (int i = 0; i < num; i++) {
+            const char *name = SDL_GetVideoDriver(i);
+            size_t len = strlen(buf);
+
+            if (!name || !want_video_driver(name, which, pass)) {
+                continue;
+            }
+            if (len && av_strlcat(buf, sep, size) >= size) {
+                buf[len] = '\0';
+                return buf;
+            }
+            /* A truncated name is a driver that does not exist. */
+            if (av_strlcat(buf, name, size) >= size) {
+                buf[len] = '\0';
+                return buf;
+            }
+        }
+    }
+
+    return buf;
+}
+
+static void pick_video_drivers(char *buf, size_t size) {
+    const char *runtime_dir;
+    enum VideoDriverList which;
+
+    if (SDL_getenv("SDL_VIDEO_DRIVER") || SDL_getenv("SDL_VIDEODRIVER")) {
+        return;
+    }
+    if (!have_video_driver("wayland") || !have_video_driver("x11")) {
+        return;
+    }
+
+    runtime_dir = SDL_getenv("XDG_RUNTIME_DIR");
+    which = runtime_dir && runtime_dir[0] &&
+            (SDL_getenv("WAYLAND_DISPLAY") || SDL_getenv("WAYLAND_SOCKET"))
+        ? VIDEO_DRIVERS_PREFER_WAYLAND
+        : VIDEO_DRIVERS_NO_WAYLAND;
+
+    if (*video_driver_list(buf, size, which)) {
+        log_verbose("Asking SDL for these video drivers: %s.\n", buf);
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, buf);
+    }
+}
+
+static const char *audio_driver_list(char *buf, size_t size) {
+    int num = SDL_GetNumAudioDrivers();
+
+    buf[0] = '\0';
+    for (int i = 0; i < num; i++) {
+        const char *name = SDL_GetAudioDriver(i);
+        size_t len = strlen(buf);
+
+        if (!name) {
+            continue;
+        }
+        if (len && av_strlcat(buf, ", ", size) >= size) {
+            buf[len] = '\0';
+            return buf;
+        }
+        /* A truncated name is a driver that does not exist. */
+        if (av_strlcat(buf, name, size) >= size) {
+            buf[len] = '\0';
+            return buf;
+        }
+    }
+
+    return buf;
+}
+
+static void validate_options(void) {
+    for (int i = 0; i < nb_vfilters; i++) {
+        if (check_filtergraph(vfilters_list[i]) < 0) {
+            fatal_quit("Invalid video filter \"%s\".\n", vfilters_list[i]);
+        }
+    }
+    if (check_filtergraph(afilters_opt) < 0) {
+        fatal_quit("Invalid audio filter \"%s\".\n", afilters_opt);
+    }
+    if (fps_convert < 0 || fps_convert > 480) {
+        fatal_quit("-%s must be between 0 and 480.\n",
+                   option_name(options, &fps_convert));
+    }
+    if (display_fps_override < 0 || display_fps_override > 1000) {
+        fatal_quit("-%s must be between 0 and 1000.\n",
+                   option_name(options, &display_fps_override));
+    }
+    if (normalize_target < NORMALIZE_TARGET_MIN ||
+        normalize_target > NORMALIZE_TARGET_MAX) {
+        fatal_quit("-%s must be between %g and %g.\n",
+                   option_name(options, &normalize_target),
+                   NORMALIZE_TARGET_MIN, NORMALIZE_TARGET_MAX);
+    }
+    if (normalize_gain < NORMALIZE_GAIN_MIN ||
+        normalize_gain > NORMALIZE_GAIN_MAX) {
+        fatal_quit("-%s must be between %g and %g.\n",
+                   option_name(options, &normalize_gain),
+                   NORMALIZE_GAIN_MIN, NORMALIZE_GAIN_MAX);
+    }
+    if (color_temperature < COLOR_TEMPERATURE_MIN ||
+        color_temperature > COLOR_TEMPERATURE_MAX) {
+        fatal_quit("-%s must be between %g and %g kelvin.\n",
+                   option_name(options, &color_temperature),
+                   COLOR_TEMPERATURE_MIN, COLOR_TEMPERATURE_MAX);
+    }
+    if ((!icc_profile || !icc_profile[0]) && !icc_auto && !display_disable) {
+        if (option_given_on_cmdline(options, "icc-intent")) {
+            log_warn("-icc-intent does nothing unless -icc-profile or "
+                     "-icc-auto is given.\n");
+        }
+        if (option_given_on_cmdline(options, "icc-vcgt")) {
+            log_warn("-icc-vcgt does nothing unless -icc-profile or "
+                     "-icc-auto is given.\n");
+        }
+    }
+    validate_option_relations(options);
+    if (audio_spdif_opt && audio_spdif_opt[0] &&
+        !audio_spdif_names_known(audio_spdif_opt)) {
+        log_warn("Unknown S/PDIF codec '%s'.\n", audio_spdif_opt);
+    }
+}
+
+static void fatal_sdl_init(const char *subsystem) {
+    char video[256];
+    char audio[256];
+    char err[256];
+
+    snprintf(err, sizeof(err), "%s", SDL_GetError());
+    video_driver_list(video, sizeof(video), VIDEO_DRIVERS_ALL);
+    audio_driver_list(audio, sizeof(audio));
+
+    fatal_quit("Could not initialize SDL %s: %s! Available video drivers: %s. "
+               "Available audio drivers: %s.\n",
+               subsystem, err, *video ? video : "none", *audio ? audio : "none");
+}
+
+int main(int argc, char **argv) {
+    char drivers[256];
+    int flags, ret;
+    VideoState *is;
+
+    alloc_track_init();
+
+    setvbuf(stdout, NULL, _IOLBF, 0);
+
+#if defined(_WIN32)
+    win32_attach_console();
+    win32_argv_to_utf8(&argc, &argv);
+#endif
+
+    terminal_output_init();
+    init_dynload();
+
+    log_init();
+    validate_option_tables(options);
+    av_log_set_flags(AV_LOG_SKIP_REPEATED);
+    av_log_set_level(AV_LOG_ERROR);
+    parse_loglevel(argc, argv, options);
+    parse_quiet(argc, argv, options);
+    parse_allow_unsafe(argc, argv, options);
+    parse_all_files(argc, argv, options);
+
+#if LACHESIS_HAVE_AVDEVICE
+    avdevice_register_all();
+#endif
+    avformat_network_init();
+
+    signal(SIGINT, sigterm_handler);
+    signal(SIGTERM, sigterm_handler);
+
+    /* The command line wins. */
+    ret = load_config_file(NULL, options);
+    if (ret < 0) {
+        uninit_opts();
+        alloc_track_complete();
+        exit(1);
+    }
+    int nb_config_vfilters = nb_vfilters;
+
+    ret = parse_options(NULL, argc, argv, options, opt_input_file);
+    if (ret < 0) {
+        uninit_opts();
+        alloc_track_complete();
+        exit(ret == AVERROR_EXIT ? 0 : 1);
+    }
+
+    if (nb_vfilters > nb_config_vfilters) {
+        for (int i = 0; i < nb_config_vfilters; i++) {
+            av_freep(&vfilters_list[i]);
+        }
+        nb_vfilters -= nb_config_vfilters;
+        for (int i = 0; i < nb_vfilters; i++) {
+            vfilters_list[i] = vfilters_list[i + nb_config_vfilters];
+        }
+    }
+
+    validate_options();
+
+    if (single_claim(input_args, n_input_args) == SINGLE_ROLE_HANDED_OFF) {
+        uninit_opts();
+        alloc_track_complete();
+        exit(0);
+    }
+
+    for (int i = 0; i < n_input_args; i++) {
+        if (add_input_file(input_args[i]) < 0) {
+            fatal_quit("Could not add '%s' to the playlist.\n", input_args[i]);
+        }
+    }
+
+    playlist_drop_character_devices(file_iformat != NULL);
+
+    if (playlist_size == 0) {
+        opt_version(NULL, NULL, NULL);
+        playlist_report_filtered();
+        fatal_quit("An input file must be specified.\n");
+    }
+    playlist_report_filtered();
+    if (reverse_playlist) {
+        playlist_reverse();
+    }
+    if (shuffle) {
+        playlist_shuffle();
+    }
+    if (display_disable) {
+        video_disable = 1;
+    }
+    if (benchmark) {
+        audio_disable = 1;
+    }
+
+    playlist_pos = 0;
+    playlist_skip_unreachable();
+
+    flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+    if (display_disable) {
+        flags &= ~SDL_INIT_VIDEO;
+    }
+    if (!SDL_getenv("SDL_MUTE_CONSOLE_KEYBOARD")) {
+        SDL_SetHint(SDL_HINT_MUTE_CONSOLE_KEYBOARD, "0");
+    }
+    SDL_SetAppMetadata(program_name, VERSION, program_name);
+    pick_video_drivers(drivers, sizeof(drivers));
+    if (!SDL_Init(flags)) {
+        fatal_sdl_init(display_disable ? "events" : "video");
+    }
+    if (!audio_disable && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        fatal_sdl_init("audio");
+    }
+
+    SDL_SetEventEnabled(SDL_EVENT_USER, false);
+
+    if (!display_disable) {
+        thread_set_priority(SDL_THREAD_PRIORITY_HIGH, "display");
+    }
+
+    terminal_input_init();
+
+    if (start_windowed) {
+        is_fullscreen = 0;
+    }
+
+    if (gpu_api_name) {
+        if (!strcmp(gpu_api_name, "auto")) {
+            gpu_api = RENDERER_API_AUTO;
+        } else if (!strcmp(gpu_api_name, "vulkan")) {
+            gpu_api = RENDERER_API_VULKAN;
+        } else if (!strcmp(gpu_api_name, "opengl") || !strcmp(gpu_api_name, "gl")) {
+            gpu_api = RENDERER_API_OPENGL;
+        } else if (!strcmp(gpu_api_name, "d3d11") ||
+                   !strcmp(gpu_api_name, "direct3d11")) {
+            gpu_api = RENDERER_API_D3D11;
+        } else {
+            fatal_quit("Unknown GPU API '%s'.\n",
+                       gpu_api_name);
+        }
+    }
+
+    if (no_vulkan && gpu_api == RENDERER_API_VULKAN) {
+        fatal_quit("-gpu-api vulkan and -no-vulkan are contradictory.\n");
+    }
+
+    if (disable_autorotate) {
+        autorotate = 0;
+    }
+
+    if (!display_disable) {
+        SDL_SetHint(SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR, "0");
+        init_default_window_size();
+        if (enable_360sbs || enable_360tb || enable_360eq || enable_360eqtb) {
+            view360_projection = (enable_360eq || enable_360eqtb)
+                ? VIEW360_PROJECTION_SPHERE
+                : VIEW360_PROJECTION_PANINI;
+            view360_layout = (enable_360tb || enable_360eqtb)
+                ? VIEW360_LAYOUT_TB
+                : VIEW360_LAYOUT_FULL;
+            sbs360_reset_view();
+        }
+
+        open_renderer(gpu_api);
+
+        osd_init();
+        subtitles_init();
+        osd_set_info_provider(format_media_info);
+        osd_set_stats_provider(format_playback_stats);
+        osd_warmup();
+    }
+
+    normalize_init();
+    alloc_track_setup_done();
+
+    is = stream_open_playlist_entry(playlist_pos);
+    if (!is) {
+        do_exit(NULL);
+    }
+
+    print_current_file(is);
+
+    event_loop(&is);
+
+    /* Never returns. */
+    return 0;
+}
