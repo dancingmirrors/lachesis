@@ -694,7 +694,7 @@ static double codec_decode_effort(enum AVCodecID codec_id) {
     }
 }
 
-#define HWACCEL_OFF_GPU_LOAD 100.0
+#define HWACCEL_HEAVY_DECODE_LOAD 100.0
 
 static double software_decode_load(const AVCodecContext *avctx,
                                    AVRational frame_rate) {
@@ -707,7 +707,7 @@ static double software_decode_load(const AVCodecContext *avctx,
     int depth = desc ? desc->comp[0].depth : avctx->bits_per_raw_sample;
 
     if (pixels <= 0) {
-        return HWACCEL_OFF_GPU_LOAD;
+        return HWACCEL_HEAVY_DECODE_LOAD;
     }
 
     if (fps > 1000.0) {
@@ -728,7 +728,8 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
         renderer_api(renderer) == RENDERER_API_VULKAN ? auto_hwaccels_vk
                                                       : auto_hwaccels_other;
     HwaccelGpus gpus;
-    int off_gpu_pays;
+    int sw_decode_hurts;
+    int said_off_gpu = 0;
     int off_gpu;
     int saved_level;
     int ret;
@@ -746,10 +747,10 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
     }
 
     hwaccel_list_gpus(&gpus);
-    off_gpu_pays =
-        software_decode_load(avctx, frame_rate) >= HWACCEL_OFF_GPU_LOAD;
+    sw_decode_hurts =
+        software_decode_load(avctx, frame_rate) >= HWACCEL_HEAVY_DECODE_LOAD;
 
-    if (!hwaccel && !off_gpu_pays && !renderer_maps_hw_frames(renderer)) {
+    if (!hwaccel && !sw_decode_hurts && !renderer_maps_hw_frames(renderer)) {
         log_verbose("Not using hwaccel: %s cannot take hardware frames "
                     "without a copy back.\n",
                     renderer_api_name(renderer));
@@ -807,9 +808,15 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
                 continue;
             }
 
-            /* XXX */
-            if (loc == HWACCEL_ON_ANY_GPU && !off_gpu_pays &&
+            if (loc == HWACCEL_ON_ANY_GPU &&
                 hwaccel_would_be_off_gpu(&gpus, type)) {
+                if (!said_off_gpu) {
+                    said_off_gpu = 1;
+                    log_verbose("Not using hwaccel %s: it would decode on a "
+                                "GPU other than the renderer's. Pass "
+                                "--hwaccel=%s to use it anyway.\n",
+                                name, name);
+                }
                 continue;
             }
 
