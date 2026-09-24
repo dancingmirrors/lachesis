@@ -719,7 +719,8 @@ static double software_decode_load(const AVCodecContext *avctx,
 }
 
 static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
-                          const AVCodecContext *avctx, AVRational frame_rate) {
+                          const AVCodecContext *avctx, AVRational frame_rate,
+                          int still_image) {
     static const char *auto_hwaccels_vk[] = {
         "vulkan", "vaapi", "videotoolbox", "cuda", "d3d11va", "dxva2", NULL};
     static const char *auto_hwaccels_other[] = {
@@ -737,6 +738,11 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
     *device_ctx = NULL;
 
     if (no_hwaccel) {
+        return 0;
+    }
+
+    if (still_image) {
+        log_verbose("Not using hwaccel for a still image.\n");
         return 0;
     }
 
@@ -879,9 +885,10 @@ static int hwaccel_usable(const AVCodec *codec, const AVBufferRef *device_ctx) {
 }
 
 int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,
-                        const AVCodecContext *avctx, AVRational frame_rate) {
+                        const AVCodecContext *avctx, AVRational frame_rate,
+                        int still_image) {
     const AVCodec *sw_codec = *codec;
-    int ret = create_hwaccel(device_ctx, codec, avctx, frame_rate);
+    int ret = create_hwaccel(device_ctx, codec, avctx, frame_rate, still_image);
 
     if (ret < 0) {
         return ret;

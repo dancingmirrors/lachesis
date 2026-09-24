@@ -259,12 +259,14 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !is->hwaccel_off) {
+        AVStream *st = ic->streams[stream_index];
         const AVCodec *sw_codec = codec;
+        int still_image = is->is_still_image ||
+            (st->disposition & AV_DISPOSITION_ATTACHED_PIC);
 
         ret = hwaccel_open_device(&avctx->hw_device_ctx, &codec, avctx,
-                                  av_guess_frame_rate(ic,
-                                                      ic->streams[stream_index],
-                                                      NULL));
+                                  av_guess_frame_rate(ic, st, NULL),
+                                  still_image);
         if (ret < 0) {
             goto fail;
         }

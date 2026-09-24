@@ -45,6 +45,7 @@ int hwaccel_glob_match(const char *pattern, const char *text);
 #define HWACCEL_EXTRA_FRAMES 6
 
 int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,
-                        const AVCodecContext *avctx, AVRational frame_rate);
+                        const AVCodecContext *avctx, AVRational frame_rate,
+                        int still_image);
 
 #endif /* LACHESIS_HWACCEL_H */
