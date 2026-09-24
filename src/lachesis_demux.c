@@ -234,6 +234,21 @@ static int component_open(VideoState *is, int stream_index) {
         avctx->codec_id = codec->id;
     }
 
+#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(61, 7, 100)
+    switch (avctx->codec_id) {
+    case AV_CODEC_ID_DSD_LSBF:
+    case AV_CODEC_ID_DSD_MSBF:
+    case AV_CODEC_ID_DSD_LSBF_PLANAR:
+    case AV_CODEC_ID_DSD_MSBF_PLANAR:
+    case AV_CODEC_ID_DST:
+    case AV_CODEC_ID_WAVPACK:
+        avctx->request_sample_fmt = AV_SAMPLE_FMT_DSD;
+        break;
+    default:
+        break;
+    }
+#endif
+
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO) {
         if (!display_disable) {
             avctx->export_side_data |= AV_CODEC_EXPORT_DATA_FILM_GRAIN;
