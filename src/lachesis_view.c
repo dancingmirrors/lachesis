@@ -32,6 +32,7 @@
 #define VIEW_ZOOM_STEP 1.1f
 #define VIEW_ZOOM_MIN 0.05f
 #define VIEW_ZOOM_MAX 8.0f
+#define VIEW_PAN_KEEP 0.1f
 
 static float view_zoom_want;
 static float view_zoom_plain;
@@ -45,6 +46,7 @@ typedef struct DisplaySizes {
     int64_t fit_w, fit_h;
     int64_t nat_w, nat_h;
     int64_t base_w, base_h;
+    int64_t box_w, box_h;
 } DisplaySizes;
 
 static void display_sizes(int scr_width, int scr_height, int pic_width,
@@ -102,6 +104,9 @@ static void display_sizes(int scr_width, int scr_height, int pic_width,
         out->base_w = out->nat_w;
         out->base_h = out->nat_h;
     }
+
+    out->box_w = zoom_box ? out->fit_w : scr_width;
+    out->box_h = zoom_box ? out->fit_h : scr_height;
 }
 
 static void view_center_to_display(float *u, float *v) {
@@ -148,6 +153,13 @@ static void view_center_from_display(float u, float v) {
 
 static void view_pan_limits(int64_t width, int64_t height, int64_t clip_w,
                             int64_t clip_h, float *max_x, float *max_y) {
+    if (!zoom_box) {
+        *max_x = (float)(width + clip_w) / 2.0f -
+            FFMIN((float)width, (float)clip_w * VIEW_PAN_KEEP);
+        *max_y = (float)(height + clip_h) / 2.0f -
+            FFMIN((float)height, (float)clip_h * VIEW_PAN_KEEP);
+        return;
+    }
     *max_x = (float)(FFABS(width - clip_w) / 2);
     *max_y = (float)(FFABS(height - clip_h) / 2);
 }
@@ -166,11 +178,11 @@ static void view_log(int scr_width, int scr_height, const DisplaySizes *sizes,
     log_verbose("View: %s %dx%d, box %dx%d, picture %dx%d at %.0f%% of the fit "
                 "and %.0f%% of native, showing %.0f%% by %.0f%%.\n",
                 is_fullscreen ? "screen" : "window", scr_width, scr_height,
-                (int)sizes->fit_w, (int)sizes->fit_h, (int)width, (int)height,
+                (int)sizes->box_w, (int)sizes->box_h, (int)width, (int)height,
                 (double)((float)width / (float)sizes->fit_w * 100.0f),
                 (double)((float)width / (float)sizes->nat_w * 100.0f),
-                (double)(FFMIN((float)sizes->fit_w / (float)width, 1.0f) * 100.0f),
-                (double)(FFMIN((float)sizes->fit_h / (float)height, 1.0f) * 100.0f));
+                (double)(FFMIN((float)sizes->box_w / (float)width, 1.0f) * 100.0f),
+                (double)(FFMIN((float)sizes->box_h / (float)height, 1.0f) * 100.0f));
 }
 
 static float view_zoom_settled(float plain) {
@@ -196,10 +208,10 @@ void calculate_display_rect(SDL_Rect *rect, SDL_Rect *clip, SDL_Rect *plain,
     display_sizes(scr_width, scr_height, pic_width, pic_height, pic_sar, &sizes);
 
     if (clip) {
-        clip->x = scr_xleft + (int)((scr_width - sizes.fit_w) / 2);
-        clip->y = scr_ytop + (int)((scr_height - sizes.fit_h) / 2);
-        clip->w = (int)sizes.fit_w;
-        clip->h = (int)sizes.fit_h;
+        clip->x = scr_xleft + (int)((scr_width - sizes.box_w) / 2);
+        clip->y = scr_ytop + (int)((scr_height - sizes.box_h) / 2);
+        clip->w = (int)sizes.box_w;
+        clip->h = (int)sizes.box_h;
     }
     if (plain) {
         plain->x = scr_xleft + (int)((scr_width - sizes.base_w) / 2);
@@ -226,7 +238,7 @@ void calculate_display_rect(SDL_Rect *rect, SDL_Rect *clip, SDL_Rect *plain,
     view_center_to_display(&u, &v);
     display_pan_x = (float)width * (0.5f - u);
     display_pan_y = (float)height * (0.5f - v);
-    view_pan_limits(width, height, sizes.fit_w, sizes.fit_h, &max_pan_x, &max_pan_y);
+    view_pan_limits(width, height, sizes.box_w, sizes.box_h, &max_pan_x, &max_pan_y);
     display_pan_x = av_clipf(display_pan_x, -max_pan_x, max_pan_x);
     display_pan_y = av_clipf(display_pan_y, -max_pan_y, max_pan_y);
     x += lrintf(display_pan_x);

@@ -124,6 +124,7 @@ const char *hwaccel_codecs = NULL;
 int hwaccel_max_size = 0;
 int max_texture_size = 0;
 int video_fill = 0;
+int zoom_box = 1;
 int enable_360sbs = 0;
 int enable_360tb = 0;
 int enable_360eq = 0;
@@ -214,6 +215,7 @@ static int opt_bad_value(const char *opt, const char *arg,
 static const char *const edit_list_modes[] = {"auto", "off", NULL};
 static const char *const recenter_modes[] = {"yes", "no", NULL};
 static const char *const tls_verify_modes[] = {"yes", "no", NULL};
+static const char *const zoom_box_modes[] = {"yes", "no", NULL};
 static const char *const archive_jump_modes[] = {"first", "last", NULL};
 static const char *const sync_types[] = {"audio", "video", "ext", NULL};
 static const char *const swap_modes[] = {"fifo", "fifo-relaxed", "mailbox",
@@ -347,6 +349,18 @@ static int opt_recenter(void *optctx av_unused, const char *opt,
         return opt_bad_value(opt, arg, recenter_modes);
     }
     window_recenter = i == 0;
+
+    return 0;
+}
+
+static int opt_zoom_box(void *optctx av_unused, const char *opt,
+                        const char *arg) {
+    int i = opt_value_index(arg, zoom_box_modes);
+
+    if (i < 0) {
+        return opt_bad_value(opt, arg, zoom_box_modes);
+    }
+    zoom_box = i == 0;
 
     return 0;
 }
@@ -786,6 +800,7 @@ const OptionDef options[] = {
     {"hwaccel-max-size", OPT_TYPE_INT, 0, {&hwaccel_max_size}, "the maximum size at which hwaccel is tried (0 to query the hardware or a negative for no limit)", "pixels"},
     {"max-texture-size", OPT_TYPE_INT, 0, {&max_texture_size}, "the maximum texture size (0 to query the hardware or a negative for no limit)", "pixels"},
     {"video-fill", OPT_TYPE_BOOL, 0, {&video_fill}, "scale video to fill the window"},
+    {"zoom-box", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL | OPT_STRICT_VALUE, {.func_arg = opt_zoom_box}, "keep a panned or zoomed picture within the area the video fits in so zoom looks the same windowed and fullscreen (default yes)", "mode", zoom_box_modes, "yes", "no"},
     {"360-sbs", OPT_TYPE_BOOL, 0, {&enable_360sbs}, "enable 360\xc2\xb0 equirectangular projection for side-by-side video"},
     {"360-tb", OPT_TYPE_BOOL, 0, {&enable_360tb}, "enable 360\xc2\xb0 equirectangular projection for top-bottom video"},
     {"360-eq", OPT_TYPE_BOOL, 0, {&enable_360eq}, "enable 360\xc2\xb0 spherical projection for side-by-side video"},
@@ -1098,6 +1113,7 @@ static const struct {
     {"vn", "scaler", OPT_DISABLES},
     {"vn", "video-bg", OPT_DISABLES},
     {"vn", "video-fill", OPT_DISABLES},
+    {"vn", "zoom-box", OPT_DISABLES},
     {"vn", "vcodec", OPT_DISABLES},
     {"vn", "slow", OPT_DISABLES},
     {"vn", "max-texture-size", OPT_DISABLES},
