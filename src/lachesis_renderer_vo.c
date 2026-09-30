@@ -216,6 +216,59 @@ static void vo_note_feedback(Vo *vo, const RenderParams *rp, unsigned epoch) {
     vo->feedback_head = next;
 }
 
+typedef struct VoPending {
+    unsigned pending;
+    enum View360Layout layout;
+    enum View360Projection projection;
+    enum SupersampleLevel supersample;
+    float yaw, pitch, roll, hfov;
+} VoPending;
+
+/* Called with the lock held. */
+static void vo_pending_take(Vo *vo, VoPending *p) {
+    p->pending = vo->pending;
+    vo->pending = 0;
+    p->layout = vo->pending_360_layout;
+    p->projection = vo->pending_360_projection;
+    p->supersample = vo->pending_supersample;
+    p->yaw = vo->view360_yaw;
+    p->pitch = vo->view360_pitch;
+    p->roll = vo->view360_roll;
+    p->hfov = vo->view360_hfov;
+}
+
+static void vo_pending_apply(RendererContext *ctx, const VoPending *p) {
+    if (p->pending & VO_PENDING_360) {
+        renderer_apply_360(ctx, p->layout, p->projection);
+    }
+    ctx->sbs360_yaw = p->yaw;
+    ctx->sbs360_pitch = p->pitch;
+    ctx->sbs360_roll = p->roll;
+    ctx->sbs360_hfov = p->hfov;
+    if (p->pending & VO_PENDING_SUPERSAMPLE) {
+        if (p->supersample != SUPERSAMPLE_OFF && !ctx->supersample_hook) {
+            ctx->supersample_hook = supersample_pl_hook_create(ctx->gpu);
+            if (!ctx->supersample_hook) {
+                log_warn("Supersampling is unavailable.\n");
+            }
+        }
+        ctx->supersample_level =
+            ctx->supersample_hook ? p->supersample : SUPERSAMPLE_OFF;
+    }
+}
+
+void vo_catch_up(RendererContext *ctx) {
+    VoPending p;
+
+    if (!ctx->vo.lock) {
+        return;
+    }
+    SDL_LockMutex(ctx->vo.lock);
+    vo_pending_take(&ctx->vo, &p);
+    SDL_UnlockMutex(ctx->vo.lock);
+    vo_pending_apply(ctx, &p);
+}
+
 static int vo_thread(void *arg) {
     RendererContext *ctx = arg;
     Vo *vo = &ctx->vo;
@@ -223,13 +276,9 @@ static int vo_thread(void *arg) {
     SDL_SetCurrentThreadPriority(SDL_THREAD_PRIORITY_HIGH);
 
     for (;;) {
-        enum View360Layout p360_layout;
-        enum View360Projection p360_projection;
-        enum SupersampleLevel p_supersample;
+        VoPending p;
         AVFrame *frame;
-        float yaw, pitch, roll, hfov;
         unsigned epoch;
-        unsigned pending;
         int blank;
         int status;
 
@@ -244,35 +293,11 @@ static int vo_thread(void *arg) {
         vo->have_job = 0;
         blank = vo->blank;
         frame = vo->frame.frame;
-        pending = vo->pending;
-        vo->pending = 0;
-        p360_layout = vo->pending_360_layout;
-        p360_projection = vo->pending_360_projection;
-        p_supersample = vo->pending_supersample;
         epoch = vo->feedback_epoch;
-        yaw = vo->view360_yaw;
-        pitch = vo->view360_pitch;
-        roll = vo->view360_roll;
-        hfov = vo->view360_hfov;
+        vo_pending_take(vo, &p);
         SDL_UnlockMutex(vo->lock);
 
-        if (pending & VO_PENDING_360) {
-            renderer_apply_360(ctx, p360_layout, p360_projection);
-        }
-        ctx->sbs360_yaw = yaw;
-        ctx->sbs360_pitch = pitch;
-        ctx->sbs360_roll = roll;
-        ctx->sbs360_hfov = hfov;
-        if (pending & VO_PENDING_SUPERSAMPLE) {
-            if (p_supersample != SUPERSAMPLE_OFF && !ctx->supersample_hook) {
-                ctx->supersample_hook = supersample_pl_hook_create(ctx->gpu);
-                if (!ctx->supersample_hook) {
-                    log_warn("Supersampling is unavailable.\n");
-                }
-            }
-            ctx->supersample_level =
-                ctx->supersample_hook ? p_supersample : SUPERSAMPLE_OFF;
-        }
+        vo_pending_apply(ctx, &p);
 
         vo_pin_gpu(ctx);
         vo_pin_gpu(ctx);

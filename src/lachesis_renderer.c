@@ -549,7 +549,7 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
     pl_rotation rotation = pl_rotation_normalize(params->rotate / 90);
     View360Viewport viewport = VIEW360_VIEWPORT_WHOLE;
-    int view360 = ctx->sbs360_enabled && ctx->sbs360_hook && !params->skip_360;
+    int view360 = ctx->sbs360_enabled && ctx->sbs360_hook;
 
     if (view360) {
         pl_frame->rotation = PL_ROTATION_0;
@@ -1333,6 +1333,28 @@ done:
     return ret;
 }
 
+/* Work around a libplacebo bug. */
+static int capture_recover(RendererContext *ctx,
+                           const struct pl_render_errors *before) {
+    struct pl_render_errors now = pl_renderer_get_errors(ctx->renderer);
+    int errors = now.errors & ~before->errors;
+    int hooks_failed = now.num_disabled_hooks > before->num_disabled_hooks;
+    pl_renderer fresh;
+
+    if (!errors && !hooks_failed) {
+        return 0;
+    }
+    fresh = pl_renderer_create(ctx->log_ctx, ctx->gpu);
+    if (fresh) {
+        pl_renderer_destroy(&ctx->renderer);
+        ctx->renderer = fresh;
+    }
+
+    return hooks_failed || (errors & (PL_RENDER_ERR_HOOKS | PL_RENDER_ERR_FBO))
+        ? AVERROR_EXTERNAL
+        : 0;
+}
+
 static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
                    int width, int height, uint8_t *out, int out_stride) {
     RendererContext *ctx = (RendererContext *)renderer;
@@ -1356,6 +1378,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     ctx->d3d11_serial++;
 #endif
 
+    vo_catch_up(ctx);
     pl_params = base_render_params(ctx, params, &image, &color_adjustment);
 
     ret = convert_frame(renderer, frame);
@@ -1444,11 +1467,8 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     }
 
 out:
-    errors.errors = pl_renderer_get_errors(ctx->renderer).errors & ~errors.errors;
-    if (errors.errors) {
-        errors.disabled_hooks = NULL;
-        errors.num_disabled_hooks = 0;
-        pl_renderer_reset_errors(ctx->renderer, &errors);
+    if (capture_recover(ctx, &errors) < 0 && ret >= 0) {
+        ret = AVERROR_EXTERNAL;
     }
     if (cap_tex) {
         pl_tex_destroy(ctx->gpu, &cap_tex);

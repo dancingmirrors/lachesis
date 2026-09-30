@@ -22,6 +22,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -57,6 +58,7 @@
 #include "lachesis_osd.h"
 #include "lachesis_renderer.h"
 #include "lachesis_screenshot.h"
+#include "lachesis_view360.h"
 
 static int screenshot_abspath(const char *path, char *out, size_t out_size) {
     char cwd[4078];
@@ -99,6 +101,9 @@ typedef struct ScreenshotShape {
     int not_deinterlaced;
     int opaque;
     int for_360;
+    enum View360Layout layout;
+    enum View360Projection projection;
+    float yaw, pitch, roll, hfov;
     int frame_w, frame_h;
     AVRational sar;
     int sar_assumed;
@@ -584,10 +589,7 @@ static void screenshot_shape_frame(const Frame *vp, ScreenshotShape *shape) {
     int sideways = rotate == 90 || rotate == 270;
     AVRational sar = vp->sar;
 
-    shape->for_360 = view360_enabled();
-    if (shape->for_360) {
-        sar = (AVRational){1, 1};
-    } else if (sideways) {
+    if (sideways) {
         if (sar.num > 0 && sar.den > 0) {
             sar = av_inv_q(sar);
         }
@@ -609,6 +611,13 @@ static void screenshot_shape_frame(const Frame *vp, ScreenshotShape *shape) {
     shape->deinterlaced = 0;
     shape->not_deinterlaced = 0;
     shape->opaque = 0;
+    shape->for_360 = view360_enabled();
+    shape->layout = view360_layout;
+    shape->projection = view360_projection;
+    shape->yaw = sbs360_yaw;
+    shape->pitch = sbs360_pitch;
+    shape->roll = sbs360_roll;
+    shape->hfov = sbs360_hfov;
     shape->frame_w = vp->width;
     shape->frame_h = vp->height;
     shape->sar = sar;
@@ -618,9 +627,7 @@ static void screenshot_shape_frame(const Frame *vp, ScreenshotShape *shape) {
     shape->out_w = sideways ? shape->scaled_h : shape->scaled_w;
     shape->out_h = sideways ? shape->scaled_w : shape->scaled_h;
     snprintf(shape->aspect, sizeof(shape->aspect), "%s",
-             aspect_override_active() && !shape->for_360
-                 ? aspect_override_label()
-                 : "");
+             aspect_override_active() ? aspect_override_label() : "");
 }
 
 static void screenshot_shape_window(const AVFrame *shot,
@@ -631,6 +638,9 @@ static void screenshot_shape_window(const AVFrame *shot,
     shape->not_deinterlaced = 0;
     shape->opaque = 0;
     shape->for_360 = 0;
+    shape->layout = VIEW360_LAYOUT_OFF;
+    shape->projection = VIEW360_PROJECTION_PANINI;
+    shape->yaw = shape->pitch = shape->roll = shape->hfov = 0.0f;
     shape->frame_w = shape->scaled_w = shape->out_w = shot->width;
     shape->frame_h = shape->scaled_h = shape->out_h = shot->height;
     shape->sar = (AVRational){1, 1};
@@ -682,7 +692,6 @@ static AVFrame *screenshot_render_frame(VideoState *is, Frame *vp,
     params.mix_vsync_duration = 0.0f;
     params.rotate = shape->rotate;
     params.still_image = is->is_still_image;
-    params.skip_360 = 1;
     eq = equalizer_get();
     params.eq_brightness = eq.brightness;
     params.eq_gamma = eq.gamma;
@@ -729,6 +738,10 @@ void take_screenshot(VideoState *is, int capture_window) {
     }
 
     screenshot_bg_color(is, bg);
+    if (view360_enabled()) {
+        renderer_update_360(renderer, sbs360_yaw, sbs360_pitch, sbs360_roll,
+                            sbs360_hfov);
+    }
     if (capture_window) {
         shot = screenshot_window_frame(is);
         if (shot) {
@@ -764,6 +777,13 @@ void take_screenshot(VideoState *is, int capture_window) {
     screenshot_finish(path, &shape, ret);
 }
 
+static int screenshot_yaw(const ScreenshotShape *shape) {
+    float yaw = shape->yaw - view360_default_yaw(shape->layout);
+    int d = (int)(lrintf(yaw) % 360);
+
+    return d > 180 ? d - 360 : (d <= -180 ? d + 360 : d);
+}
+
 static void screenshot_describe(const ScreenshotShape *shape, char *buf,
                                 size_t size) {
     size_t n;
@@ -774,18 +794,26 @@ static void screenshot_describe(const ScreenshotShape *shape, char *buf,
         return;
     }
 
-    if (shape->for_360) {
-        n = (size_t)snprintf(buf, size,
-                             "%dx%d from the %dx%d frame the 360 view projects",
-                             shape->out_w, shape->out_h, shape->frame_w,
-                             shape->frame_h);
-    } else {
-        n = (size_t)snprintf(buf, size,
-                             "%dx%d from the %dx%d frame at %sSAR %d:%d",
-                             shape->out_w, shape->out_h, shape->frame_w,
-                             shape->frame_h,
-                             shape->sar_assumed ? "an assumed " : "",
-                             shape->sar.num, shape->sar.den);
+    n = (size_t)snprintf(buf, size, "%dx%d", shape->out_w, shape->out_h);
+    if (n < size && shape->for_360 && shape->rendered) {
+        n += (size_t)snprintf(buf + n, size - n,
+                              " of the %s 360 %sview at yaw %d\xc2\xb0, "
+                              "pitch %d\xc2\xb0, roll %d\xc2\xb0 and HFOV "
+                              "%d\xc2\xb0",
+                              view360_layout_name(shape->layout),
+                              shape->projection == VIEW360_PROJECTION_SPHERE
+                                  ? "sphere "
+                                  : "",
+                              screenshot_yaw(shape), (int)lrintf(shape->pitch),
+                              (int)lrintf(shape->roll),
+                              (int)lrintf(shape->hfov));
+    }
+    if (n < size) {
+        n += (size_t)snprintf(buf + n, size - n,
+                              " from the %dx%d frame at %sSAR %d:%d",
+                              shape->frame_w, shape->frame_h,
+                              shape->sar_assumed ? "an assumed " : "",
+                              shape->sar.num, shape->sar.den);
     }
     if (n < size && shape->aspect[0]) {
         n += (size_t)snprintf(buf + n, size - n, " for the %s aspect",
@@ -802,7 +830,8 @@ static void screenshot_describe(const ScreenshotShape *shape, char *buf,
         n += (size_t)snprintf(buf + n, size - n, ", not deinterlaced");
     }
     if (n < size && !shape->rendered) {
-        snprintf(buf + n, size - n, ", converted in software");
+        snprintf(buf + n, size - n, ", converted in software%s",
+                 shape->for_360 ? " without the 360 view" : "");
     }
 }
 
@@ -827,6 +856,9 @@ static void screenshot_finish(const char *path, const ScreenshotShape *shape,
                 base = p + 1;
             }
         }
-        osd_show_message("Screenshot: %s", *base ? base : shown);
+        osd_show_message("Screenshot: %s%s", *base ? base : shown,
+                         shape->for_360 && !shape->rendered
+                             ? " without the 360 view"
+                             : "");
     }
 }

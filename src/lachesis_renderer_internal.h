@@ -426,6 +426,7 @@ int vo_start(RendererContext *ctx);
 int vo_stop(RendererContext *ctx);
 int vo_borrow(RendererContext *ctx, int timeout_ms);
 void vo_release(RendererContext *ctx);
+void vo_catch_up(RendererContext *ctx);
 int vo_submit(RendererContext *ctx, AVFrame *frame, RenderParams *params,
               int blank);
 

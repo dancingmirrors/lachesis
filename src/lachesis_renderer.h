@@ -85,7 +85,6 @@ typedef struct RenderParams {
     int text_sub_y;
     unsigned text_sub_generation;
     int still_image;
-    int skip_360;
     int deinterlace;
     int second_field;
     AVFrame *prev_frame;
