@@ -307,7 +307,7 @@ int delete_current_file(VideoState **pis, int keep_paused) {
     av_free(path);
 
     playlist_drop_current(pis, keep_paused);
-    osd_show_message("Deleted %s", name);
+    osd_show_brief_message("Deleted %s", name);
 
     return 1;
 }

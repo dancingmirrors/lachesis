@@ -42,6 +42,7 @@
 #define OSD_STATUS_DURATION_MS 1000
 #define OSD_SEEK_DURATION_MS 1000
 #define OSD_MESSAGE_DURATION_MS 3000
+#define OSD_BRIEF_MESSAGE_DURATION_MS 1500
 #define OSD_INFO_TEXT_MAX 8192
 
 #define OSD_RES_H 720.0
@@ -98,6 +99,9 @@ static int64_t osd_status_show_until = 0;
 static int64_t osd_volume_show_until = 0;
 static char osd_message[1024];
 static int64_t osd_message_show_until = 0;
+static int64_t osd_message_duration_ms = 0;
+static unsigned osd_message_serial = 0;
+static unsigned osd_message_shown_serial = 0;
 static int osd_info_sticky = 0;
 static int osd_info_page = 1;
 static char osd_delete_prompt[1024];
@@ -796,6 +800,23 @@ static void osd_draw_volume(VideoState *is, OsdLayout *L) {
                   is->muted ? "\\1c&HD2D2D2&" : NULL, body);
 }
 
+static int osd_message_visible(int64_t now) {
+    if (!osd_message[0]) {
+        return 0;
+    }
+
+    return osd_message_shown_serial != osd_message_serial ||
+        now < osd_message_show_until;
+}
+
+static void osd_message_drawn(void) {
+    if (osd_message_shown_serial != osd_message_serial) {
+        osd_message_shown_serial = osd_message_serial;
+        osd_message_show_until =
+            (int64_t)SDL_GetTicks() + osd_message_duration_ms;
+    }
+}
+
 typedef struct {
     int subtitle, del, info, ab_loop, message, status, volume;
 } OsdVis;
@@ -809,7 +830,7 @@ static OsdVis osd_resolve(VideoState *is) {
     v.del = osd_delete_prompt_active;
     v.info = osd_info_sticky && !osd_delete_prompt_active && !ab_loop_defining();
     v.ab_loop = ab_loop_defining();
-    v.message = (now < osd_message_show_until) && osd_message[0];
+    v.message = osd_message_visible(now);
     v.status = now < osd_status_show_until;
     v.volume = now < osd_volume_show_until;
 
@@ -845,6 +866,7 @@ static void osd_build(VideoState *is, int ch, double subs_top_px) {
         osd_draw_abloop(is, &L);
     }
     if (v.message) {
+        osd_message_drawn();
         osd_draw_message(&L);
     }
     if (v.status) {
@@ -967,7 +989,7 @@ static int osd_should_show(VideoState *is) {
     int64_t now = (int64_t)SDL_GetTicks();
 
     return now < osd_status_show_until || now < osd_volume_show_until ||
-        now < osd_message_show_until || osd_info_sticky ||
+        osd_message_visible(now) || osd_info_sticky ||
         osd_delete_prompt_active || has_active_subtitle(is) ||
         ab_loop_defining();
 }
@@ -1048,14 +1070,29 @@ static void osd_dismiss_info(void) {
     osd_info_sticky = 0;
 }
 
+static av_printf_format(2, 0) void osd_post_message(int64_t duration_ms,
+                                                    const char *fmt,
+                                                    va_list ap) {
+    vsnprintf(osd_message, sizeof(osd_message), fmt, ap);
+    osd_message_serial++;
+    osd_message_duration_ms = duration_ms;
+    osd_dismiss_info();
+}
+
 av_printf_format(1, 2) void osd_show_message(const char *fmt, ...) {
     va_list ap;
 
     va_start(ap, fmt);
-    vsnprintf(osd_message, sizeof(osd_message), fmt, ap);
+    osd_post_message(OSD_MESSAGE_DURATION_MS, fmt, ap);
     va_end(ap);
-    osd_message_show_until = (int64_t)SDL_GetTicks() + OSD_MESSAGE_DURATION_MS;
-    osd_dismiss_info();
+}
+
+av_printf_format(1, 2) void osd_show_brief_message(const char *fmt, ...) {
+    va_list ap;
+
+    va_start(ap, fmt);
+    osd_post_message(OSD_BRIEF_MESSAGE_DURATION_MS, fmt, ap);
+    va_end(ap);
 }
 
 void osd_cycle_info(void) {
@@ -1119,7 +1156,8 @@ unsigned osd_state(VideoState *is) {
 
     return (unsigned)(!!v.subtitle << 0 | !!v.del << 1 | !!v.info << 2 |
                       !!v.ab_loop << 3 | !!v.message << 4 | !!v.status << 5 |
-                      !!v.volume << 6);
+                      !!v.volume << 6) |
+        (v.message ? osd_message_serial << 7 : 0);
 }
 
 void osd_init(void) {

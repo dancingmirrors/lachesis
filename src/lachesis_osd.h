@@ -42,6 +42,7 @@ void osd_show_seek(void);
 void osd_show_volume(void);
 void osd_show_position(void);
 av_printf_format(1, 2) void osd_show_message(const char *fmt, ...);
+av_printf_format(1, 2) void osd_show_brief_message(const char *fmt, ...);
 
 typedef void (*OsdInfoProvider)(const VideoState *is, char *buf, size_t bufsz);
 void osd_set_info_provider(OsdInfoProvider provider);

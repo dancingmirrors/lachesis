@@ -548,6 +548,7 @@ static AVFrame *frame_to_cpu(AVFrame *frame) {
 
 static AVFrame *screenshot_window_frame(VideoState *is) {
     Frame *vp = frame_queue_peek_last(&is->pictq);
+    RenderParams params;
     int w = 0, h = 0;
     int ret;
 
@@ -574,8 +575,10 @@ static AVFrame *screenshot_window_frame(VideoState *is) {
     is->render_params.still_image = is->is_still_image;
     deinterlace_new_picture(is, vp);
     deinterlace_prepare(is, vp);
-    ret = renderer_capture(renderer, vp->frame, &is->render_params,
-                           w, h, rgba->data[0], rgba->linesize[0]);
+    params = is->render_params;
+    params.osd_pixels = NULL;
+    ret = renderer_capture(renderer, vp->frame, &params, w, h, rgba->data[0],
+                           rgba->linesize[0]);
     if (ret < 0) {
         av_frame_free(&rgba);
         return NULL;
