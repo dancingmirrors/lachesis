@@ -18,6 +18,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <limits.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
@@ -25,6 +26,7 @@
 #include <stdio.h>
 
 #include <libavutil/attributes.h>
+#include <libavutil/mathematics.h>
 #include <libavutil/time.h>
 
 #include "lachesis_aspect.h"
@@ -76,30 +78,62 @@ static const char *media_info_hwaccel(void) {
                                   : "none (software decoding)";
 }
 
-static void media_info_video_line(const VideoState *is, char *buf, size_t sz) {
-    AVCodecParameters *par = is->video_st->codecpar;
-    AVRational sar = av_guess_sample_aspect_ratio(is->ic, is->video_st, NULL);
-    AVRational fr = av_guess_frame_rate(is->ic, (AVStream *)is->video_st, NULL);
-    AVRational dar = {0, 1};
+static int media_info_sar_known(AVRational sar) {
+    return sar.num > 0 && sar.den > 0;
+}
+
+static void media_info_geometry(char *buf, size_t sz, int width, int height,
+                                AVRational sar, const char *note,
+                                int drawn) {
+    AVRational dar;
     char dar_buf[32];
 
-    if (sar.num && sar.den) {
-        av_reduce(&dar.num, &dar.den,
-                  par->width * (int64_t)sar.num,
-                  par->height * (int64_t)sar.den, 1024 * 1024);
+    if (!media_info_sar_known(sar)) {
+        if (!drawn) {
+            snprintf(buf, sz, "%dx%d, SAR unset", width, height);
+            return;
+        }
+        sar = (AVRational){1, 1};
+        note = " (assumed)";
+    }
+    if (width > 0 && height > 0) {
+        av_reduce(&dar.num, &dar.den, width * (int64_t)sar.num,
+                  height * (int64_t)sar.den, 1024 * 1024);
         snprintf(dar_buf, sizeof(dar_buf), "%d:%d", dar.num, dar.den);
     } else {
         snprintf(dar_buf, sizeof(dar_buf), "unavailable");
     }
+    snprintf(buf, sz, "%dx%d, SAR %d:%d%s DAR %s", width, height, sar.num,
+             sar.den, note ? note : "", dar_buf);
+}
+
+static void media_info_video_line(const VideoState *is, char *buf, size_t sz) {
+    AVCodecParameters *par = is->video_st->codecpar;
+    AVRational sar = av_guess_sample_aspect_ratio(is->ic, is->video_st, NULL);
+    AVRational fr = av_guess_frame_rate(is->ic, (AVStream *)is->video_st, NULL);
+    AVRational codec_sar = par->sample_aspect_ratio;
+    char note[64] = "";
+    char geometry[160];
+
+    if (media_info_sar_known(is->video_st->sample_aspect_ratio) &&
+        media_info_sar_known(codec_sar) &&
+        av_rescale(par->width, sar.num, sar.den) !=
+            av_rescale(par->width, codec_sar.num, codec_sar.den)) {
+        av_reduce(&codec_sar.num, &codec_sar.den, codec_sar.num, codec_sar.den,
+                  INT_MAX);
+        snprintf(note, sizeof(note), " (container, the codec says %d:%d)",
+                 codec_sar.num, codec_sar.den);
+    }
+    media_info_geometry(geometry, sizeof(geometry), par->width, par->height,
+                        sar, note, 0);
 
     char fps_buf[32];
     fps_buf[0] = '\0';
     if (fr.num && fr.den) {
         snprintf(fps_buf, sizeof(fps_buf), ", %.4g FPS", av_q2d(fr));
     }
-    snprintf(buf, sz, "%s, %dx%d, SAR %d:%d DAR %s%s",
-             avcodec_get_name(par->codec_id), par->width, par->height,
-             sar.num ? sar.num : 0, sar.den ? sar.den : 1, dar_buf, fps_buf);
+    snprintf(buf, sz, "%s, %s%s", avcodec_get_name(par->codec_id), geometry,
+             fps_buf);
 }
 
 static void media_info_audio_line(const VideoState *is, char *buf, size_t sz) {
@@ -477,25 +511,18 @@ void media_info_note_audio_passthrough(const char *codec, int hd, int channels,
 
 void media_info_note_video_output(int width, int height, AVRational sar,
                                   AVRational frame_rate) {
-    AVRational dar = {0, 1};
-    char dar_buf[32];
+    char geometry[96];
     char fps_buf[32];
 
-    if (sar.num && sar.den) {
-        av_reduce(&dar.num, &dar.den, width * (int64_t)sar.num,
-                  height * (int64_t)sar.den, 1024 * 1024);
-        snprintf(dar_buf, sizeof(dar_buf), "%d:%d", dar.num, dar.den);
-    } else {
-        snprintf(dar_buf, sizeof(dar_buf), "unavailable");
-    }
+    media_info_geometry(geometry, sizeof(geometry), width, height, sar, NULL,
+                        1);
 
     fps_buf[0] = '\0';
     if (frame_rate.num > 0 && frame_rate.den > 0) {
         snprintf(fps_buf, sizeof(fps_buf), ", %.4g FPS", av_q2d(frame_rate));
     }
 
-    snprintf(media_info_vout_line, sizeof(media_info_vout_line),
-             "%dx%d, SAR %d:%d DAR %s%s", width, height,
-             sar.num ? sar.num : 0, sar.den ? sar.den : 1, dar_buf, fps_buf);
+    snprintf(media_info_vout_line, sizeof(media_info_vout_line), "%s%s",
+             geometry, fps_buf);
     log_info("Video output: %s\n", media_info_vout_line);
 }

@@ -549,8 +549,9 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
     pl_rotation rotation = pl_rotation_normalize(params->rotate / 90);
     View360Viewport viewport = VIEW360_VIEWPORT_WHOLE;
+    int view360 = ctx->sbs360_enabled && ctx->sbs360_hook && !params->skip_360;
 
-    if (ctx->sbs360_enabled && ctx->sbs360_hook) {
+    if (view360) {
         pl_frame->rotation = PL_ROTATION_0;
         viewport = clip_360_viewport(target, &params->target_clip);
     } else {
@@ -593,7 +594,7 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
     int num_hooks = 0;
 
-    if (ctx->sbs360_enabled && ctx->sbs360_hook) {
+    if (view360) {
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
                                ctx->sbs360_pitch, ctx->sbs360_roll,
                                ctx->sbs360_hfov, ctx->sbs360_layout,
@@ -1345,6 +1346,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     struct pl_tex_transfer_params xfer;
     struct pl_frame pl_prev = {0}, pl_next = {0};
     bool mapped_prev = false, mapped_next = false;
+    struct pl_render_errors errors = pl_renderer_get_errors(ctx->renderer);
     int ret = 0;
     bool deint = params->deinterlace != 0;
     AVFrame *prev_ref = deint ? params->prev_frame : NULL;
@@ -1442,6 +1444,12 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     }
 
 out:
+    errors.errors = pl_renderer_get_errors(ctx->renderer).errors & ~errors.errors;
+    if (errors.errors) {
+        errors.disabled_hooks = NULL;
+        errors.num_disabled_hooks = 0;
+        pl_renderer_reset_errors(ctx->renderer, &errors);
+    }
     if (cap_tex) {
         pl_tex_destroy(ctx->gpu, &cap_tex);
     }
