@@ -31,6 +31,7 @@
 const AVOutputFormat *encoder_output_format(const char *path);
 
 int encoder_enabled(void);
+int encoder_renders(void);
 int encoder_init(void);
 
 void encoder_note_input(const AVFormatContext *ic);

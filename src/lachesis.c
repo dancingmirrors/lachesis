@@ -846,7 +846,7 @@ int display_max_texture_size(void) {
     return renderer_max_texture_size(renderer);
 }
 
-static AVDictionary *build_renderer_options(void) {
+AVDictionary *build_renderer_options(int offscreen) {
     AVDictionary *dict = NULL;
 
     if (gpu_params) {
@@ -854,18 +854,27 @@ static AVDictionary *build_renderer_options(void) {
             fatal_quit("Failed to parse '%s'.\n", gpu_params);
         }
     }
+    if (no_shader_cache) {
+        av_dict_set(&dict, "cache", "0", 0);
+    }
+    if (shader_cache_dir && !no_shader_cache) {
+        av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
+    }
+    if (max_glsl_version > 0) {
+        char buf[16];
+
+        snprintf(buf, sizeof(buf), "%d", max_glsl_version);
+        av_dict_set(&dict, "max_glsl_version", buf, 0);
+    }
+    if (offscreen) {
+        return dict;
+    }
     if (vulkan_swap_mode) {
         av_dict_set(&dict, "present_mode", vulkan_swap_mode, 0);
     }
     if (benchmark) {
         av_dict_set(&dict, "present_mode", "immediate", 0);
         av_dict_set(&dict, "benchmark", "1", 0);
-    }
-    if (no_shader_cache) {
-        av_dict_set(&dict, "cache", "0", 0);
-    }
-    if (shader_cache_dir && !no_shader_cache) {
-        av_dict_set(&dict, "cache_dir", shader_cache_dir, 0);
     }
     if (icc_profile) {
         av_dict_set(&dict, "icc_profile", icc_profile, 0);
@@ -888,12 +897,6 @@ static AVDictionary *build_renderer_options(void) {
     if (no_display_hdr) {
         av_dict_set(&dict, "display_hdr", "0", 0);
     }
-    if (max_glsl_version > 0) {
-        char buf[16];
-
-        snprintf(buf, sizeof(buf), "%d", max_glsl_version);
-        av_dict_set(&dict, "max_glsl_version", buf, 0);
-    }
 
     return dict;
 }
@@ -902,7 +905,7 @@ static unsigned renderer_faulted_apis;
 
 static void open_renderer(enum RendererApi api) {
     RendererOpenParams params = {0};
-    AVDictionary *dict = build_renderer_options();
+    AVDictionary *dict = build_renderer_options(0);
     char *title = startup_window_title(input_filename);
     char why[512];
     int ret;

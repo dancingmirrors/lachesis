@@ -281,7 +281,7 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         INSERT_FILT("fps", fps_buf);
     }
 
-    if (encoder_enabled()) {
+    if (encoder_enabled() && !encoder_renders()) {
         if (video_rotate == 90) {
             INSERT_FILT("transpose", "clock");
         } else if (video_rotate == 180) {
@@ -328,10 +328,6 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
                 INSERT_FILT("vflip", NULL);
             }
         }
-    }
-
-    if (encoder_enabled() && deinterlace) {
-        INSERT_FILT("yadif", "mode=send_field");
     }
 
     if ((ret = configure_filtergraph(graph, vfilters, filt_src, last_filter)) < 0) {

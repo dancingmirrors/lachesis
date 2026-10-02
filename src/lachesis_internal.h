@@ -337,6 +337,8 @@ float window_pixel_density(void);
 
 int display_max_texture_size(void);
 
+AVDictionary *build_renderer_options(int offscreen);
+
 static inline void frame_visible_size(const AVFrame *frame, int *w, int *h) {
     int64_t vw = frame->width - (int64_t)frame->crop_left - (int64_t)frame->crop_right;
     int64_t vh = frame->height - (int64_t)frame->crop_top - (int64_t)frame->crop_bottom;

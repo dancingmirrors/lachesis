@@ -27,6 +27,9 @@
 #include <string.h>
 
 #include <libavcodec/avcodec.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersink.h>
+#include <libavfilter/buffersrc.h>
 #include <libavformat/avformat.h>
 #include <libavutil/audio_fifo.h>
 #include <libavutil/avstring.h>
@@ -47,6 +50,7 @@
 #include "lachesis_aspect.h"
 #include "lachesis_demux.h"
 #include "lachesis_encoder.h"
+#include "lachesis_filters.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -100,6 +104,15 @@ typedef struct Encoder {
     AVStream *vst;
     struct SwsContext *sws;
     Renderer *renderer;
+    AVFilterGraph *turn;
+    AVFilterContext *turn_src;
+    AVFilterContext *turn_sink;
+    int turn_format;
+    int turn_w;
+    int turn_h;
+    int v_fields;
+    AVFrame *deint_prev;
+    int deint_prev_serial;
     AVFrame *pending;
     int64_t pending_ts;
     int pending_resent;
@@ -134,6 +147,7 @@ typedef struct Encoder {
 
 static Encoder enc = {
     .pix_fmts = {AV_PIX_FMT_YUV420P, AV_PIX_FMT_NONE},
+    .v_fields = 1,
 };
 
 static const char *path_extension(const char *path) {
@@ -171,6 +185,11 @@ const AVOutputFormat *encoder_output_format(const char *path) {
 
 int encoder_enabled(void) {
     return output_filename != NULL;
+}
+
+int encoder_renders(void) {
+    return encoder_enabled() &&
+        (supersample_level != SUPERSAMPLE_OFF || deinterlace);
 }
 
 static enum AVPixelFormat pick_pix_fmt(const AVCodec *codec) {
@@ -485,8 +504,7 @@ static int send_video(AVFrame *frame, int64_t pts, int64_t duration) {
     return write_packets(avctx, enc.vst);
 }
 
-static int open_video_encoder(const Frame *vp) {
-    const AVFrame *frame = vp->frame;
+static int open_video_encoder(const Frame *vp, const AVFrame *frame) {
     AVDictionary *opts = NULL;
     AVCodecContext *avctx;
     AVRational sar = frame->sample_aspect_ratio;
@@ -500,7 +518,7 @@ static int open_video_encoder(const Frame *vp) {
     avctx->height = FFMAX(2, frame->height & ~1);
     avctx->pix_fmt = enc.pix_fmts[0];
     avctx->time_base = ENCODE_VIDEO_TB;
-    avctx->framerate = av_d2q(1.0 / video_duration(vp), 1001000);
+    avctx->framerate = av_d2q(enc.v_fields / video_duration(vp), 1001000);
     if (aspect_override_active()) {
         sar = aspect_override_sar(frame->width, frame->height, sar);
     }
@@ -602,10 +620,88 @@ static int open_output(void) {
     return avformat_write_header(oc, NULL);
 }
 
-static int render_video(AVFrame *src, AVFrame **dst) {
+static const char *turn_filters(void) {
+    switch (video_rotate) {
+    case 90:
+        return "transpose=clock";
+    case 180:
+        return "vflip,hflip";
+    case 270:
+        return "transpose=cclock";
+    default:
+        return NULL;
+    }
+}
+
+static int open_turn(const AVFrame *frame) {
+    AVBufferSrcParameters *par = av_buffersrc_parameters_alloc();
+    AVFilterContext *src = NULL, *sink = NULL;
+    int ret = AVERROR(ENOMEM);
+
+    avfilter_graph_free(&enc.turn);
+    enc.turn = avfilter_graph_alloc();
+    if (!par || !enc.turn) {
+        goto out;
+    }
+    src = avfilter_graph_alloc_filter(enc.turn, avfilter_get_by_name("buffer"),
+                                      "in");
+    sink = avfilter_graph_alloc_filter(enc.turn,
+                                       avfilter_get_by_name("buffersink"), "out");
+    if (!src || !sink) {
+        goto out;
+    }
+    par->format = frame->format;
+    par->width = frame->width;
+    par->height = frame->height;
+    par->time_base = ENCODE_VIDEO_TB;
+    par->sample_aspect_ratio = frame->sample_aspect_ratio;
+    par->color_space = frame->colorspace;
+    par->color_range = frame->color_range;
+    if ((ret = av_buffersrc_parameters_set(src, par)) < 0 ||
+        (ret = avfilter_init_dict(src, NULL)) < 0 ||
+        (ret = avfilter_init_dict(sink, NULL)) < 0 ||
+        (ret = configure_filtergraph(enc.turn, turn_filters(), src, sink)) < 0) {
+        goto out;
+    }
+    enc.turn_src = src;
+    enc.turn_sink = sink;
+    enc.turn_format = frame->format;
+    enc.turn_w = frame->width;
+    enc.turn_h = frame->height;
+
+out:
+    av_freep(&par);
+    if (ret < 0) {
+        avfilter_graph_free(&enc.turn);
+    }
+
+    return ret;
+}
+
+static int turn_video(AVFrame *frame) {
+    int ret;
+
+    if ((!enc.turn || frame->format != enc.turn_format ||
+         frame->width != enc.turn_w || frame->height != enc.turn_h) &&
+        (ret = open_turn(frame)) < 0) {
+        return ret;
+    }
+    if ((ret = av_buffersrc_add_frame(enc.turn_src, frame)) < 0) {
+        return ret;
+    }
+
+    return av_buffersink_get_frame(enc.turn_sink, frame);
+}
+
+static int render_video(AVFrame *src, AVFrame *prev, AVFrame *next, int field,
+                        AVFrame **dst) {
     RenderParams params = {
         .target_rect = {0, 0, src->width, src->height},
         .video_background_type = VIDEO_BACKGROUND_NONE,
+        .deinterlace = deinterlace,
+        .second_field = field,
+        .prev_frame = prev,
+        .next_frame = next,
     };
     AVFrame *frame;
     int ret;
@@ -629,7 +725,13 @@ static int render_video(AVFrame *src, AVFrame **dst) {
     /* Otherwise the target would be turned and color managed. */
     av_frame_remove_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX);
     av_frame_remove_side_data(frame, AV_FRAME_DATA_ICC_PROFILE);
+    if (deinterlace) {
+        frame->flags &= ~(AV_FRAME_FLAG_INTERLACED | AV_FRAME_FLAG_TOP_FIELD_FIRST);
+    }
     ret = renderer_capture_frame(enc.renderer, src, &params, frame);
+    if (ret >= 0 && video_rotate) {
+        ret = turn_video(frame);
+    }
     if (ret < 0) {
         av_frame_free(&frame);
         return ret;
@@ -639,43 +741,60 @@ static int render_video(AVFrame *src, AVFrame **dst) {
     return 0;
 }
 
-static int open_renderer(const Frame *vp) {
+static int open_renderer(const Frame *vp, AVFrame **probe) {
+    static const struct {
+        const char *flags;
+        const char *verb;
+        const char *doing;
+    } work[] = {
+        [1] = {"-supersample", "supersample", "Supersampling"},
+        [2] = {"-deinterlace", "deinterlace", "Deinterlacing"},
+        [3] = {"-supersample and -deinterlace", "supersample and deinterlace",
+               "Supersampling and deinterlacing"},
+    };
     RendererOpenParams params = {
         .title = program_name,
+        .api = gpu_api,
         .exclude = no_vulkan ? 1u << RENDERER_API_VULKAN : 0,
         .device = gpu_device,
     };
-    AVFrame *probe = NULL;
+    int want = (supersample_level != SUPERSAMPLE_OFF ? 1 : 0) | (deinterlace ? 2 : 0);
     const char *device;
+    char rate[32] = "";
     char why[512];
     int ret;
 
-    if (supersample_level == SUPERSAMPLE_OFF) {
+    if (!want) {
         return 0;
     }
-    if (no_shader_cache && (ret = av_dict_set(&params.opt, "cache", "0", 0)) < 0) {
-        return ret;
+    if (deinterlace) {
+        enc.v_fields = 2;
+        snprintf(rate, sizeof(rate), " to %.4g FPS",
+                 enc.v_fields / video_duration(vp));
     }
+    params.opt = build_renderer_options(1);
     ret = renderer_open_offscreen(&params, &enc.renderer, why, sizeof(why));
     av_dict_free(&params.opt);
     if (ret < 0) {
-        log_dead("-supersample needs a GPU, but none would render: %s.\n", why);
+        log_dead("Converting with %s needs a GPU, but none would render: %s.\n",
+                 work[want].flags, why);
         return ret;
     }
-    if ((ret = renderer_set_supersample(enc.renderer, supersample_level)) < 0 ||
-        (ret = render_video(vp->frame, &probe)) < 0) {
-        log_dead("The %s renderer cannot supersample: %s.\n",
-                 renderer_api_name(enc.renderer), av_err2str(ret));
+    if ((supersample_level != SUPERSAMPLE_OFF &&
+         (ret = renderer_set_supersample(enc.renderer, supersample_level)) < 0) ||
+        (ret = render_video(vp->frame, NULL, NULL, 0, probe)) < 0) {
+        log_dead("The %s renderer cannot %s: %s.\n",
+                 renderer_api_name(enc.renderer), work[want].verb, av_err2str(ret));
         return ret;
     }
-    av_frame_free(&probe);
 
     device = renderer_device_name(enc.renderer);
     if (device) {
-        log_info("Supersampling on %s (%s).\n", renderer_api_name(enc.renderer),
-                 device);
+        log_info("%s%s on %s (%s).\n", work[want].doing, rate,
+                 renderer_api_name(enc.renderer), device);
     } else {
-        log_info("Supersampling on %s.\n", renderer_api_name(enc.renderer));
+        log_info("%s%s on %s.\n", work[want].doing, rate,
+                 renderer_api_name(enc.renderer));
     }
 
     return 0;
@@ -684,6 +803,7 @@ static int open_renderer(const Frame *vp) {
 static int start(VideoState *is, const Frame *vp, const Frame *af, int audio_coming) {
     double v0 = vp ? vp->pts : LACHESIS_NAN;
     double a0 = af ? af->pts : LACHESIS_NAN;
+    AVFrame *probe = NULL;
     int ret;
 
     enc.hold_max = FFMAX(is->max_frame_duration, ENCODE_SYNC_MAX);
@@ -723,13 +843,17 @@ static int start(VideoState *is, const Frame *vp, const Frame *af, int audio_com
             return ret;
         }
     }
-    if (vp && (ret = open_renderer(vp)) < 0) {
+    if (vp && (ret = open_renderer(vp, &probe)) < 0) {
         return ret;
     }
-    if (vp && (ret = open_video_encoder(vp)) < 0) {
-        log_dead("Could not open the %s encoder: %s.\n", enc.vcodec->name,
-                 av_err2str(ret));
-        return ret;
+    if (vp) {
+        ret = open_video_encoder(vp, probe ? probe : vp->frame);
+        av_frame_free(&probe);
+        if (ret < 0) {
+            log_dead("Could not open the %s encoder: %s.\n", enc.vcodec->name,
+                     av_err2str(ret));
+            return ret;
+        }
     }
     if ((ret = open_output()) < 0) {
         log_dead("Could not start writing '%s': %s.\n", output_filename,
@@ -914,15 +1038,66 @@ static double place_video(const Frame *vp, double *src_out, int *synced) {
     return isnan(expected) ? 0.0 : expected;
 }
 
-static int take_video(const Frame *vp, double out, double src, int synced) {
-    AVFrame *frame = NULL;
-    int64_t ts = FFMAX(video_ticks(out), 0);
-    char at[16];
-    int ret = render_video(vp->frame, &frame);
+static int push_video(AVFrame *frame, int64_t *ts) {
+    int ret = 0;
 
-    if (ret < 0) {
-        return ret;
+    if (enc.pending && *ts <= enc.pending_ts) {
+        av_frame_free(&enc.pending);
+        enc.v_dropped += !enc.pending_resent;
+        *ts = enc.pending_ts;
+    } else if (enc.pending) {
+        ret = send_video(enc.pending, enc.pending_ts, *ts - enc.pending_ts);
+        av_frame_free(&enc.pending);
     }
+    enc.pending = frame;
+    enc.pending_ts = *ts;
+    enc.pending_resent = 0;
+
+    return ret;
+}
+
+static AVFrame *prev_reference(const Frame *vp) {
+    AVFrame *prev = enc.deint_prev;
+
+    return prev && prev->width > 0 && enc.deint_prev_serial == vp->serial ? prev
+                                                                          : NULL;
+}
+
+static const Frame *next_picture(VideoState *is, const Frame *vp) {
+    const Frame *next;
+
+    if (frame_queue_nb_remaining(&is->pictq) < 2) {
+        return NULL;
+    }
+    next = frame_queue_peek_next(&is->pictq);
+
+    return next->serial == vp->serial ? next : NULL;
+}
+
+static double fields_span(const Frame *vp, const Frame *next) {
+    double span = video_duration(vp);
+
+    if (next && !isnan(next->pts) && !isnan(vp->pts)) {
+        double gap = next->pts - vp->pts;
+
+        if (gap > 0.0 && gap < ENCODE_SYNC_MAX &&
+            (gap < span || !(vp->duration > 0.0))) {
+            span = gap;
+        }
+    }
+
+    return span;
+}
+
+static int take_video(VideoState *is, const Frame *vp, double out, double src,
+                      int synced) {
+    const Frame *next = enc.v_fields > 1 ? next_picture(is, vp) : NULL;
+    AVFrame *prev = enc.v_fields > 1 ? prev_reference(vp) : NULL;
+    int64_t ts = FFMAX(video_ticks(out), 0);
+    int64_t field_ticks = FFMAX(video_ticks(fields_span(vp, next)) / enc.v_fields, 1);
+    char at[16];
+    int ret = 0;
+
     if (enc.has_audio && enc.v_frames && synced == enc.v_free_running) {
         enc.v_free_running = !synced;
         format_time(at, sizeof(at), out);
@@ -936,17 +1111,27 @@ static int take_video(const Frame *vp, double out, double src, int synced) {
         }
     }
 
-    if (enc.pending && ts <= enc.pending_ts) {
-        av_frame_free(&enc.pending);
-        enc.v_dropped += !enc.pending_resent;
-        ts = enc.pending_ts;
-    } else if (enc.pending) {
-        ret = send_video(enc.pending, enc.pending_ts, ts - enc.pending_ts);
-        av_frame_free(&enc.pending);
+    for (int field = 0; field < enc.v_fields; field++) {
+        int64_t field_ts = ts + field * field_ticks;
+        AVFrame *frame;
+
+        if ((ret = render_video(vp->frame, prev, next ? next->frame : NULL,
+                                field, &frame)) < 0 ||
+            (ret = push_video(frame, &field_ts)) < 0) {
+            return ret;
+        }
+        if (!field) {
+            ts = field_ts;
+        }
     }
-    enc.pending = frame;
-    enc.pending_ts = ts;
-    enc.pending_resent = 0;
+    if (enc.v_fields > 1) {
+        if (!enc.deint_prev) {
+            enc.deint_prev = av_frame_alloc();
+        }
+        if (enc.deint_prev && av_frame_replace(enc.deint_prev, vp->frame) >= 0) {
+            enc.deint_prev_serial = vp->serial;
+        }
+    }
     enc.v_last_src = src;
     enc.v_last_out = video_secs(ts);
     enc.v_last_dur = video_duration(vp);
@@ -995,6 +1180,11 @@ static int starved(const VideoState *is, const PacketQueue *q) {
     return q->nb_packets == 0 && demux_queues_full(is);
 }
 
+static int next_picture_coming(VideoState *is) {
+    return frame_queue_nb_remaining(&is->pictq) < 2 &&
+        is->viddec.finished != is->videoq.serial && !starved(is, &is->videoq);
+}
+
 static int stray_ahead(VideoState *is, double out, double src) {
     const Frame *next;
 
@@ -1003,10 +1193,7 @@ static int stray_ahead(VideoState *is, double out, double src) {
         return 0;
     }
     if (frame_queue_nb_remaining(&is->pictq) < 2) {
-        return is->viddec.finished != is->videoq.serial &&
-                !starved(is, &is->videoq)
-            ? -1
-            : 0;
+        return next_picture_coming(is) ? -1 : 0;
     }
     next = frame_queue_peek_next(&is->pictq);
     if (next->serial != is->videoq.serial || isnan(next->pts)) {
@@ -1095,7 +1282,7 @@ static int encode_step(VideoState *is, FrameQueue **wait_on) {
     if (vp) {
         v_out = place_video(vp, &v_src, &synced);
         ret = stray_ahead(is, v_out, v_src);
-        if (ret < 0) {
+        if (ret < 0 || (!ret && enc.v_fields > 1 && next_picture_coming(is))) {
             *wait_on = NULL;
             return 0;
         }
@@ -1108,7 +1295,7 @@ static int encode_step(VideoState *is, FrameQueue **wait_on) {
         }
     }
     if (vp && (af ? v_out < audio_next_out() : a_done || v_out < audio_next_out() || starved(is, &is->audioq))) {
-        ret = take_video(vp, v_out, v_src, synced);
+        ret = take_video(is, vp, v_out, v_src, synced);
         frame_queue_next(&is->pictq);
     } else if (af && (vp || v_done || (enc.v_frames && audio_next_out() < enc.v_last_out) || starved(is, &is->videoq))) {
         ret = take_audio(af);
@@ -1211,7 +1398,7 @@ static int finish(VideoState *is, int ret, int interrupted) {
     }
 
     if (enc.pending) {
-        int64_t duration = FFMAX(video_ticks(enc.v_last_dur), 1);
+        int64_t duration = FFMAX(video_ticks(enc.v_last_dur) / enc.v_fields, 1);
         int64_t end = enc.pending_ts + duration;
         AVFrame *last = NULL;
 
@@ -1257,9 +1444,10 @@ static int finish(VideoState *is, int ret, int interrupted) {
                  enc.a_jumps, enc.a_jumps == 1 ? "" : "s");
     }
     if (enc.v_dropped) {
-        log_info("Left out %" PRId64 " picture%s that came too late, as playback "
+        log_info("Left out %" PRId64 " %s%s that came too late, as playback "
                  "would.\n",
-                 enc.v_dropped, enc.v_dropped == 1 ? "" : "s");
+                 enc.v_dropped, enc.v_fields > 1 ? "field" : "picture",
+                 enc.v_dropped == 1 ? "" : "s");
     }
     if (enc.v_strays) {
         log_info("Left out %" PRId64 " picture%s with a timestamp far ahead of "
@@ -1274,6 +1462,8 @@ static int finish(VideoState *is, int ret, int interrupted) {
 
 static void free_encoder(void) {
     av_frame_free(&enc.pending);
+    av_frame_free(&enc.deint_prev);
+    avfilter_graph_free(&enc.turn);
     av_frame_free(&enc.silence);
     av_audio_fifo_free(enc.fifo);
     enc.fifo = NULL;

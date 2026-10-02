@@ -1166,13 +1166,9 @@ static const struct {
     {"nodisp", "icc-vcgt", OPT_DISABLES},
     {"nodisp", "color-temperature", OPT_DISABLES},
     {"nodisp", "no-display-hdr", OPT_DISABLES},
-    {"nodisp", "gpu-api", OPT_DISABLES},
-    {"nodisp", "gpu-params", OPT_DISABLES},
     {"nodisp", "vulkan-swap-mode", OPT_DISABLES},
-    {"nodisp", "max-glsl-version", OPT_DISABLES},
     {"nodisp", "display-fps", OPT_DISABLES},
     {"nodisp", "no-vsync-snap", OPT_DISABLES},
-    {"nodisp", "shader-cache-dir", OPT_DISABLES},
 
     {"o", "nodisp", OPT_IMPLIES},
     {"o", "slow", OPT_DISABLES},
@@ -1214,6 +1210,17 @@ static const struct {
     {"icc-profile", "icc-auto", OPT_DISABLES},
 };
 
+static const char *const gpu_users[] = {"supersample", "deinterlace"};
+static const char *const gpu_options[] = {
+    "gpu-api",
+    "gpu-device",
+    "gpu-params",
+    "max-glsl-version",
+    "no-shader-cache",
+    "no-vulkan",
+    "shader-cache-dir",
+};
+
 static enum OptionOrigin option_reach(const OptionDef *defs, const char *name,
                                       const char **via) {
     enum OptionOrigin origin = option_origin_of(defs, name);
@@ -1237,6 +1244,11 @@ static enum OptionOrigin option_reach(const OptionDef *defs, const char *name,
     return OPT_FROM_NOWHERE;
 }
 
+static int option_forgettable(const OptionDef *po) {
+    return po->type == OPT_TYPE_BOOL || po->type == OPT_TYPE_STRING ||
+        (po->type == OPT_TYPE_FUNC && po->implied_no != NULL);
+}
+
 static void option_forget(const OptionDef *defs, const char *name) {
     const OptionDef *po = find_option(defs, name);
     size_t i = (size_t)(po - defs);
@@ -1244,11 +1256,13 @@ static void option_forget(const OptionDef *defs, const char *name) {
     if (!po->name) {
         return;
     }
-    av_assert0(po->type == OPT_TYPE_BOOL || po->type == OPT_TYPE_STRING);
+    av_assert0(option_forgettable(po));
     if (po->type == OPT_TYPE_BOOL) {
         *(int *)po->u.dst_ptr = 0;
-    } else {
+    } else if (po->type == OPT_TYPE_STRING) {
         av_freep(po->u.dst_ptr);
+    } else {
+        po->u.func_arg(NULL, po->name, po->implied_no);
     }
     if (i < FF_ARRAY_ELEMS(option_origin)) {
         option_origin[i] = OPT_FROM_NOWHERE;
@@ -1268,6 +1282,14 @@ void validate_option_tables(const OptionDef *defs) {
         av_assert0(find_option(defs, option_relations[i].a)->name);
         av_assert0(find_option(defs, option_relations[i].b)->name);
     }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(gpu_users); i++) {
+        const OptionDef *po = find_option(defs, gpu_users[i]);
+
+        av_assert0(po->name && option_forgettable(po));
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(gpu_options); i++) {
+        av_assert0(find_option(defs, gpu_options[i])->name);
+    }
 }
 
 static int option_is_disabled(const OptionDef *defs, const char *name) {
@@ -1286,6 +1308,41 @@ static int option_is_disabled(const OptionDef *defs, const char *name) {
     return 0;
 }
 
+static void validate_gpu_options(const OptionDef *defs) {
+    char without[128] = "";
+    const char *via;
+
+    if (!option_reach(defs, "nodisp", &via)) {
+        return;
+    }
+    if (option_origin_of(defs, "o")) {
+        int used = 0;
+
+        for (size_t i = 0; i < FF_ARRAY_ELEMS(gpu_users); i++) {
+            if (option_origin_of(defs, gpu_users[i]) == OPT_FROM_CONFIG) {
+                log_warn("-%s from the configuration file is ignored because "
+                         "-o was given.\n",
+                         option_name_given(defs, gpu_users[i]));
+                option_forget(defs, gpu_users[i]);
+            }
+            used |= option_origin_of(defs, gpu_users[i]) != OPT_FROM_NOWHERE &&
+                !option_is_disabled(defs, gpu_users[i]);
+            av_strlcatf(without, sizeof(without), "%s-%s",
+                        i ? " or " : " without ", gpu_users[i]);
+        }
+        if (used) {
+            return;
+        }
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(gpu_options); i++) {
+        if (option_origin_of(defs, gpu_options[i]) == OPT_FROM_CMDLINE &&
+            !option_is_disabled(defs, gpu_options[i])) {
+            log_warn("-%s does nothing because -%s was given%s.\n",
+                     option_name_given(defs, gpu_options[i]), via, without);
+        }
+    }
+}
+
 void validate_option_relations(const OptionDef *defs) {
     if (option_origin_of(defs, "o")) {
         if (option_origin_of(defs, "benchmark") == OPT_FROM_CMDLINE) {
@@ -1293,13 +1350,11 @@ void validate_option_relations(const OptionDef *defs) {
         }
         option_forget(defs, "benchmark");
         option_forget(defs, "nodisp");
-        if (option_origin_of(defs, "supersample") == OPT_FROM_CONFIG) {
-            supersample_level = SUPERSAMPLE_OFF;
-        }
-        if (supersample_level == SUPERSAMPLE_OFF &&
-            option_origin_of(defs, "gpu-device") == OPT_FROM_CMDLINE) {
-            /* XXX */
-        }
+    }
+    validate_gpu_options(defs);
+    if (option_origin_of(defs, "o") && option_origin_of(defs, "deinterlace") &&
+        option_origin_of(defs, "r")) {
+        log_warn("-r sets the picture rate, which -deinterlace doubles.\n");
     }
     for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
         const char *a = option_relations[i].a;

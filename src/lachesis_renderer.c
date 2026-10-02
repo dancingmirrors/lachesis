@@ -1335,7 +1335,7 @@ done:
 
 /* Work around a libplacebo bug. */
 static int capture_recover(RendererContext *ctx,
-                           const struct pl_render_errors *before) {
+                           const struct pl_render_errors *before, int fatal) {
     struct pl_render_errors now = pl_renderer_get_errors(ctx->renderer);
     int errors = now.errors & ~before->errors;
     int hooks_failed = now.num_disabled_hooks > before->num_disabled_hooks;
@@ -1350,9 +1350,7 @@ static int capture_recover(RendererContext *ctx,
         ctx->renderer = fresh;
     }
 
-    return hooks_failed || (errors & (PL_RENDER_ERR_HOOKS | PL_RENDER_ERR_FBO))
-        ? AVERROR_EXTERNAL
-        : 0;
+    return hooks_failed || (errors & fatal) ? AVERROR_EXTERNAL : 0;
 }
 
 static int render_offscreen(RendererContext *ctx, AVFrame *frame,
@@ -1417,7 +1415,10 @@ static int render_offscreen(RendererContext *ctx, AVFrame *frame,
         ret = AVERROR_EXTERNAL;
     }
 
-    if (capture_recover(ctx, &errors) < 0 && ret >= 0) {
+    if (capture_recover(ctx, &errors,
+                        PL_RENDER_ERR_HOOKS | PL_RENDER_ERR_FBO |
+                            (deint ? PL_RENDER_ERR_DEINTERLACING : 0)) < 0 &&
+        ret >= 0) {
         ret = AVERROR_EXTERNAL;
     }
     if (mapped_prev) {
