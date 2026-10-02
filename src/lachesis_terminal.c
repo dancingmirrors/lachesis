@@ -97,7 +97,7 @@ void terminal_input_init(void) {
     }
     terminal_active = 1;
 #else
-    if (!isatty(STDIN_FILENO)) {
+    if (!isatty(STDIN_FILENO) || tcgetpgrp(STDIN_FILENO) != getpgrp()) {
         return;
     }
     struct termios tio;

@@ -1,5 +1,4 @@
 /*
- * Copyright © 2003 Fabrice Bellard
  * Copyright © 2026 dancingmirrors@icloud.com
  *
  * This file is part of lachesis.
@@ -19,15 +18,28 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef LACHESIS_DEMUX_H
-#define LACHESIS_DEMUX_H
+#ifndef LACHESIS_ENCODER_H
+#define LACHESIS_ENCODER_H
+
+#include <libavformat/avformat.h>
+#include <libavutil/attributes.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/pixfmt.h>
 
 #include "lachesis_internal.h"
 
-extern AVDictionary *format_opts;
+const AVOutputFormat *encoder_output_format(const char *path);
 
-int stream_component_open(VideoState *is, int stream_index);
-int read_thread(void *arg);
-int demux_queues_full(const VideoState *is);
+int encoder_enabled(void);
+int encoder_init(void);
 
-#endif /* LACHESIS_DEMUX_H */
+void encoder_note_input(const AVFormatContext *ic);
+
+const enum AVPixelFormat *encoder_pix_fmts(int *count);
+
+int encoder_open_audio(const AVChannelLayout *layout, int sample_rate,
+                       struct AudioParams *tgt);
+
+av_noreturn void encoder_run(VideoState *is);
+
+#endif /* LACHESIS_ENCODER_H */

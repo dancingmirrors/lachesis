@@ -43,6 +43,7 @@
 #include <SDL3/SDL.h>
 
 #include "lachesis_alloc.h"
+#include "lachesis_encoder.h"
 #include "lachesis_filters.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -191,8 +192,9 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
 
     {
         int nb_pix_fmts = 0;
-        const enum AVPixelFormat *pix_fmts =
-            renderer_supported_pixfmts(renderer, &nb_pix_fmts);
+        const enum AVPixelFormat *pix_fmts = encoder_enabled()
+            ? encoder_pix_fmts(&nb_pix_fmts)
+            : renderer_supported_pixfmts(renderer, &nb_pix_fmts);
 
         if (pix_fmts && nb_pix_fmts > 0 &&
             (ret = av_opt_set_array(filt_out, "pixel_formats",
@@ -279,6 +281,17 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
         INSERT_FILT("fps", fps_buf);
     }
 
+    if (encoder_enabled()) {
+        if (video_rotate == 90) {
+            INSERT_FILT("transpose", "clock");
+        } else if (video_rotate == 180) {
+            INSERT_FILT("vflip", NULL);
+            INSERT_FILT("hflip", NULL);
+        } else if (video_rotate == 270) {
+            INSERT_FILT("transpose", "cclock");
+        }
+    }
+
     if (autorotate) {
         int32_t *displaymatrix = NULL;
         AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX);
@@ -315,6 +328,10 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
                 INSERT_FILT("vflip", NULL);
             }
         }
+    }
+
+    if (encoder_enabled() && deinterlace) {
+        INSERT_FILT("yadif", "mode=send_field");
     }
 
     if ((ret = configure_filtergraph(graph, vfilters, filt_src, last_filter)) < 0) {

@@ -122,6 +122,7 @@ extern int subtitle_disable;
 extern const char *wanted_stream_spec[AVMEDIA_TYPE_NB];
 extern float seek_interval;
 extern int display_disable;
+extern const char *output_filename;
 extern int benchmark;
 extern int alwaysontop;
 extern int window_resize;

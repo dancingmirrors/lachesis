@@ -53,6 +53,7 @@
 #include "lachesis_audio.h"
 #include "lachesis_degrade.h"
 #include "lachesis_demux.h"
+#include "lachesis_encoder.h"
 #include "lachesis_hwaccel.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
@@ -217,7 +218,7 @@ static int component_open(VideoState *is, int stream_index) {
         codec = avcodec_find_decoder_by_name(forced_codec_name);
     }
 
-    if (avctx->codec_type == AVMEDIA_TYPE_AUDIO) {
+    if (avctx->codec_type == AVMEDIA_TYPE_AUDIO && !encoder_enabled()) {
         spdif = audio_spdif_open(is, ic->streams[stream_index],
                                  &is->audio_hw_buf_size);
         if (spdif < 0) {
@@ -258,7 +259,8 @@ static int component_open(VideoState *is, int stream_index) {
         }
     }
 
-    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !is->hwaccel_off) {
+    if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !is->hwaccel_off &&
+        !encoder_enabled()) {
         AVStream *st = ic->streams[stream_index];
         const AVCodec *sw_codec = codec;
         int still_image = is->is_still_image ||
@@ -321,7 +323,12 @@ static int component_open(VideoState *is, int stream_index) {
                 goto fail_audio_graph;
             }
 
-            if ((ret = audio_open(is, &ch_layout, sample_rate, &is->audio_tgt)) < 0) {
+            if (encoder_enabled()) {
+                ret = encoder_open_audio(&ch_layout, sample_rate, &is->audio_tgt);
+            } else {
+                ret = audio_open(is, &ch_layout, sample_rate, &is->audio_tgt);
+            }
+            if (ret < 0) {
                 goto fail_audio_graph;
             }
             is->audio_hw_buf_size = ret;
@@ -347,7 +354,7 @@ static int component_open(VideoState *is, int stream_index) {
         if ((ret = decoder_start(&is->auddec, audio_thread, "audio_decoder", is)) < 0) {
             goto out;
         }
-        is->audio_start_pending = 1;
+        is->audio_start_pending = !encoder_enabled();
         is->audio_start_serial = -1;
         is->audio_start_deadline_us =
             av_gettime_relative() + AUDIO_START_MAX_WAIT_US;
@@ -474,6 +481,10 @@ int stream_has_enough_packets(const VideoState *is, AVStream *st, int stream_id,
         ((queue->nb_packets > MIN_FRAMES && (!queue->duration)) || (av_q2d(st->time_base) * queue->duration > want));
 }
 
+int demux_queues_full(const VideoState *is) {
+    return is->audioq.size + is->videoq.size + is->subtitleq.size > max_queue_bytes;
+}
+
 static int is_realtime(AVFormatContext *s) {
     if (!strcmp(s->iformat->name, "rtp") || !strcmp(s->iformat->name, "rtsp") || !strcmp(s->iformat->name, "sdp")) {
         return 1;
@@ -532,6 +543,9 @@ static int detect_still_image(const AVFormatContext *ic) {
     return 0;
 }
 
+static const uint8_t asf_data_guid[16] = {
+    0x36, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+    0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C};
 static const uint8_t asf_simple_index_guid[16] = {
     0x90, 0x08, 0x00, 0x33, 0xB1, 0xE5, 0xCF, 0x11,
     0x89, 0xF4, 0x00, 0xA0, 0xC9, 0x03, 0x49, 0xCB};
@@ -539,34 +553,140 @@ static const uint8_t asf_file_props_guid[16] = {
     0xA1, 0xDC, 0xAB, 0x8C, 0x47, 0xA9, 0xCF, 0x11,
     0x8E, 0xE4, 0x00, 0xC0, 0x0C, 0x20, 0x53, 0x65};
 
-#define ASF_IDX_TAIL_MAX (1 << 20)
-#define ASF_IDX_HEAD_MAX (64 << 10)
+#define ASF_IDX_TAIL_MAX (4 << 20)
 #define ASF_IDX_MAX_ADD 100000
 #define ASF_IDX_COVERAGE 0.93
+#define ASF_IDX_MAX_VIDEO 32
+#define ASF_IDX_MAX_INTERVAL_MS 86400000
+#define ASF_IDX_MAX_ENTRY_SIZE 0x3FFFFFFF
 
-static int asf_find_guid(const uint8_t *buf, int size, const uint8_t *guid) {
-    for (int i = 0; i + 16 <= size; i++) {
-        if (!memcmp(buf + i, guid, 16)) {
-            return i;
+typedef struct AsfLayout {
+    int64_t data_offset;
+    int64_t index_offset;
+    int64_t preroll_ms;
+} AsfLayout;
+
+typedef struct AsfSimpleIndex {
+    int64_t interval;
+    uint32_t count;
+    const uint8_t *entries;
+} AsfSimpleIndex;
+
+/* Walk the top level objects like FFmpeg does, which finds the same data
+ * packets and the same index objects after them.
+ */
+static int asf_read_layout(AVIOContext *pb, int64_t fsize, AsfLayout *layout) {
+    uint8_t obj[92];
+    int64_t pos = 30;
+    uint32_t flags = 0;
+
+    layout->preroll_ms = 0;
+    for (int n = 0; n < 4096 && pos + 24 <= fsize; n++) {
+        if (avio_seek(pb, pos, SEEK_SET) < 0 || avio_read(pb, obj, 24) != 24) {
+            return -1;
         }
+        uint64_t size = AV_RL64(obj + 16);
+        if (size < 24 || size > (uint64_t)(fsize - pos)) {
+            return -1;
+        }
+        if (!memcmp(obj, asf_data_guid, 16)) {
+            if ((flags & 1) || size < 100) {
+                return -1;
+            }
+            layout->data_offset = pos + 50;
+            layout->index_offset = pos + (int64_t)size;
+            return 0;
+        }
+        if (!memcmp(obj, asf_file_props_guid, 16) && size >= sizeof(obj)) {
+            if (avio_read(pb, obj + 24, sizeof(obj) - 24) != sizeof(obj) - 24) {
+                return -1;
+            }
+            layout->preroll_ms = AV_RL32(obj + 80);
+            flags = AV_RL32(obj + 88);
+        }
+        pos += (int64_t)size;
     }
 
     return -1;
 }
 
-static void asf_inject_index_entries(AVFormatContext *ic, AVStream *st,
-                                     const uint8_t *buf, int tsize,
-                                     int64_t data_offset, int64_t fsize,
-                                     int64_t preroll_ms) {
-    int off = asf_find_guid(buf, tsize, asf_simple_index_guid);
-    if (off < 0 || off + 56 > tsize) {
-        return;
+static int asf_read_simple_indexes(const uint8_t *buf, int size,
+                                   AsfSimpleIndex *idx, int max, int *all) {
+    int off = 0;
+    int n = 0;
+
+    *all = 0;
+    while (size - off >= 24) {
+        uint64_t osize = AV_RL64(buf + off + 16);
+        if (osize < 24 || osize > (uint64_t)(size - off)) {
+            return n;
+        }
+        if (!memcmp(buf + off, asf_simple_index_guid, 16) && osize >= 56) {
+            uint32_t count = AV_RL32(buf + off + 52);
+            if (count > (osize - 56) / 6 || n == max) {
+                return n;
+            }
+            idx[n].interval = AV_RL64(buf + off + 40);
+            idx[n].count = count;
+            idx[n].entries = buf + off + 56;
+            n++;
+        }
+        off += (int)osize;
+    }
+    *all = off == size;
+
+    return n;
+}
+
+static const AsfSimpleIndex *asf_densest_index(const AsfSimpleIndex *idx, int n) {
+    const AsfSimpleIndex *best = &idx[0];
+    uint32_t best_keys = 0;
+
+    for (int i = 0; i < n; i++) {
+        uint32_t keys = 0;
+        uint32_t last = 0;
+
+        for (uint32_t k = 0; k < idx[i].count; k++) {
+            uint32_t pkt = AV_RL32(idx[i].entries + (int64_t)k * 6);
+
+            keys += !k || pkt != last;
+            last = pkt;
+        }
+        if (keys > best_keys) {
+            best_keys = keys;
+            best = &idx[i];
+        }
     }
 
-    int64_t itime = AV_RL64(buf + off + 40);
-    uint32_t ict = AV_RL32(buf + off + 52);
-    int64_t itime_ms = itime / 10000;
-    if (itime_ms <= 0 || ict < 8 || off + 56 + (int64_t)ict * 6 > tsize) {
+    return best;
+}
+
+static void asf_add_simple_index(AVFormatContext *ic, AVStream *st,
+                                 const AsfSimpleIndex *idx,
+                                 const AsfLayout *layout) {
+    int64_t last_pos = -1;
+
+    for (uint32_t i = 0; i < idx->count; i++) {
+        int pktnum = (int)AV_RL32(idx->entries + (int64_t)i * 6);
+        int64_t pos = layout->data_offset + (int64_t)ic->packet_size * pktnum;
+        int64_t ts = FFMAX(av_rescale(idx->interval, i, 10000) - layout->preroll_ms, 0);
+
+        if (pos != last_pos) {
+            av_add_index_entry(st, pos,
+                               av_rescale_q(ts, (AVRational){1, 1000}, st->time_base),
+                               ic->packet_size, 0, AVINDEX_KEYFRAME);
+            last_pos = pos;
+        }
+    }
+}
+
+static void asf_extend_index(AVFormatContext *ic, AVStream *st,
+                             const AsfSimpleIndex *idx, const AsfLayout *layout,
+                             int64_t fsize, int *budget, int fill) {
+    int64_t itime_ms = idx->interval / 10000;
+    uint32_t ict = idx->count;
+    if (ic->duration <= 0 || itime_ms <= 0 ||
+        itime_ms > ASF_IDX_MAX_INTERVAL_MS || ict < 8) {
         return;
     }
 
@@ -575,7 +695,7 @@ static void asf_inject_index_entries(AVFormatContext *ic, AVStream *st,
         return;
     }
 
-    const uint8_t *ent = buf + off + 56;
+    const uint8_t *ent = idx->entries;
     uint32_t pkt_first = AV_RL32(ent);
     uint32_t pkt_last = AV_RL32(ent + (int64_t)(ict - 1) * 6);
     if (pkt_last <= pkt_first) {
@@ -591,77 +711,137 @@ static void asf_inject_index_entries(AVFormatContext *ic, AVStream *st,
         }
     }
 
-    int64_t last_ts_ms = (int64_t)(ict - 1) * itime_ms - preroll_ms;
-    int64_t max_pkt = (fsize - data_offset) / ic->packet_size - 1;
-    int injected = 0;
+    int64_t last_ts_ms = (int64_t)(ict - 1) * itime_ms - layout->preroll_ms;
+    int64_t max_pkt = (fsize - layout->data_offset) / ic->packet_size - 1;
 
-    for (int64_t ts = last_ts_ms + itime_ms;
-         ts <= dur_ms && injected < ASF_IDX_MAX_ADD; ts += itime_ms) {
+    if (fill) {
+        asf_add_simple_index(ic, st, idx, layout);
+    }
+    for (int64_t ts = last_ts_ms + itime_ms; ts <= dur_ms && *budget > 0;
+         ts += itime_ms, (*budget)--) {
         int64_t pkt = pkt_last +
             (int64_t)((double)(ts - last_ts_ms) / itime_ms * pkts_per_entry);
         if (pkt > max_pkt) {
             pkt = max_pkt;
         }
-        int64_t pos = data_offset + pkt * ic->packet_size;
+        int64_t pos = layout->data_offset + pkt * ic->packet_size;
         int64_t ts_st = av_rescale_q(ts, (AVRational){1, 1000}, st->time_base);
-        if (av_add_index_entry(st, pos, ts_st, ic->packet_size, 0,
-                               AVINDEX_KEYFRAME) >= 0) {
-            injected++;
-        }
+        av_add_index_entry(st, pos, ts_st, ic->packet_size, 0, AVINDEX_KEYFRAME);
     }
 }
 
-static void asf_extend_truncated_index(AVFormatContext *ic) {
-    int64_t preroll_ms = 0;
-    uint8_t *buf;
+static int asf_video_streams(AVFormatContext *ic, AVStream **video) {
+    int n = 0;
+
+    for (unsigned int i = 0; i < ic->nb_streams; i++) {
+        AVStream *st = ic->streams[i];
+        int at;
+
+        if (st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO ||
+            (st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            continue;
+        }
+        if (n == ASF_IDX_MAX_VIDEO) {
+            return -1;
+        }
+        for (at = n; at > 0 && video[at - 1]->id > st->id; at--) {
+            video[at] = video[at - 1];
+        }
+        video[at] = st;
+        n++;
+    }
+
+    return n;
+}
+
+/* FFmpeg reads only the first simple index and files it under whichever
+ * stream it first seeks in, which is the wrong one when the file has
+ * another video stream with a lower number.
+ */
+static int asf_load_indexes(AVFormatContext *ic, const AsfLayout *layout,
+                            const uint8_t *buf, int size, int whole,
+                            int64_t fsize) {
+    AsfSimpleIndex idx[ASF_IDX_MAX_VIDEO];
+    AVStream *video[ASF_IDX_MAX_VIDEO];
+    int all;
+    int nb_idx = asf_read_simple_indexes(buf, size, idx, ASF_IDX_MAX_VIDEO, &all);
+    int nb_video = asf_video_streams(ic, video);
+    int matched = whole && all && nb_video > 1 && nb_idx == nb_video;
+    int budget = ASF_IDX_MAX_ADD;
+    int dsi;
+
+    if (nb_idx <= 0) {
+        return 0;
+    }
+    for (int i = 0; matched && i < nb_idx; i++) {
+        matched = idx[i].count > 1;
+    }
+
+    if (matched) {
+        av_seek_frame(ic, video[0]->index, 1, AVSEEK_FLAG_BACKWARD);
+        if (avformat_index_get_entries_count(video[0]) > 0) {
+            const AsfSimpleIndex *dense = asf_densest_index(idx, nb_idx);
+
+            for (int i = 0; i < nb_video; i++) {
+                if (i) {
+                    asf_add_simple_index(ic, video[i], &idx[i], layout);
+                }
+                asf_extend_index(ic, video[i], &idx[i], layout, fsize, &budget, 0);
+            }
+            /* What seeks without video. */
+            for (unsigned int i = 0; i < ic->nb_streams; i++) {
+                AVStream *st = ic->streams[i];
+
+                if (st->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+                    asf_add_simple_index(ic, st, dense, layout);
+                    asf_extend_index(ic, st, dense, layout, fsize, &budget, 0);
+                }
+            }
+        }
+        return 1;
+    }
+
+    dsi = av_find_default_stream_index(ic);
+    if (dsi >= 0) {
+        asf_extend_index(ic, ic->streams[dsi], &idx[0], layout, fsize, &budget, 1);
+    }
+
+    return 0;
+}
+
+static void asf_fix_index(AVFormatContext *ic) {
+    AsfLayout layout;
+    uint8_t *buf = NULL;
+    int64_t resume, fsize;
+    int size, restart = 0;
 
     if (strcmp(ic->iformat->name, "asf") ||
         !ic->pb || !(ic->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
-        ic->duration <= 0 || ic->packet_size <= 0) {
+        !ic->packet_size || ic->packet_size > ASF_IDX_MAX_ENTRY_SIZE) {
         return;
     }
 
-    int dsi = av_find_default_stream_index(ic);
-    if (dsi < 0) {
+    resume = avio_tell(ic->pb);
+    fsize = avio_size(ic->pb);
+    if (resume < 0 || fsize <= 0) {
         return;
     }
-    AVStream *st = ic->streams[dsi];
-
-    if (avformat_seek_file(ic, -1, INT64_MIN, 0, INT64_MAX, 0) < 0) {
-        return;
-    }
-    int64_t data_offset = avio_tell(ic->pb);
-    int64_t fsize = avio_size(ic->pb);
-    if (data_offset <= 0 || fsize <= data_offset) {
-        return;
-    }
-
-    buf = av_malloc(ASF_IDX_TAIL_MAX);
-    if (!buf) {
-        return;
-    }
-
-    int hsize = (int)FFMIN(ASF_IDX_HEAD_MAX, data_offset);
-    if (avio_seek(ic->pb, 0, SEEK_SET) >= 0 &&
-        avio_read(ic->pb, buf, hsize) == hsize) {
-        int off = asf_find_guid(buf, hsize, asf_file_props_guid);
-        if (off >= 0 && off + 88 <= hsize) {
-            preroll_ms = AV_RL64(buf + off + 80);
+    if (asf_read_layout(ic->pb, fsize, &layout) >= 0) {
+        size = (int)FFMIN(ASF_IDX_TAIL_MAX, fsize - layout.index_offset);
+        if (size >= 56 && (buf = av_malloc(size)) &&
+            avio_seek(ic->pb, layout.index_offset, SEEK_SET) >= 0 &&
+            avio_read(ic->pb, buf, size) == size) {
+            restart = asf_load_indexes(ic, &layout, buf, size,
+                                       size == fsize - layout.index_offset, fsize);
         }
-        if (preroll_ms < 0 || preroll_ms > 60000) {
-            preroll_ms = 0;
-        }
+        av_free(buf);
     }
 
-    int tsize = (int)FFMIN(ASF_IDX_TAIL_MAX, fsize - data_offset);
-    if (avio_seek(ic->pb, fsize - tsize, SEEK_SET) >= 0 &&
-        avio_read(ic->pb, buf, tsize) == tsize) {
-        asf_inject_index_entries(ic, st, buf, tsize, data_offset, fsize,
-                                 preroll_ms);
+    if (restart) {
+        avformat_seek_file(ic, -1, INT64_MIN, 0, INT64_MAX, 0);
+    } else {
+        avio_seek(ic->pb, resume, SEEK_SET);
     }
-
-    av_free(buf);
-    avformat_seek_file(ic, -1, INT64_MIN, 0, INT64_MAX, 0);
 }
 
 static const AVInputFormat *guess_archive_entry_format(const char *entry_name) {
@@ -750,11 +930,11 @@ static int64_t media_end_ts(const VideoState *is) {
     return (int64_t)((playhead_origin(is) + length) * AV_TIME_BASE);
 }
 
-static void signal_eof(VideoState *is, AVPacket *pkt) {
+static void signal_eof(VideoState *is, AVPacket *pkt, int audio) {
     if (is->video_stream >= 0) {
         packet_queue_put_nullpacket(&is->videoq, pkt, is->video_stream);
     }
-    if (is->audio_stream >= 0) {
+    if (is->audio_stream >= 0 && audio) {
         packet_queue_put_nullpacket(&is->audioq, pkt, is->audio_stream);
     }
     if (is->subtitle_stream >= 0) {
@@ -1140,7 +1320,7 @@ int read_thread(void *arg) {
     }
 
     if (!is->archive_avio && !is->ytdl_source_url && !is_http_input(is->filename)) {
-        asf_extend_truncated_index(ic);
+        asf_fix_index(ic);
     }
 
     if (start_time != AV_NOPTS_VALUE) {
@@ -1230,7 +1410,8 @@ int read_thread(void *arg) {
 
     if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
         ret = stream_component_open(is, st_index[AVMEDIA_TYPE_VIDEO]);
-        if (ret < 0 && hwaccel && !no_hwaccel && !is->abort_request) {
+        if (ret < 0 && hwaccel && !no_hwaccel && !is->abort_request &&
+            !encoder_enabled()) {
             fatal_error_pending = 1;
             goto fail;
         }
@@ -1249,7 +1430,9 @@ int read_thread(void *arg) {
         goto fail;
     }
 
-    SDL_SetAtomicInt(&is->streams_selected, 1);
+    if (!encoder_enabled()) {
+        SDL_SetAtomicInt(&is->streams_selected, 1);
+    }
     SDL_SetAtomicInt(&is->open_phase, STREAM_OPEN_DONE);
 
     print_stream_info(is);
@@ -1309,6 +1492,11 @@ int read_thread(void *arg) {
                 ytdl_chunked_free(&is->ytdl_aio);
             }
         }
+    }
+
+    if (encoder_enabled()) {
+        encoder_note_input(ic);
+        SDL_SetAtomicInt(&is->streams_selected, 1);
     }
 
     if (is->video_stream < 0 && is->audio_stream < 0) {
@@ -1437,7 +1625,7 @@ int read_thread(void *arg) {
             still_deadline_us = 0;
             still_range_done = 0;
             if (past_end) {
-                signal_eof(is, pkt);
+                signal_eof(is, pkt, 1);
                 is->play_range_done = 1;
             }
             if (is->paused) {
@@ -1535,7 +1723,7 @@ int read_thread(void *arg) {
                 continue;
             }
             if (at_eof && !is->eof) {
-                signal_eof(is, pkt);
+                signal_eof(is, pkt, !is->audio_ic);
             }
             if (failed) {
                 goto fail;

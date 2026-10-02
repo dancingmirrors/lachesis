@@ -419,5 +419,6 @@ void playlist_reopen_current(VideoState **pis, int keep_paused, double resume_at
 void playlist_drop_current(VideoState **pis, int keep_paused);
 void render_fault_fallback(VideoState **pis);
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event);
+int poll_quit_request(void);
 
 #endif /* LACHESIS_INTERNAL_H */

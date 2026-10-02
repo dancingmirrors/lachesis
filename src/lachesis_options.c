@@ -54,6 +54,7 @@
 #include "lachesis_alloc.h"
 #include "lachesis_aspect.h"
 #include "lachesis_audio.h"
+#include "lachesis_encoder.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -71,6 +72,7 @@ int subtitle_disable;
 const char *wanted_stream_spec[AVMEDIA_TYPE_NB] = {0};
 float seek_interval = 5.0;
 int display_disable;
+const char *output_filename;
 int benchmark;
 int alwaysontop;
 int startup_volume = 100;
@@ -697,6 +699,16 @@ static int opt_format(void *optctx av_unused, const char *opt av_unused, const c
     return 0;
 }
 
+static int opt_output(void *optctx av_unused, const char *opt, const char *arg) {
+    if (!encoder_output_format(arg)) {
+        log_dead("-%s wants a file name ending in .mp4, .m4v or .mkv, not '%s'.\n",
+                 opt, arg);
+        return AVERROR(EINVAL);
+    }
+
+    return store_string(&output_filename, arg);
+}
+
 static int opt_sync(void *optctx av_unused, const char *opt, const char *arg) {
     static const int masters[] = {AV_SYNC_AUDIO_MASTER, AV_SYNC_VIDEO_MASTER,
                                   AV_SYNC_EXTERNAL_CLOCK};
@@ -745,6 +757,7 @@ const OptionDef options[] = {
     OPT_ALIAS("end", "t"),
     {"seek-interval", OPT_TYPE_FLOAT, 0, {&seek_interval}, "set the seek interval in seconds for the left and right keys", "seconds"},
     {"nodisp", OPT_TYPE_BOOL, 0, {&display_disable}, "disable graphical display"},
+    {"o", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_CMDLINE_ONLY, {.func_arg = opt_output}, "convert into an .mp4 or .mkv file (H.264 and AAC) instead of playing", "file"},
     {"benchmark", OPT_TYPE_BOOL, OPT_CMDLINE_ONLY, {&benchmark}, "blaze it (for benchmarking)"},
     {"alwaysontop", OPT_TYPE_BOOL, 0, {&alwaysontop}, "try to always keep the window on top"},
     {"volume", OPT_TYPE_INT, 0, {&startup_volume}, "set the startup volume in percent (up to 300)", "volume"},
@@ -1161,6 +1174,42 @@ static const struct {
     {"nodisp", "no-vsync-snap", OPT_DISABLES},
     {"nodisp", "shader-cache-dir", OPT_DISABLES},
 
+    {"o", "nodisp", OPT_IMPLIES},
+    {"o", "slow", OPT_DISABLES},
+    {"o", "sync", OPT_DISABLES},
+    {"o", "pause", OPT_DISABLES},
+    {"o", "loop", OPT_DISABLES},
+    {"o", "keep-open", OPT_DISABLES},
+    {"o", "shuffle", OPT_DISABLES},
+    {"o", "reverse-playlist", OPT_DISABLES},
+    {"o", "archive-jump", OPT_DISABLES},
+    {"o", "seek-interval", OPT_DISABLES},
+    {"o", "volume", OPT_DISABLES},
+    {"o", "mute", OPT_DISABLES},
+    {"o", "normalize", OPT_DISABLES},
+    {"o", "normalize-target", OPT_DISABLES},
+    {"o", "normalize-gain", OPT_DISABLES},
+    {"o", "audio-spdif", OPT_DISABLES},
+    {"o", "audio-spdif-force", OPT_DISABLES},
+    {"o", "hwaccel", OPT_DISABLES},
+    {"o", "hwaccel-codecs", OPT_DISABLES},
+    {"o", "hwaccel-max-size", OPT_DISABLES},
+    {"o", "gpu-device", OPT_DISABLES},
+    {"o", "max-texture-size", OPT_DISABLES},
+    {"o", "interpolate", OPT_DISABLES},
+    {"o", "supersample", OPT_DISABLES},
+    {"o", "scaler", OPT_DISABLES},
+    {"o", "video-bg", OPT_DISABLES},
+    {"o", "video-fill", OPT_DISABLES},
+    {"o", "zoom-box", OPT_DISABLES},
+    {"o", "360-sbs", OPT_DISABLES},
+    {"o", "360-tb", OPT_DISABLES},
+    {"o", "360-eq", OPT_DISABLES},
+    {"o", "360-eq-tb", OPT_DISABLES},
+    {"o", "sst", OPT_DISABLES},
+    {"o", "scodec", OPT_DISABLES},
+    {"o", "sub-offset", OPT_DISABLES},
+
     {"no-shader-cache", "shader-cache-dir", OPT_DISABLES},
     {"no-ytdl", "ytdl-path", OPT_DISABLES},
     {"no-ytdl", "ytdl-format", OPT_DISABLES},
@@ -1240,6 +1289,13 @@ static int option_is_disabled(const OptionDef *defs, const char *name) {
 }
 
 void validate_option_relations(const OptionDef *defs) {
+    if (option_origin_of(defs, "o")) {
+        if (option_origin_of(defs, "benchmark") == OPT_FROM_CMDLINE) {
+            log_warn("-benchmark does nothing because -o was given.\n");
+        }
+        option_forget(defs, "benchmark");
+        option_forget(defs, "nodisp");
+    }
     for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
         const char *a = option_relations[i].a;
         const char *b = option_relations[i].b;
@@ -1684,7 +1740,6 @@ static const struct {
 int opt_loglevel(void *optctx av_unused, const char *opt av_unused, const char *arg) {
     const char *token;
     char *tail;
-    int flags = av_log_get_flags();
     int level = av_log_get_level();
     int cmd;
     size_t i = 0;
@@ -1699,12 +1754,7 @@ int opt_loglevel(void *optctx av_unused, const char *opt av_unused, const char *
         }
 
         if (!i && !strncmp(token, "repeat", 6)) {
-            if (cmd == '-') {
-                flags |= AV_LOG_SKIP_REPEATED;
-            } else {
-                flags &= ~AV_LOG_SKIP_REPEATED;
-            }
-            av_log_set_flags(flags);
+            log_set_skip_repeated(cmd == '-');
             arg = token + 6;
         } else {
             break;

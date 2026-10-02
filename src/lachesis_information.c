@@ -31,6 +31,7 @@
 
 #include "lachesis_aspect.h"
 #include "lachesis_deinterlace.h"
+#include "lachesis_encoder.h"
 #include "lachesis_information.h"
 #include "lachesis_internal.h"
 #include "lachesis_interpolate.h"
@@ -174,7 +175,9 @@ void print_stream_info(const VideoState *is) {
 
     char line[256];
 
-    log_info("Using renderer: %s\n", media_info_renderer());
+    if (!encoder_enabled()) {
+        log_info("Using renderer: %s\n", media_info_renderer());
+    }
     log_info("%s hwaccel: %s\n", active_hwaccel ? "Trying" : "Using",
              media_info_hwaccel());
 

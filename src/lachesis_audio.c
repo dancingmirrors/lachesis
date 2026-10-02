@@ -478,6 +478,8 @@ static const char *build_audio_filters(const char *afilters, AVBPrint *scratch) 
 
 int configure_audio_filters(VideoState *is, const char *afilters, int force_output_format) {
     AVFilterContext *filt_asrc = NULL, *filt_asink = NULL;
+    enum AVSampleFormat sink_fmt = force_output_format ? is->audio_tgt.fmt
+                                                       : AV_SAMPLE_FMT_S16;
     AVBPrint bp;
     char asrc_args[256];
     int ret;
@@ -512,10 +514,10 @@ int configure_audio_filters(VideoState *is, const char *afilters, int force_outp
         goto end;
     }
 
-    if ((ret = av_opt_set(filt_asink, "sample_formats", "s16", AV_OPT_SEARCH_CHILDREN)) < 0) {
+    if ((ret = av_opt_set(filt_asink, "sample_formats", av_get_sample_fmt_name(sink_fmt),
+                          AV_OPT_SEARCH_CHILDREN)) < 0) {
 #if LIBAVFILTER_VERSION_INT < AV_VERSION_INT(10, 6, 100)
-        static const enum AVSampleFormat sample_fmts[] = {
-            AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_NONE};
+        const enum AVSampleFormat sample_fmts[] = {sink_fmt, AV_SAMPLE_FMT_NONE};
         ret = av_opt_set_int_list(filt_asink, "sample_fmts", sample_fmts,
                                   AV_SAMPLE_FMT_NONE, AV_OPT_SEARCH_CHILDREN);
         if (ret < 0)

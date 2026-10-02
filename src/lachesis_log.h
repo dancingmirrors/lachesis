@@ -35,6 +35,7 @@ void alloc_track_abort(void);
 void log_init(void);
 
 void log_finish_line(void);
+void log_set_skip_repeated(int skip);
 void log_interrupt_begin(int (*cb)(void *), void *ctx);
 void log_interrupt_end(void);
 
@@ -78,7 +79,7 @@ static av_unused av_printf_format(1, 2) void log_dead(const char *fmt, ...) {
 }
 
 /* Like log_dead(), but never returns. */
-static av_unused av_printf_format(1, 2) void fatal_quit(const char *fmt, ...) {
+static av_unused av_noreturn av_printf_format(1, 2) void fatal_quit(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     log_vline("DEAD: ", fmt, ap);

@@ -96,6 +96,7 @@
 #include "lachesis_deinterlace.h"
 #include "lachesis_demux.h"
 #include "lachesis_display.h"
+#include "lachesis_encoder.h"
 #include "lachesis_equalizer.h"
 #include "lachesis_filters.h"
 #include "lachesis_hwaccel.h"
@@ -544,6 +545,7 @@ static void uninit_opts(void) {
     av_freep(&video_background);
     av_freep(&ytdl_path);
     av_freep(&ytdl_format);
+    av_freep(&output_filename);
     for (int i = 0; i < AVMEDIA_TYPE_NB; i++) {
         av_freep(&wanted_stream_spec[i]);
     }
@@ -613,9 +615,11 @@ av_noreturn void do_exit(VideoState *is) {
     int stranded_renderer = 0;
     int abandoned;
 
-    refresh_status_line(is);
-    if (!log_status_available()) {
-        print_exit_position(is);
+    if (!encoder_enabled()) {
+        refresh_status_line(is);
+        if (!log_status_available()) {
+            print_exit_position(is);
+        }
     }
     quit_signal_polled = 0;
     shutdown_begin();
@@ -832,6 +836,9 @@ static int startup_window_flags(void) {
 }
 
 int display_max_texture_size(void) {
+    if (encoder_enabled()) {
+        return 0;
+    }
     if (max_texture_size) {
         return max_texture_size > 0 ? max_texture_size : 0;
     }
@@ -1108,6 +1115,18 @@ static void input_poll(VideoState *is) {
     if (quit_signal) {
         do_exit(is);
     }
+}
+
+int poll_quit_request(void) {
+    SDL_Event event;
+
+    quit_signal_polled = 1;
+    terminal_input_poll();
+    if (quit_signal) {
+        return 1;
+    }
+
+    return SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_QUIT, SDL_EVENT_QUIT) > 0;
 }
 
 static void hwaccel_check_fallback(VideoState *is) {
@@ -1476,6 +1495,78 @@ static void validate_options(void) {
     }
 }
 
+static const char *local_file_path(const char *url) {
+    const char *proto = avio_find_protocol_name(url);
+
+    if (!proto || strcmp(proto, "file")) {
+        return NULL;
+    }
+
+    return strncmp(url, "file:", 5) ? url : url + 5;
+}
+
+#if defined(_WIN32)
+static int file_identity(const char *path, BY_HANDLE_FILE_INFORMATION *info) {
+    int n = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    wchar_t *wpath;
+    HANDLE h;
+    BOOL ok;
+
+    if (n <= 0 || !(wpath = av_malloc_array((size_t)n, sizeof(*wpath)))) {
+        return 0;
+    }
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, n) <= 0) {
+        av_free(wpath);
+        return 0;
+    }
+    h = CreateFileW(wpath, FILE_READ_ATTRIBUTES,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    av_free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    ok = GetFileInformationByHandle(h, info);
+    CloseHandle(h);
+
+    return ok != 0;
+}
+#endif
+
+static int same_file(const char *a, const char *b) {
+    if (!(a = local_file_path(a)) || !(b = local_file_path(b))) {
+        return 0;
+    }
+#if defined(_WIN32)
+    BY_HANDLE_FILE_INFORMATION ia, ib;
+
+    return file_identity(a, &ia) && file_identity(b, &ib) &&
+        ia.dwVolumeSerialNumber == ib.dwVolumeSerialNumber &&
+        ia.nFileIndexHigh == ib.nFileIndexHigh &&
+        ia.nFileIndexLow == ib.nFileIndexLow;
+#else
+    struct stat sa, sb;
+
+    return !stat(a, &sa) && !stat(b, &sb) && sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+#endif
+}
+
+static void prepare_encoding(void) {
+    const PlaylistEntry *e = playlist_get(playlist_pos);
+    const char *input;
+
+    if (playlist_size != 1 || !e) {
+        fatal_quit("-o converts one input at a time, not %d.\n", playlist_size);
+    }
+    input = e->archive_path ? e->archive_path : e->display_path;
+    if (input && same_file(input, output_filename)) {
+        fatal_quit("Refusing to write over the input '%s'.\n", input);
+    }
+    if (encoder_init() < 0) {
+        fatal_quit("Nothing in '%s' can be converted.\n", e->display_path);
+    }
+}
+
 static void fatal_sdl_init(const char *subsystem) {
     char video[256];
     char audio[256];
@@ -1509,7 +1600,6 @@ int main(int argc, char **argv) {
 
     log_init();
     validate_option_tables(options);
-    av_log_set_flags(AV_LOG_SKIP_REPEATED);
     av_log_set_level(AV_LOG_ERROR);
     parse_loglevel(argc, argv, options);
     parse_quiet(argc, argv, options);
@@ -1552,6 +1642,16 @@ int main(int argc, char **argv) {
 
     validate_options();
 
+    if (encoder_enabled()) {
+        display_disable = 1;
+        subtitle_disable = 1;
+        slow = 1;
+        benchmark = 0;
+        loop = 1;
+        keep_open = 0;
+        start_paused = 0;
+    }
+
     if (single_claim(input_args, n_input_args) == SINGLE_ROLE_HANDED_OFF) {
         uninit_opts();
         alloc_track_complete();
@@ -1578,7 +1678,7 @@ int main(int argc, char **argv) {
     if (shuffle) {
         playlist_shuffle();
     }
-    if (display_disable) {
+    if (display_disable && !encoder_enabled()) {
         video_disable = 1;
     }
     if (benchmark) {
@@ -1587,6 +1687,9 @@ int main(int argc, char **argv) {
 
     playlist_pos = 0;
     playlist_skip_unreachable();
+    if (encoder_enabled()) {
+        prepare_encoding();
+    }
 
     flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
     if (display_disable) {
@@ -1600,7 +1703,7 @@ int main(int argc, char **argv) {
     if (!SDL_Init(flags)) {
         fatal_sdl_init(display_disable ? "events" : "video");
     }
-    if (!audio_disable && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+    if (!audio_disable && !encoder_enabled() && !SDL_InitSubSystem(SDL_INIT_AUDIO)) {
         fatal_sdl_init("audio");
     }
 
@@ -1672,6 +1775,9 @@ int main(int argc, char **argv) {
 
     print_current_file(is);
 
+    if (encoder_enabled()) {
+        encoder_run(is);
+    }
     event_loop(&is);
 
     /* Never returns. */
