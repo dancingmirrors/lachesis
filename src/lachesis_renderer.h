@@ -153,6 +153,10 @@ int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
 /* NULL unless the backend can decode into its own memory. */
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);
 
+/* Safe to call with a NULL renderer. */
+int renderer_can_refine_hw_frames(Renderer *renderer);
+int renderer_refine_hw_frames(Renderer *renderer, AVBufferRef *frames_ref);
+
 int renderer_device_node(Renderer *renderer, char *buf, size_t size);
 
 const char *renderer_wanted_device(void);

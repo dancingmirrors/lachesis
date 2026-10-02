@@ -48,4 +48,7 @@ int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,
                         const AVCodecContext *avctx, AVRational frame_rate,
                         int still_image);
 
+enum AVPixelFormat hwaccel_get_format(AVCodecContext *avctx,
+                                      const enum AVPixelFormat *fmt);
+
 #endif /* LACHESIS_HWACCEL_H */

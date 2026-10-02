@@ -905,3 +905,56 @@ int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,
 
     return 0;
 }
+
+static int hwaccel_own_frames(AVCodecContext *avctx, enum AVPixelFormat hw_fmt) {
+    AVBufferRef *frames_ref = NULL;
+    AVHWFramesContext *frames;
+    int ret;
+
+    ret = avcodec_get_hw_frames_parameters(avctx, avctx->hw_device_ctx, hw_fmt,
+                                           &frames_ref);
+    if (ret < 0) {
+        if (ret != AVERROR(ENOENT)) {
+            log_verbose("Leaving the %s frames to libavcodec: %s.\n",
+                        av_get_pix_fmt_name(hw_fmt), av_err2str(ret));
+        }
+        return ret;
+    }
+
+    if (!renderer_refine_hw_frames(renderer, frames_ref)) {
+        av_buffer_unref(&frames_ref);
+        return 0;
+    }
+
+    frames = (AVHWFramesContext *)frames_ref->data;
+    if (frames->initial_pool_size) {
+        frames->initial_pool_size += 3;
+    }
+
+    ret = av_hwframe_ctx_init(frames_ref);
+    if (ret < 0) {
+        av_buffer_unref(&frames_ref);
+        log_warn("Could not allocate %s frames the renderer can sample: %s. "
+                 "Decoded frames will be copied instead.\n",
+                 av_get_pix_fmt_name(hw_fmt), av_err2str(ret));
+        return ret;
+    }
+
+    av_buffer_unref(&avctx->hw_frames_ctx);
+    avctx->hw_frames_ctx = frames_ref;
+
+    return 1;
+}
+
+enum AVPixelFormat hwaccel_get_format(AVCodecContext *avctx,
+                                      const enum AVPixelFormat *fmt) {
+    enum AVPixelFormat choice = avcodec_default_get_format(avctx, fmt);
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(choice);
+
+    if (desc && (desc->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
+        avctx->hw_device_ctx) {
+        hwaccel_own_frames(avctx, choice);
+    }
+
+    return choice;
+}

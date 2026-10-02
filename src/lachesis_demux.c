@@ -278,6 +278,9 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->hw_device_ctx) {
+        if (renderer_can_refine_hw_frames(renderer)) {
+            avctx->get_format = hwaccel_get_format;
+        }
         avctx->extra_hw_frames = HWACCEL_EXTRA_FRAMES;
 #if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(62, 11, 100)
         av_dict_set(&opts, "threads", "1", 0);

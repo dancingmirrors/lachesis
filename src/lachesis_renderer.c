@@ -2382,6 +2382,34 @@ int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {
     return AVERROR(ENOSYS);
 }
 
+int renderer_can_refine_hw_frames(Renderer *renderer) {
+#if LACHESIS_HAVE_D3D11
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    return ctx && ctx->api.backend == RENDERER_API_D3D11;
+#else
+    (void)renderer;
+
+    return 0;
+#endif
+}
+
+int renderer_refine_hw_frames(Renderer *renderer, AVBufferRef *frames_ref) {
+#if LACHESIS_HAVE_D3D11
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (ctx && ctx->api.backend == RENDERER_API_D3D11) {
+        return d3d11_refine_hw_frames(ctx,
+                                      (AVHWFramesContext *)frames_ref->data);
+    }
+#else
+    (void)renderer;
+    (void)frames_ref;
+#endif
+
+    return 0;
+}
+
 int renderer_display(Renderer *renderer, AVFrame *frame, RenderParams *render_params) {
     return vo_submit((RendererContext *)renderer, frame, render_params, 0);
 }
@@ -2563,7 +2591,7 @@ int renderer_maps_hw_frames(Renderer *renderer) {
 #endif
 #if LACHESIS_HAVE_D3D11
     if (ctx->api.backend == RENDERER_API_D3D11) {
-        return 1;
+        return ctx->d3d11_bind_shader;
     }
 #endif
 

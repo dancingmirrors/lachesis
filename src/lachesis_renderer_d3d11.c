@@ -239,12 +239,12 @@ static void d3d11_unlock(void *lock_ctx) {
     ID3D10Multithread_Leave((ID3D10Multithread *)lock_ctx);
 }
 
-static int d3d11_shader_bind_usable(RendererContext *ctx) {
+static int d3d11_shader_bind_usable(RendererContext *ctx, DXGI_FORMAT format) {
     D3D11_TEXTURE2D_DESC desc = {
         .Width = 64,
         .Height = 64,
         .MipLevels = 1,
-        .Format = DXGI_FORMAT_NV12,
+        .Format = format,
         .SampleDesc = {.Count = 1},
         .ArraySize = 2,
         .Usage = D3D11_USAGE_DEFAULT,
@@ -290,10 +290,7 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
         hwctx->lock_ctx = ctx->d3d11_multithread;
     }
 
-    if (d3d11_shader_bind_usable(ctx)) {
-        hwctx->BindFlags |= D3D11_BIND_SHADER_RESOURCE;
-    } else {
-    }
+    ctx->d3d11_bind_shader = d3d11_shader_bind_usable(ctx, DXGI_FORMAT_NV12);
 
     ret = av_hwdevice_ctx_init(ctx->hw_device_ref);
     if (ret < 0) {
@@ -302,6 +299,53 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
     }
 
     return 0;
+}
+
+static DXGI_FORMAT d3d11_decoder_format(enum AVPixelFormat sw_format) {
+    switch (sw_format) {
+    case AV_PIX_FMT_NV12:
+        return DXGI_FORMAT_NV12;
+    case AV_PIX_FMT_P010:
+        return DXGI_FORMAT_P010;
+    case AV_PIX_FMT_P012:
+    case AV_PIX_FMT_P016:
+        return DXGI_FORMAT_P016;
+    default:
+        return DXGI_FORMAT_UNKNOWN;
+    }
+}
+
+int d3d11_refine_hw_frames(RendererContext *ctx, AVHWFramesContext *frames) {
+    const AVD3D11VADeviceContext *dev_hwctx;
+    AVD3D11VAFramesContext *hwctx;
+    DXGI_FORMAT format;
+    UINT before;
+    int usable;
+
+    if (frames->format != AV_PIX_FMT_D3D11) {
+        return 0;
+    }
+    dev_hwctx = frames->device_ctx->hwctx;
+    if (dev_hwctx->device != ctx->placebo_d3d11->device) {
+        /* Another device's textures cannot be sampled here anyway. */
+        return 0;
+    }
+    format = d3d11_decoder_format(frames->sw_format);
+    if (format == DXGI_FORMAT_UNKNOWN) {
+        return 0;
+    }
+
+    usable = format == DXGI_FORMAT_NV12 ? ctx->d3d11_bind_shader
+                                        : d3d11_shader_bind_usable(ctx, format);
+    hwctx = frames->hwctx;
+    before = hwctx->BindFlags;
+    if (usable) {
+        hwctx->BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+    } else {
+        hwctx->BindFlags &= ~D3D11_BIND_SHADER_RESOURCE;
+    }
+
+    return hwctx->BindFlags != before;
 }
 
 static int d3d11_create_swapchain(RendererContext *ctx, SDL_Window *window,

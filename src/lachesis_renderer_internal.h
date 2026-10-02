@@ -280,6 +280,8 @@ typedef struct RendererContext {
         uint64_t serial;
     } d3d11_pools[LACHESIS_D3D11_VIEW_POOLS];
     uint64_t d3d11_serial;
+    /* Whether decoder textures can double as shader resources. */
+    int d3d11_bind_shader;
 #endif
 
     /* See build_pixfmt_list(). */
@@ -460,6 +462,7 @@ void d3d11_backend_destroy(RendererContext *ctx);
 void d3d11_touch_frame(RendererContext *ctx, const struct pl_frame *in);
 bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
                      struct pl_frame *out);
+int d3d11_refine_hw_frames(RendererContext *ctx, AVHWFramesContext *frames);
 IDXGIFactory1 *dxgi_open_factory(void);
 int dxgi_list_adapters(IDXGIFactory1 *factory, GpuDeviceNames names,
                        enum GpuClass *classes, IDXGIAdapter1 **adapters);
