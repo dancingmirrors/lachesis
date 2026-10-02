@@ -210,6 +210,9 @@ typedef struct RendererContext {
     SDL_Window *window;
     int gl_swap_interval;
 
+    int offscreen;
+    int owns_video;
+
     pl_gpu gpu;
     pl_swapchain swapchain;
     pl_renderer renderer;
@@ -218,6 +221,7 @@ typedef struct RendererContext {
     pl_tex tex[4];
     pl_tex prev_tex[4];
     pl_tex next_tex[4];
+    pl_tex capture_tex[4];
     AVFrame *sw_frame;
 
     HwDownload readback;

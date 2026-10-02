@@ -1355,17 +1355,14 @@ static int capture_recover(RendererContext *ctx,
         : 0;
 }
 
-static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
-                   int width, int height, uint8_t *out, int out_stride) {
-    RendererContext *ctx = (RendererContext *)renderer;
+static int render_offscreen(RendererContext *ctx, AVFrame *frame,
+                            RenderParams *params, struct pl_frame *target,
+                            const struct pl_filter_config *chroma) {
+    Renderer *renderer = &ctx->api;
     struct pl_frame pl_frame = {0};
-    struct pl_frame target = {0};
     ImageState image = {.rect = params->target_rect, .rotate = params->rotate};
     struct pl_color_adjustment color_adjustment = equalizer_adjustment(params);
     struct pl_render_params pl_params;
-    pl_tex cap_tex = NULL;
-    struct pl_tex_params cap_params;
-    struct pl_tex_transfer_params xfer;
     struct pl_frame pl_prev = {0}, pl_next = {0};
     bool mapped_prev = false, mapped_next = false;
     struct pl_render_errors errors = pl_renderer_get_errors(ctx->renderer);
@@ -1373,6 +1370,9 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     bool deint = params->deinterlace != 0;
     AVFrame *prev_ref = deint ? params->prev_frame : NULL;
     AVFrame *next_ref = deint ? params->next_frame : NULL;
+    struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
+    struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
+    const struct pl_hook *hooks[LACHESIS_MAX_HOOKS];
 
 #if LACHESIS_HAVE_D3D11
     ctx->d3d11_serial++;
@@ -1380,6 +1380,8 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
 
     vo_catch_up(ctx);
     pl_params = base_render_params(ctx, params, &image, &color_adjustment);
+    pl_params.plane_upscaler = chroma;
+    pl_params.plane_downscaler = chroma;
 
     ret = convert_frame(renderer, frame);
     if (ret < 0) {
@@ -1397,14 +1399,55 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
         return AVERROR_EXTERNAL;
     }
 
+    setup_render(ctx, &pl_frame, target, &pl_params, params, overlays, parts,
+                 hooks, &image);
+    deinterlace_apply(&pl_frame, &pl_params, frame, params);
+
+    if (pl_params.deinterlace_params &&
+        pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
+        pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
+                                      prev_ref, frame);
+        pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
+                                      next_ref, frame);
+        mapped_prev = pl_frame.prev != NULL;
+        mapped_next = pl_frame.next != NULL;
+    }
+
+    if (!pl_render_image(ctx->renderer, &pl_frame, target, &pl_params)) {
+        ret = AVERROR_EXTERNAL;
+    }
+
+    if (capture_recover(ctx, &errors) < 0 && ret >= 0) {
+        ret = AVERROR_EXTERNAL;
+    }
+    if (mapped_prev) {
+        pl_unmap_avframe(ctx->gpu, &pl_prev);
+    }
+    if (mapped_next) {
+        pl_unmap_avframe(ctx->gpu, &pl_next);
+    }
+    pl_unmap_avframe(ctx->gpu, &pl_frame);
+    target->overlays = NULL;
+    target->num_overlays = 0;
+
+    return ret;
+}
+
+static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
+                   int width, int height, uint8_t *out, int out_stride) {
+    RendererContext *ctx = (RendererContext *)renderer;
+    struct pl_frame target = {0};
+    pl_tex cap_tex;
+    struct pl_tex_params cap_params;
+    struct pl_tex_transfer_params xfer;
+    int ret;
+
     pl_fmt fmt = pl_find_named_fmt(ctx->gpu, "rgba8");
     if (!fmt) {
-        ret = AVERROR_EXTERNAL;
-        goto out;
+        return AVERROR_EXTERNAL;
     }
     if (!(fmt->caps & PL_FMT_CAP_HOST_READABLE)) {
-        ret = AVERROR(ENOSYS);
-        goto out;
+        return AVERROR(ENOSYS);
     }
     cap_params = (struct pl_tex_params){
         .w = width,
@@ -1416,8 +1459,7 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     };
     cap_tex = pl_tex_create(ctx->gpu, &cap_params);
     if (!cap_tex) {
-        ret = AVERROR_EXTERNAL;
-        goto out;
+        return AVERROR_EXTERNAL;
     }
 
     target.num_planes = 1;
@@ -1433,53 +1475,48 @@ static int capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
     };
     target.color = pl_color_space_srgb;
 
-    struct pl_overlay overlays[LACHESIS_MAX_OVERLAYS];
-    struct pl_overlay_part parts[LACHESIS_MAX_OVERLAYS];
-    const struct pl_hook *hooks[LACHESIS_MAX_HOOKS];
-
-    setup_render(ctx, &pl_frame, &target, &pl_params, params, overlays, parts,
-                 hooks, &image);
-    deinterlace_apply(&pl_frame, &pl_params, frame, params);
-
-    if (pl_params.deinterlace_params &&
-        pl_deinterlace_needs_refs(pl_params.deinterlace_params->algo)) {
-        pl_frame.prev = map_deint_ref(ctx, ctx->prev_tex, &pl_prev, &pl_frame,
-                                      prev_ref, frame);
-        pl_frame.next = map_deint_ref(ctx, ctx->next_tex, &pl_next, &pl_frame,
-                                      next_ref, frame);
-        mapped_prev = pl_frame.prev != NULL;
-        mapped_next = pl_frame.next != NULL;
+    ret = render_offscreen(ctx, frame, params, &target, NULL);
+    if (ret >= 0) {
+        xfer = (struct pl_tex_transfer_params){
+            .tex = cap_tex,
+            .ptr = out,
+            .row_pitch = out_stride,
+        };
+        if (!pl_tex_download(ctx->gpu, &xfer)) {
+            ret = AVERROR_EXTERNAL;
+        }
     }
 
-    if (!pl_render_image(ctx->renderer, &pl_frame, &target, &pl_params)) {
+    pl_tex_destroy(ctx->gpu, &cap_tex);
+    return ret;
+}
+
+static int capture_frame(RendererContext *ctx, AVFrame *frame,
+                         RenderParams *params, AVFrame *out) {
+    uint32_t max_dim = ctx->gpu->limits.max_tex_2d_dim;
+    struct pl_frame target;
+    int ret;
+
+    if (max_dim &&
+        ((unsigned)FFMAX(frame->width, out->width) > max_dim ||
+         (unsigned)FFMAX(frame->height, out->height) > max_dim)) {
+        return AVERROR(ERANGE);
+    }
+    if (!pl_frame_recreate_from_avframe(ctx->gpu, &target, ctx->capture_tex,
+                                        out)) {
+        return AVERROR_EXTERNAL;
+    }
+    for (int i = 0; i < target.num_planes; i++) {
+        if (!target.planes[i].texture->params.host_readable) {
+            return AVERROR(ENOSYS);
+        }
+    }
+
+    ret = render_offscreen(ctx, frame, params, &target, &pl_filter_spline36);
+    if (ret >= 0 && !pl_download_avframe(ctx->gpu, &target, out)) {
         ret = AVERROR_EXTERNAL;
-        goto out;
     }
 
-    xfer = (struct pl_tex_transfer_params){
-        .tex = cap_tex,
-        .ptr = out,
-        .row_pitch = out_stride,
-    };
-    if (!pl_tex_download(ctx->gpu, &xfer)) {
-        ret = AVERROR_EXTERNAL;
-        goto out;
-    }
-
-out:
-    if (capture_recover(ctx, &errors) < 0 && ret >= 0) {
-        ret = AVERROR_EXTERNAL;
-    }
-    if (cap_tex) {
-        pl_tex_destroy(ctx->gpu, &cap_tex);
-    }
-    if (mapped_prev) {
-        pl_unmap_avframe(ctx->gpu, &pl_prev);
-    }
-    if (mapped_next) {
-        pl_unmap_avframe(ctx->gpu, &pl_next);
-    }
-    pl_unmap_avframe(ctx->gpu, &pl_frame);
     return ret;
 }
 
@@ -1550,7 +1587,7 @@ int renderer_draw_blank(Renderer *renderer, RenderParams *params) {
     return renderer_draw_frame(renderer, ctx->blank_frame, params);
 }
 
-static int self_test(Renderer *renderer, int width, int height) {
+static int capture_test(Renderer *renderer) {
     enum { size = LACHESIS_SELF_TEST_SIZE };
     RenderParams params = {.target_rect = {0, 0, size, size}};
     AVFrame *frame;
@@ -1580,6 +1617,50 @@ static int self_test(Renderer *renderer, int width, int height) {
     }
     av_free(pixels);
     av_frame_free(&frame);
+
+    return ret;
+}
+
+/* Unlike for screenshots, the planes have to be readable. */
+static int capture_frame_test(RendererContext *ctx) {
+    enum { size = LACHESIS_SELF_TEST_SIZE };
+    RenderParams params = {.target_rect = {0, 0, size, size}};
+    AVFrame *frame = alloc_self_test_frame(255);
+    AVFrame *out = av_frame_alloc();
+    int bright = 0;
+    int ret = 0;
+
+    if (out) {
+        out->format = AV_PIX_FMT_YUV420P;
+        out->width = size;
+        out->height = size;
+    }
+    /* Being out of memory is not the renderer's fault. */
+    if (frame && out && av_frame_get_buffer(out, 0) >= 0) {
+        memset(out->data[0], 0, (size_t)out->linesize[0] * size);
+        ret = capture_frame(ctx, frame, &params, out);
+        for (int y = 0; ret == 0 && y < size; y++) {
+            for (int x = 0; x < size; x++) {
+                bright += out->data[0][y * out->linesize[0] + x] >= 128;
+            }
+        }
+        if (ret == 0 && bright < size * size / 2) {
+            ret = AVERROR_EXTERNAL;
+        }
+    }
+    av_frame_free(&out);
+    av_frame_free(&frame);
+
+    return ret;
+}
+
+static int self_test(Renderer *renderer, int width, int height) {
+    enum { size = LACHESIS_SELF_TEST_SIZE };
+    RenderParams params = {.target_rect = {0, 0, size, size}};
+    AVFrame *frame;
+    int ret;
+
+    ret = capture_test(renderer);
     if (ret < 0) {
         return ret;
     }
@@ -1635,6 +1716,7 @@ static void destroy(Renderer *renderer) {
         }
         for (size_t i = 0; i < FF_ARRAY_ELEMS(ctx->tex); i++) {
             pl_tex_destroy(ctx->gpu, &ctx->tex[i]);
+            pl_tex_destroy(ctx->gpu, &ctx->capture_tex[i]);
         }
         destroy_mix_slots(ctx);
         pl_renderer_destroy(&ctx->renderer);
@@ -1662,6 +1744,15 @@ static void destroy(Renderer *renderer) {
     ctx->gpu = NULL;
 
     pl_log_destroy(&ctx->log_ctx);
+
+    if (ctx->offscreen && ctx->window) {
+        SDL_DestroyWindow(ctx->window);
+        ctx->window = NULL;
+    }
+    if (ctx->owns_video) {
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        ctx->owns_video = 0;
+    }
 }
 
 static const AVClass renderer_class = {
@@ -1839,6 +1930,140 @@ fail:
     return ret;
 }
 
+static int offscreen_try(const RendererOpenParams *params, enum RendererApi api,
+                         int attempt, Renderer **out_renderer, char *why,
+                         size_t why_size) {
+    SDL_Window *window = NULL;
+    Renderer *renderer;
+    RendererContext *ctx;
+    const char *what;
+    int ret;
+
+    SDL_ClearError();
+
+    what = api_prepare_attempt(api, attempt, params->opt);
+    if (api == RENDERER_API_OPENGL) {
+        window = SDL_CreateWindow(params->title, LACHESIS_SELF_TEST_SIZE,
+                                  LACHESIS_SELF_TEST_SIZE,
+                                  SDL_WINDOW_HIDDEN | SDL_WINDOW_OPENGL);
+        if (!window) {
+            note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
+            return AVERROR_EXTERNAL;
+        }
+    }
+
+    renderer = renderer_alloc(api);
+    if (!renderer) {
+        if (window) {
+            SDL_DestroyWindow(window);
+        }
+        return AVERROR(ENOMEM);
+    }
+    ctx = (RendererContext *)renderer;
+    ctx->offscreen = 1;
+    ctx->window = window;
+
+    ret = create(renderer, window, params->opt);
+    if (ret < 0) {
+        note_failure(why, why_size, what, SDL_GetError(), ret);
+    } else if ((ret = capture_frame_test(ctx)) < 0) {
+        note_failure(why, why_size, what, "initialized but cannot render", ret);
+    }
+    if (ret < 0) {
+        destroy(renderer);
+        av_free(renderer);
+        return ret;
+    }
+
+    *out_renderer = renderer;
+
+    return 0;
+}
+
+static int try_api(const RendererOpenParams *params, enum RendererApi api,
+                   SDL_Window **window, Renderer **out, char *why,
+                   size_t why_size) {
+    int attempts = api_num_attempts(api, params->opt);
+    int ret = AVERROR(ENOSYS);
+
+    for (int attempt = 0; attempt < attempts; attempt++) {
+        ret = window ? renderer_try(params, api, attempt, window, out, why,
+                                    why_size)
+                     : offscreen_try(params, api, attempt, out, why, why_size);
+        if (ret >= 0) {
+            break;
+        }
+    }
+
+    return ret;
+}
+
+static int offscreen_video_init(const char *driver) {
+    char *was = NULL;
+    int ret;
+
+    if (driver) {
+        was = av_strdup(SDL_GetHint(SDL_HINT_VIDEO_DRIVER));
+        SDL_SetHint(SDL_HINT_VIDEO_DRIVER, driver);
+    }
+    SDL_SetHint(SDL_HINT_MAC_BACKGROUND_APP, "1");
+    ret = SDL_InitSubSystem(SDL_INIT_VIDEO);
+    if (driver) {
+        if (was) {
+            SDL_SetHint(SDL_HINT_VIDEO_DRIVER, was);
+        } else {
+            SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
+        }
+        av_free(was);
+    }
+
+    return ret;
+}
+
+/* SDL offers its offscreen driver only when asked, and even a hidden kmsdrm
+ * window takes over the console.
+ */
+static int offscreen_open_gl(const RendererOpenParams *params, Renderer **out,
+                             char *why, size_t why_size) {
+    static const char *const drivers[] = {NULL, "offscreen"};
+    int asked = SDL_getenv("SDL_VIDEO_DRIVER") || SDL_getenv("SDL_VIDEODRIVER");
+    int had_video = SDL_WasInit(SDL_INIT_VIDEO) != 0;
+    int ret = AVERROR_EXTERNAL;
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(drivers); i++) {
+        const char *driver;
+        int offscreen, usable;
+
+        if (!had_video && !offscreen_video_init(drivers[i])) {
+            note_failure(why, why_size, api_label(RENDERER_API_OPENGL),
+                         SDL_GetError(), AVERROR_EXTERNAL);
+            if (asked) {
+                break;
+            }
+            continue;
+        }
+        driver = SDL_GetCurrentVideoDriver();
+        offscreen = driver && !strcmp(driver, "offscreen");
+        usable = had_video || asked || !driver || strcmp(driver, "kmsdrm");
+        if (!usable) {
+            log_verbose("Not making a window that would take over the console.\n");
+        } else if ((ret = try_api(params, RENDERER_API_OPENGL, NULL, out, why,
+                                  why_size)) >= 0) {
+            ((RendererContext *)*out)->owns_video = !had_video;
+            return 0;
+        }
+        if (had_video) {
+            break;
+        }
+        SDL_QuitSubSystem(SDL_INIT_VIDEO);
+        if (asked || offscreen) {
+            break;
+        }
+    }
+
+    return ret;
+}
+
 static void note_ignored_requests(Renderer *renderer) {
     if (!renderer || renderer_api(renderer) == RENDERER_API_VULKAN) {
         return;
@@ -1852,8 +2077,8 @@ static void note_ignored_requests(Renderer *renderer) {
     }
 }
 
-int renderer_open(const RendererOpenParams *params, SDL_Window **window,
-                  Renderer **out, char *why, size_t why_size) {
+static int open_any(const RendererOpenParams *params, SDL_Window **window,
+                    Renderer **out, char *why, size_t why_size) {
     enum RendererApi order[FF_ARRAY_ELEMS(renderer_api_order)];
     const char *driver = SDL_GetCurrentVideoDriver();
     size_t num = 0;
@@ -1881,7 +2106,9 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
         return AVERROR(ENOSYS);
     }
 
-    log_verbose("SDL video driver: %s.\n", driver ? driver : "none");
+    if (window) {
+        log_verbose("SDL video driver: %s.\n", driver ? driver : "none");
+    }
 
     for (int pass = 0; pass < 2; pass++) {
         int hardware_only = pass == 0 && num > 1;
@@ -1891,18 +2118,15 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
 
         for (size_t i = 0; i < num; i++) {
             enum RendererApi api = order[i];
-            int attempts = api_num_attempts(api, params->opt);
+            int ret = !window && api == RENDERER_API_OPENGL
+                ? offscreen_open_gl(params, out, why, why_size)
+                : try_api(params, api, window, out, why, why_size);
 
-            for (int attempt = 0; attempt < attempts; attempt++) {
-                int ret = renderer_try(params, api, attempt, window, out, why,
-                                       why_size);
-
-                if (ret >= 0) {
-                    note_ignored_requests(*out);
-                    return 0;
-                }
-                last = ret;
+            if (ret >= 0) {
+                note_ignored_requests(*out);
+                return 0;
             }
+            last = ret;
             if (i + 1 < num) {
                 log_verbose("The %s renderer is unavailable. Trying %s.\n",
                             api_label(api), api_label(order[i + 1]));
@@ -1918,6 +2142,16 @@ int renderer_open(const RendererOpenParams *params, SDL_Window **window,
     }
 
     return last;
+}
+
+int renderer_open(const RendererOpenParams *params, SDL_Window **window,
+                  Renderer **out, char *why, size_t why_size) {
+    return open_any(params, window, out, why, why_size);
+}
+
+int renderer_open_offscreen(const RendererOpenParams *params, Renderer **out,
+                            char *why, size_t why_size) {
+    return open_any(params, NULL, out, why, why_size);
 }
 
 enum RendererApi renderer_api(const Renderer *renderer) {
@@ -2164,6 +2398,26 @@ int renderer_capture(Renderer *renderer, AVFrame *frame, RenderParams *render_pa
         return AVERROR(EAGAIN);
     }
     ret = capture(renderer, frame, render_params, width, height, out, out_stride);
+    vo_release(ctx);
+
+    return ret;
+}
+
+int renderer_capture_frame(Renderer *renderer, AVFrame *frame,
+                           RenderParams *render_params, AVFrame *out) {
+    RendererContext *ctx = (RendererContext *)renderer;
+    int ret;
+
+    if (!vo_borrow(ctx, VO_CAPTURE_WAIT_MS)) {
+        return AVERROR(EAGAIN);
+    }
+#if LACHESIS_HAVE_OPENGL
+    gl_pin_current(ctx);
+#endif
+    ret = capture_frame(ctx, frame, render_params, out);
+#if LACHESIS_HAVE_OPENGL
+    gl_unpin_current(ctx);
+#endif
     vo_release(ctx);
 
     return ret;

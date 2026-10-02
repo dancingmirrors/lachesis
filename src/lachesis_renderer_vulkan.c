@@ -1090,8 +1090,12 @@ static int create_vk_by_placebo(Renderer *renderer,
     int num_dev_exts;
 #endif
 
-    ctx->get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
-    placebo_proc_addr = vkpresent_wrap_proc_addr(ctx->get_proc_addr);
+    if (ctx->offscreen) {
+        placebo_proc_addr = NULL;
+    } else {
+        ctx->get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr();
+        placebo_proc_addr = vkpresent_wrap_proc_addr(ctx->get_proc_addr);
+    }
     if (!want_host_image_copy(opt)) {
         placebo_proc_addr = hide_host_image_copy(placebo_proc_addr);
     }
@@ -1107,6 +1111,12 @@ static int create_vk_by_placebo(Renderer *renderer,
         return AVERROR_EXTERNAL;
     }
     ctx->inst = ctx->placebo_instance->instance;
+    if (ctx->offscreen) {
+        ctx->get_proc_addr = ctx->placebo_instance->get_proc_addr;
+        if (!want_host_image_copy(opt)) {
+            placebo_proc_addr = hide_host_image_copy(ctx->get_proc_addr);
+        }
+    }
 
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     dev_exts = av_vk_get_optional_device_extensions(&num_dev_exts);
@@ -1179,7 +1189,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     ctx->placebo_vulkan = pl_vulkan_create(ctx->log_ctx,
                                            pl_vulkan_params(
                                                .instance = ctx->placebo_instance->instance,
-                                               .get_proc_addr = ctx->placebo_instance->get_proc_addr,
+                                               .get_proc_addr = placebo_proc_addr,
                                                .surface = ctx->vk_surface,
                                                .allow_software = renderer_allow_software_gpu,
                                                .opt_extensions = opt_exts,
@@ -1360,58 +1370,11 @@ static int surface_allows_opaque(RendererContext *ctx) {
     return !!(caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR);
 }
 
-int vk_backend_create(RendererContext *ctx, SDL_Window *window,
-                      AVDictionary *opt) {
-    Renderer *renderer = &ctx->api;
+static int create_swapchain(RendererContext *ctx, SDL_Window *window,
+                            const AVDictionary *opt, int present_timing) {
     VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
     AVDictionaryEntry *entry;
-    unsigned num_ext = 0;
-    const char **ext = NULL;
-    int present_timing = 1;
-    int by_placebo;
-    int ret;
     int w, h;
-
-    entry = av_dict_get(opt, "present_timing", NULL, 0);
-    if (entry && entry->value && !strtol(entry->value, NULL, 10)) {
-        present_timing = 0;
-    }
-
-    {
-        Uint32 sdl_num_ext = 0;
-        char const *const *sdl_ext =
-            SDL_Vulkan_GetInstanceExtensions(&sdl_num_ext);
-        if (!sdl_ext) {
-            return AVERROR_EXTERNAL;
-        }
-
-        num_ext = sdl_num_ext;
-        ext = av_calloc(num_ext, sizeof(*ext));
-        if (!ext) {
-            return AVERROR(ENOMEM);
-        }
-
-        memcpy(ext, sdl_ext, num_ext * sizeof(*ext));
-    }
-
-    entry = av_dict_get(opt, "create_by_placebo", NULL, 0);
-    if (entry && entry->value) {
-        by_placebo = strtol(entry->value, NULL, 10) != 0;
-        if (!by_placebo && !want_host_image_copy(opt)) {
-        }
-    } else {
-        by_placebo = !want_host_image_copy(opt);
-    }
-
-    if (by_placebo) {
-        ret = create_vk_by_placebo(renderer, ext, num_ext, opt, present_timing);
-    } else {
-        ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt, present_timing);
-    }
-    av_free(ext);
-    if (ret < 0) {
-        return ret;
-    }
 
     if (!SDL_Vulkan_CreateSurface(window, ctx->inst, NULL, &ctx->vk_surface)) {
         return AVERROR_EXTERNAL;
@@ -1439,10 +1402,70 @@ int vk_backend_create(RendererContext *ctx, SDL_Window *window,
         return AVERROR_EXTERNAL;
     }
 
-    ctx->gpu = ctx->placebo_vulkan->gpu;
-
     SDL_GetWindowSizeInPixels(window, &w, &h);
     pl_swapchain_resize(ctx->swapchain, &w, &h);
+
+    return 0;
+}
+
+int vk_backend_create(RendererContext *ctx, SDL_Window *window,
+                      AVDictionary *opt) {
+    Renderer *renderer = &ctx->api;
+    AVDictionaryEntry *entry;
+    unsigned num_ext = 0;
+    const char **ext = NULL;
+    int present_timing = window != NULL;
+    int by_placebo;
+    int ret;
+
+    entry = av_dict_get(opt, "present_timing", NULL, 0);
+    if (entry && entry->value && !strtol(entry->value, NULL, 10)) {
+        present_timing = 0;
+    }
+
+    if (window) {
+        Uint32 sdl_num_ext = 0;
+        char const *const *sdl_ext =
+            SDL_Vulkan_GetInstanceExtensions(&sdl_num_ext);
+        if (!sdl_ext) {
+            return AVERROR_EXTERNAL;
+        }
+
+        num_ext = sdl_num_ext;
+        ext = av_calloc(num_ext, sizeof(*ext));
+        if (!ext) {
+            return AVERROR(ENOMEM);
+        }
+
+        memcpy(ext, sdl_ext, num_ext * sizeof(*ext));
+    }
+
+    entry = av_dict_get(opt, "create_by_placebo", NULL, 0);
+    if (!window) {
+        by_placebo = 1;
+    } else if (entry && entry->value) {
+        by_placebo = strtol(entry->value, NULL, 10) != 0;
+        if (!by_placebo && !want_host_image_copy(opt)) {
+        }
+    } else {
+        by_placebo = !want_host_image_copy(opt);
+    }
+
+    if (by_placebo) {
+        ret = create_vk_by_placebo(renderer, ext, num_ext, opt, present_timing);
+    } else {
+        ret = create_vk_by_hwcontext(renderer, ext, num_ext, opt, present_timing);
+    }
+    av_free(ext);
+    if (ret < 0) {
+        return ret;
+    }
+
+    if (window && (ret = create_swapchain(ctx, window, opt, present_timing)) < 0) {
+        return ret;
+    }
+
+    ctx->gpu = ctx->placebo_vulkan->gpu;
 
     ctx->vk_frame = av_frame_alloc();
     if (!ctx->vk_frame) {

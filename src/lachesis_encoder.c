@@ -99,6 +99,7 @@ typedef struct Encoder {
     AVCodecContext *venc;
     AVStream *vst;
     struct SwsContext *sws;
+    Renderer *renderer;
     AVFrame *pending;
     int64_t pending_ts;
     int pending_resent;
@@ -601,6 +602,85 @@ static int open_output(void) {
     return avformat_write_header(oc, NULL);
 }
 
+static int render_video(AVFrame *src, AVFrame **dst) {
+    RenderParams params = {
+        .target_rect = {0, 0, src->width, src->height},
+        .video_background_type = VIDEO_BACKGROUND_NONE,
+    };
+    AVFrame *frame;
+    int ret;
+
+    if (!enc.renderer) {
+        *dst = av_frame_clone(src);
+        return *dst ? 0 : AVERROR(ENOMEM);
+    }
+    frame = av_frame_alloc();
+    if (!frame) {
+        return AVERROR(ENOMEM);
+    }
+    frame->format = src->format;
+    frame->width = src->width;
+    frame->height = src->height;
+    if ((ret = av_frame_get_buffer(frame, 0)) < 0 ||
+        (ret = av_frame_copy_props(frame, src)) < 0) {
+        av_frame_free(&frame);
+        return ret;
+    }
+    /* Otherwise the target would be turned and color managed. */
+    av_frame_remove_side_data(frame, AV_FRAME_DATA_DISPLAYMATRIX);
+    av_frame_remove_side_data(frame, AV_FRAME_DATA_ICC_PROFILE);
+    ret = renderer_capture_frame(enc.renderer, src, &params, frame);
+    if (ret < 0) {
+        av_frame_free(&frame);
+        return ret;
+    }
+    *dst = frame;
+
+    return 0;
+}
+
+static int open_renderer(const Frame *vp) {
+    RendererOpenParams params = {
+        .title = program_name,
+        .exclude = no_vulkan ? 1u << RENDERER_API_VULKAN : 0,
+        .device = gpu_device,
+    };
+    AVFrame *probe = NULL;
+    const char *device;
+    char why[512];
+    int ret;
+
+    if (supersample_level == SUPERSAMPLE_OFF) {
+        return 0;
+    }
+    if (no_shader_cache && (ret = av_dict_set(&params.opt, "cache", "0", 0)) < 0) {
+        return ret;
+    }
+    ret = renderer_open_offscreen(&params, &enc.renderer, why, sizeof(why));
+    av_dict_free(&params.opt);
+    if (ret < 0) {
+        log_dead("-supersample needs a GPU, but none would render: %s.\n", why);
+        return ret;
+    }
+    if ((ret = renderer_set_supersample(enc.renderer, supersample_level)) < 0 ||
+        (ret = render_video(vp->frame, &probe)) < 0) {
+        log_dead("The %s renderer cannot supersample: %s.\n",
+                 renderer_api_name(enc.renderer), av_err2str(ret));
+        return ret;
+    }
+    av_frame_free(&probe);
+
+    device = renderer_device_name(enc.renderer);
+    if (device) {
+        log_info("Supersampling on %s (%s).\n", renderer_api_name(enc.renderer),
+                 device);
+    } else {
+        log_info("Supersampling on %s.\n", renderer_api_name(enc.renderer));
+    }
+
+    return 0;
+}
+
 static int start(VideoState *is, const Frame *vp, const Frame *af, int audio_coming) {
     double v0 = vp ? vp->pts : LACHESIS_NAN;
     double a0 = af ? af->pts : LACHESIS_NAN;
@@ -642,6 +722,9 @@ static int start(VideoState *is, const Frame *vp, const Frame *af, int audio_com
         if ((ret = setup_audio()) < 0) {
             return ret;
         }
+    }
+    if (vp && (ret = open_renderer(vp)) < 0) {
+        return ret;
     }
     if (vp && (ret = open_video_encoder(vp)) < 0) {
         log_dead("Could not open the %s encoder: %s.\n", enc.vcodec->name,
@@ -832,13 +915,13 @@ static double place_video(const Frame *vp, double *src_out, int *synced) {
 }
 
 static int take_video(const Frame *vp, double out, double src, int synced) {
-    AVFrame *frame = av_frame_clone(vp->frame);
+    AVFrame *frame = NULL;
     int64_t ts = FFMAX(video_ticks(out), 0);
     char at[16];
-    int ret = 0;
+    int ret = render_video(vp->frame, &frame);
 
-    if (!frame) {
-        return AVERROR(ENOMEM);
+    if (ret < 0) {
+        return ret;
     }
     if (enc.has_audio && enc.v_frames && synced == enc.v_free_running) {
         enc.v_free_running = !synced;
@@ -1198,6 +1281,9 @@ static void free_encoder(void) {
     enc.sws = NULL;
     avcodec_free_context(&enc.venc);
     avcodec_free_context(&enc.aenc);
+    if (enc.renderer && renderer_destroy(enc.renderer)) {
+        av_freep(&enc.renderer);
+    }
     if (enc.oc) {
         avio_closep(&enc.oc->pb);
         avformat_free_context(enc.oc);

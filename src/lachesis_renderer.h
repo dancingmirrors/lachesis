@@ -124,6 +124,9 @@ typedef struct RendererOpenParams {
 int renderer_open(const RendererOpenParams *params, SDL_Window **window,
                   Renderer **out, char *why, size_t why_size);
 
+int renderer_open_offscreen(const RendererOpenParams *params, Renderer **out,
+                            char *why, size_t why_size);
+
 enum RendererApi renderer_api(const Renderer *renderer);
 const char *renderer_api_name(const Renderer *renderer);
 const char *renderer_device_name(const Renderer *renderer);
@@ -178,6 +181,9 @@ void renderer_resume_output(Renderer *renderer);
 
 int renderer_capture(Renderer *renderer, AVFrame *frame, RenderParams *params,
                      int width, int height, uint8_t *out, int out_stride);
+
+int renderer_capture_frame(Renderer *renderer, AVFrame *frame,
+                           RenderParams *params, AVFrame *out);
 
 int renderer_resize(Renderer *renderer, int width, int height);
 

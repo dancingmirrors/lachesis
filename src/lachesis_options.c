@@ -1194,10 +1194,8 @@ static const struct {
     {"o", "hwaccel", OPT_DISABLES},
     {"o", "hwaccel-codecs", OPT_DISABLES},
     {"o", "hwaccel-max-size", OPT_DISABLES},
-    {"o", "gpu-device", OPT_DISABLES},
     {"o", "max-texture-size", OPT_DISABLES},
     {"o", "interpolate", OPT_DISABLES},
-    {"o", "supersample", OPT_DISABLES},
     {"o", "scaler", OPT_DISABLES},
     {"o", "video-bg", OPT_DISABLES},
     {"o", "video-fill", OPT_DISABLES},
@@ -1295,6 +1293,13 @@ void validate_option_relations(const OptionDef *defs) {
         }
         option_forget(defs, "benchmark");
         option_forget(defs, "nodisp");
+        if (option_origin_of(defs, "supersample") == OPT_FROM_CONFIG) {
+            supersample_level = SUPERSAMPLE_OFF;
+        }
+        if (supersample_level == SUPERSAMPLE_OFF &&
+            option_origin_of(defs, "gpu-device") == OPT_FROM_CMDLINE) {
+            /* XXX */
+        }
     }
     for (size_t i = 0; i < FF_ARRAY_ELEMS(option_relations); i++) {
         const char *a = option_relations[i].a;

@@ -304,25 +304,58 @@ static int d3d11_create_hw_device(RendererContext *ctx) {
     return 0;
 }
 
+static int d3d11_create_swapchain(RendererContext *ctx, SDL_Window *window,
+                                  HWND hwnd, int present_timing) {
+    int w, h;
+
+    SDL_GetWindowSizeInPixels(window, &w, &h);
+    if (w <= 0 || h <= 0) {
+        w = h = 1;
+    }
+
+    /* clang-format off */
+    ctx->swapchain = pl_d3d11_create_swapchain(ctx->placebo_d3d11,
+                                               pl_d3d11_swapchain_params(
+                                                   .window = hwnd,
+                                                   .width = w,
+                                                   .height = h, ));
+    /* clang-format on */
+    if (!ctx->swapchain) {
+        return AVERROR_EXTERNAL;
+    }
+
+    if (!pl_swapchain_resize(ctx->swapchain, &w, &h)) {
+        return AVERROR_EXTERNAL;
+    }
+
+    if (present_timing) {
+        d3dpresent_attach(ctx->swapchain);
+    }
+
+    return 0;
+}
+
 int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                          AVDictionary *opt) {
     const AVDictionaryEntry *entry;
     IDXGIAdapter1 *adapter;
-    HWND hwnd;
+    HWND hwnd = NULL;
     int software = force_software(opt);
-    int present_timing = 1;
-    int w, h;
+    int present_timing = window != NULL;
+    int ret;
 
     entry = av_dict_get(opt, "present_timing", NULL, 0);
     if (entry && entry->value && !strtol(entry->value, NULL, 10)) {
         present_timing = 0;
     }
 
-    hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
-                                        SDL_PROP_WINDOW_WIN32_HWND_POINTER,
-                                        NULL);
-    if (!hwnd) {
-        return AVERROR_EXTERNAL;
+    if (window) {
+        hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(window),
+                                            SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                                            NULL);
+        if (!hwnd) {
+            return AVERROR_EXTERNAL;
+        }
     }
 
     adapter = software ? NULL : d3d11_pick_adapter();
@@ -347,28 +380,9 @@ int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
     ctx->gpu = ctx->placebo_d3d11->gpu;
     d3d11_protect_device(ctx);
 
-    SDL_GetWindowSizeInPixels(window, &w, &h);
-    if (w <= 0 || h <= 0) {
-        w = h = 1;
-    }
-
-    /* clang-format off */
-    ctx->swapchain = pl_d3d11_create_swapchain(ctx->placebo_d3d11,
-                                               pl_d3d11_swapchain_params(
-                                                   .window = hwnd,
-                                                   .width = w,
-                                                   .height = h, ));
-    /* clang-format on */
-    if (!ctx->swapchain) {
-        return AVERROR_EXTERNAL;
-    }
-
-    if (!pl_swapchain_resize(ctx->swapchain, &w, &h)) {
-        return AVERROR_EXTERNAL;
-    }
-
-    if (present_timing) {
-        d3dpresent_attach(ctx->swapchain);
+    if (window &&
+        (ret = d3d11_create_swapchain(ctx, window, hwnd, present_timing)) < 0) {
+        return ret;
     }
 
     snprintf(ctx->api_name, sizeof(ctx->api_name), "Direct3D 11");

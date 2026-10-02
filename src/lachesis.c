@@ -1125,6 +1125,11 @@ int poll_quit_request(void) {
     if (quit_signal) {
         return 1;
     }
+    /* A hidden window still has messages to answer, but no events we want. */
+    if (SDL_WasInit(SDL_INIT_VIDEO)) {
+        SDL_PumpEvents();
+        SDL_FlushEvents(SDL_EVENT_QUIT + 1, SDL_EVENT_USER - 1);
+    }
 
     return SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_QUIT, SDL_EVENT_QUIT) > 0;
 }
