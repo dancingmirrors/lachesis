@@ -1,0 +1,102 @@
+name: lachesis macOS
+
+on:
+  push:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    env:
+      PKG_CONFIG_PATH: /usr/local/lib/pkgconfig:/opt/homebrew/lib/pkgconfig
+      DYLD_FALLBACK_LIBRARY_PATH: /usr/local/lib:/opt/homebrew/lib
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Setup ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.ccache
+          key: ${{ runner.os }}-ccache-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-
+
+      - name: Install and build dependencies
+        run: |
+          set -x
+
+          brew update
+          brew untap aws/tap || true
+          brew install \
+            ccache \
+            cmake \
+            meson \
+            ninja \
+            nasm \
+            yasm \
+            pkg-config \
+            sdl3 \
+            libarchive \
+            libass \
+            shaderc \
+            glslang \
+            molten-vk \
+            vulkan-headers \
+            vulkan-loader \
+            x264
+
+          git clone --depth 1 --recursive https://github.com/haasn/libplacebo.git
+          cd libplacebo
+          meson setup --prefix=/usr/local -Dlibdir=lib build
+          ninja -v -C build
+          sudo ninja -C build install
+          cd ..
+
+          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git
+          cd FFmpeg
+          ./configure --prefix=/usr/local \
+                      --enable-gpl \
+                      --enable-libplacebo \
+                      --enable-libx264 \
+                      --enable-vulkan \
+                      --cc="ccache cc"
+          make -j$(sysctl -n hw.ncpu)
+          sudo make install
+          cd ..
+
+      - name: Configure ccache
+        run: |
+          ccache --version
+          ccache --set-config=cache_dir=$HOME/.ccache
+          ccache --set-config=max_size=999M
+          ccache --set-config=compression=true
+          ccache --zero-stats
+          mkdir -p $HOME/.ccache
+
+      - name: Build, install, run
+        run: |
+          set -ex
+
+          export LACHESIS_LEAK_REPORT=1
+          export PKG_CONFIG_PATH="$(brew --prefix libarchive)/lib/pkgconfig:$PKG_CONFIG_PATH"
+          CFLAGS="-Werror" ./configure
+
+          ninja -v -C build
+          sudo ninja -C build install
+
+          lachesis -h
+
+          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
+          ./build/lachesis -an -gpu-api vulkan -loglevel debug /tmp/test.mp4
+          ./build/lachesis -an -gpu-api opengl -loglevel debug /tmp/test.mp4
+
+          ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=50:duration=1 \
+            -vf tinterlace=mode=interleave_top -c:v libx264 \
+            -flags +ilme+ildct -x264opts interlaced=1:tff=1 \
+            -pix_fmt yuv420p /tmp/interlaced.mp4
+          ./build/lachesis -an -deinterlace -gpu-api vulkan -loglevel debug /tmp/interlaced.mp4
+          ./build/lachesis -an -deinterlace -gpu-api opengl -loglevel debug /tmp/interlaced.mp4
