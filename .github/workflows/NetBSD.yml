@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies, build, run
         uses: vmactions/netbsd-vm@v1
         with:
-          release: "10.1"
+          release: "10.2"
           usesh: true
           prepare: |
             set -ex
