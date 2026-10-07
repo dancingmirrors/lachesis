@@ -538,6 +538,85 @@ static int supersample_active(const RendererContext *ctx,
         !image->moving;
 }
 
+#if PL_API_VER < 351
+static bool samples_directly(const struct pl_filter_config *config) {
+    return pl_filter_config_eq(config, &pl_filter_bilinear) ||
+        pl_filter_config_eq(config, &pl_filter_bicubic) ||
+        pl_filter_config_eq(config, &pl_filter_hermite) ||
+        pl_filter_config_eq(config, &pl_filter_gaussian) ||
+        pl_filter_config_eq(config, &pl_filter_nearest);
+}
+
+/* Fixed by libplacebo commit 118d8106640796d3f2ceb55f8634a32a58a47aa2. */
+static bool downscaler_garbles(RendererContext *ctx,
+                               const struct pl_filter_config *config,
+                               float ratio, bool skip_aa) {
+    struct pl_filter_params fparams = {
+        .lut_entries = 2,
+        .max_row_size = (int)(ctx->gpu->limits.max_tex_2d_dim / 4),
+        .row_stride_align = 4,
+    };
+    float widen = skip_aa ? 1.0f : (float)(1.0 / (double)ratio);
+    pl_filter filter;
+    bool garbles;
+
+    fparams.config = *config;
+    fparams.config.blur = (config->blur ? config->blur : 1.0f) * FFMAX(widen, 1.0f);
+    filter = pl_filter_generate(ctx->log_ctx, &fparams);
+    garbles = filter && filter->radius == filter->radius_zero &&
+        filter->row_size % 4;
+    pl_filter_free(&filter);
+
+    return garbles;
+}
+
+static void avoid_garbling_downscaler(RendererContext *ctx,
+                                      struct pl_render_params *pl_params,
+                                      const struct pl_frame *image,
+                                      const struct pl_frame *target) {
+    const struct pl_filter_config *config = pl_params->downscaler;
+    float w = fabsf(pl_rect_w(image->crop));
+    float h = fabsf(pl_rect_h(image->crop));
+    bool skip_aa = pl_params->skip_anti_aliasing;
+    float ratio[2];
+
+    if (!config || config->polar || config->kernel->opaque ||
+        (skip_aa && samples_directly(config))) {
+        return;
+    }
+    if (pl_rotation_normalize(image->rotation - target->rotation) % 2) {
+        FFSWAP(float, w, h);
+    }
+    if (w <= 0.0f || h <= 0.0f) {
+        return;
+    }
+    ratio[0] = (float)(fabs((double)pl_rect_w(target->crop)) / (double)w);
+    ratio[1] = (float)(fabs((double)pl_rect_h(target->crop)) / (double)h);
+    if (!(ratio[0] < 1.0f - 1e-6f || ratio[1] < 1.0f - 1e-6f)) {
+        return;
+    }
+    if (config != ctx->garble_config || ratio[0] != ctx->garble_ratio[0] ||
+        ratio[1] != ctx->garble_ratio[1]) {
+        ctx->garble_config = config;
+        ctx->garble_ratio[0] = ratio[0];
+        ctx->garble_ratio[1] = ratio[1];
+        ctx->garbles = false;
+        for (int i = 0; i < 2 && !ctx->garbles; i++) {
+            ctx->garbles = fabsf(ratio[i] - 1.0f) >= 1e-6f &&
+                downscaler_garbles(ctx, config, ratio[i], skip_aa);
+        }
+        if (ctx->garbles) {
+            log_verbose("libplacebo before 7.351 garbles %s here, so scaling "
+                        "with mitchell instead.\n",
+                        config->name);
+        }
+    }
+    if (ctx->garbles) {
+        pl_params->downscaler = &pl_filter_mitchell;
+    }
+}
+#endif
+
 static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
                          struct pl_frame *target, struct pl_render_params *pl_params,
                          RenderParams *params, struct pl_overlay *overlays,
@@ -717,6 +796,12 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
         target->overlays = overlays;
         target->num_overlays = num_overlays;
     }
+
+#if PL_API_VER < 351
+    if (!view360) {
+        avoid_garbling_downscaler(ctx, pl_params, pl_frame, target);
+    }
+#endif
 }
 
 #define LACHESIS_STAT_EMA_FRAMES 30
@@ -1545,7 +1630,7 @@ static int capture_frame(RendererContext *ctx, AVFrame *frame,
     }
 
     ret = render_offscreen(ctx, frame, params, &target, &pl_filter_spline36);
-    if (ret >= 0 && !pl_download_avframe(ctx->gpu, &target, out)) {
+    if (ret >= 0 && !download_avframe(ctx, &target, out)) {
         ret = AVERROR_EXTERNAL;
     }
 

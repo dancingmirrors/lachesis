@@ -320,6 +320,12 @@ typedef struct RendererContext {
 
     int benchmark;
 
+#if PL_API_VER < 351
+    const struct pl_filter_config *garble_config;
+    float garble_ratio[2];
+    bool garbles;
+#endif
+
     double stat_acquire_ms;
     double stat_convert_ms;
     double stat_render_ms;
@@ -417,6 +423,8 @@ bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
                      struct pl_frame *out);
 bool map_video_frame(RendererContext *ctx, AVFrame *frame,
                      struct pl_frame *out);
+bool download_avframe(RendererContext *ctx, const struct pl_frame *frame,
+                      AVFrame *out);
 const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
                                      struct pl_frame *out,
                                      const struct pl_frame *cur, AVFrame *frame,

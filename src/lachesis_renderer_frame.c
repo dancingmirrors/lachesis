@@ -30,6 +30,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <libplacebo/utils/libav.h>
 
@@ -344,6 +346,124 @@ int convert_frame(Renderer *renderer, AVFrame *frame) {
     return convert_frame_readback(ctx, frame);
 }
 
+#if PL_API_VER <= 360
+/* Fixed by libplacebo commit c93aa134ab62365ce1177efff99b8e1e66a818e7. */
+static bool callbacks_leak(const RendererContext *ctx) {
+#if PL_API_VER == 360
+    if (pl_fix_ver() >= 1) {
+        return false;
+    }
+#endif
+    return ctx->api.backend == RENDERER_API_OPENGL &&
+        ctx->gpu->limits.callbacks;
+}
+
+static bool map_avframe_without_callbacks(RendererContext *ctx,
+                                          const AVFrame *frame, pl_tex *tex,
+                                          struct pl_frame *out) {
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
+    struct pl_plane_data data[4] = {0};
+    struct pl_avframe_priv *priv = malloc(sizeof(*priv));
+    int planes;
+    bool ok;
+
+    if (priv && !(priv->avframe = av_frame_clone(frame))) {
+        free(priv);
+        priv = NULL;
+    }
+    if (!priv) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    pl_frame_from_avframe(out, frame);
+    out->user_data = priv;
+#ifdef PL_HAVE_LAV_DOLBY_VISION
+    {
+        AVFrameSideData *sd =
+            av_frame_get_side_data(frame, AV_FRAME_DATA_DOVI_METADATA);
+        const AVDOVIMetadata *dovi = sd ? (const AVDOVIMetadata *)sd->data
+                                        : NULL;
+
+        if (dovi && av_dovi_get_header(dovi)->disable_residual_flag) {
+            pl_map_avdovi_metadata(&out->color, &out->repr, &priv->dovi, dovi);
+        }
+#ifdef PL_HAVE_LIBDOVI
+        sd = av_frame_get_side_data(frame, AV_FRAME_DATA_DOVI_RPU_BUFFER);
+        if (sd) {
+            pl_hdr_metadata_from_dovi_rpu(&out->color.hdr, sd->buf->data,
+                                          sd->buf->size);
+        }
+#endif
+    }
+#endif
+
+    planes = pl_plane_data_from_pixfmt(data, &out->repr.bits, frame->format);
+    ok = planes > 0;
+    for (int p = 0; ok && p < planes; p++) {
+        int chroma = p == 1 || p == 2;
+        int linesize = frame->linesize[p];
+
+        data[p].width = AV_CEIL_RSHIFT(frame->width,
+                                       chroma ? desc->log2_chroma_w : 0);
+        data[p].height = AV_CEIL_RSHIFT(frame->height,
+                                        chroma ? desc->log2_chroma_h : 0);
+        data[p].pixels = frame->data[p];
+        data[p].row_stride = (size_t)linesize;
+        if (linesize < 0) {
+            data[p].pixels = frame->data[p] +
+                (ptrdiff_t)linesize * (data[p].height - 1);
+            data[p].row_stride = (size_t)-linesize;
+            out->planes[p].flipped = true;
+        }
+        ok = pl_upload_plane(ctx->gpu, &out->planes[p], &tex[p], &data[p]);
+    }
+    if (!ok) {
+        pl_unmap_avframe(ctx->gpu, out);
+    }
+
+    return ok;
+}
+#endif
+
+static bool map_avframe(RendererContext *ctx, const AVFrame *frame,
+                        pl_tex *tex, struct pl_frame *out) {
+#if PL_API_VER <= 360
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
+
+    if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
+        callbacks_leak(ctx)) {
+        return map_avframe_without_callbacks(ctx, frame, tex, out);
+    }
+#endif
+
+    return pl_map_avframe_ex(ctx->gpu, out,
+                             pl_avframe_params(.frame = frame, .tex = tex));
+}
+
+bool download_avframe(RendererContext *ctx, const struct pl_frame *frame,
+                      AVFrame *out) {
+#if PL_API_VER <= 360
+    if (callbacks_leak(ctx)) {
+        if (frame->num_planes != av_pix_fmt_count_planes(out->format)) {
+            return false;
+        }
+        for (int p = 0; p < frame->num_planes; p++) {
+            struct pl_tex_transfer_params xfer = {
+                .tex = frame->planes[p].texture,
+                .row_pitch = (size_t)out->linesize[p],
+                .ptr = out->data[p],
+            };
+            if (!pl_tex_download(ctx->gpu, &xfer)) {
+                return false;
+            }
+        }
+        return true;
+    }
+#endif
+
+    return pl_download_avframe(ctx->gpu, frame, out);
+}
+
 bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
                      struct pl_frame *out) {
 #if LACHESIS_HAVE_D3D11
@@ -359,8 +479,7 @@ bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
     }
 #endif
 
-    if (pl_map_avframe_ex(ctx->gpu, out,
-                          pl_avframe_params(.frame = frame, .tex = tex))) {
+    if (map_avframe(ctx, frame, tex, out)) {
         return true;
     }
 
@@ -372,8 +491,7 @@ bool map_avframe_tex(RendererContext *ctx, AVFrame *frame, pl_tex *tex,
         return false;
     }
 
-    return pl_map_avframe_ex(ctx->gpu, out,
-                             pl_avframe_params(.frame = frame, .tex = tex));
+    return map_avframe(ctx, frame, tex, out);
 }
 
 bool map_video_frame(RendererContext *ctx, AVFrame *frame,
@@ -414,8 +532,7 @@ const struct pl_frame *map_deint_ref(RendererContext *ctx, pl_tex *tex,
         }
     } else
 #endif
-        if (!pl_map_avframe_ex(ctx->gpu, out,
-                               pl_avframe_params(.frame = frame, .tex = tex))) {
+        if (!map_avframe(ctx, frame, tex, out)) {
         return NULL;
     }
     if (out->num_planes != cur->num_planes) {
