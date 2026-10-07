@@ -2397,8 +2397,21 @@ int renderer_device_node(Renderer *renderer, char *buf, size_t size) {
     return AVERROR(ENOSYS);
 }
 
-const char *renderer_wanted_device(void) {
-    return renderer_want_device;
+int renderer_device_node_for(const char *want, char *buf, size_t size) {
+    if (!buf || !size) {
+        return AVERROR(EINVAL);
+    }
+    buf[0] = '\0';
+
+#ifdef LACHESIS_HAVE_VK_DRM_NODE
+    if (want && want[0]) {
+        return vk_wanted_render_node(want, buf, size);
+    }
+#else
+    (void)want;
+#endif
+
+    return AVERROR(ENOSYS);
 }
 
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {

@@ -159,6 +159,7 @@ static int component_open(VideoState *is, int stream_index) {
     AVChannelLayout ch_layout = {0};
     int spdif = 0;
     int hwaccel_probe = 0;
+    int retry_in_software = 0;
     int ret = 0;
 
     if (stream_index < 0 || stream_index >= (int)ic->nb_streams) {
@@ -260,7 +261,7 @@ static int component_open(VideoState *is, int stream_index) {
     }
 
     if (avctx->codec_type == AVMEDIA_TYPE_VIDEO && !is->hwaccel_off &&
-        !encoder_enabled()) {
+        (hwaccel || !encoder_enabled())) {
         AVStream *st = ic->streams[stream_index];
         const AVCodec *sw_codec = codec;
         int still_image = is->is_still_image ||
@@ -270,6 +271,7 @@ static int component_open(VideoState *is, int stream_index) {
                                   av_guess_frame_rate(ic, st, NULL),
                                   still_image);
         if (ret < 0) {
+            is->hwaccel_unavailable = 1;
             goto fail;
         }
         hwaccel_probe = codec != sw_codec;
@@ -295,6 +297,7 @@ static int component_open(VideoState *is, int stream_index) {
 
     if (!spdif) {
         if ((ret = avcodec_open2(avctx, codec, &opts)) < 0) {
+            retry_in_software = hwaccel_probe;
             goto fail;
         }
         ret = check_avoptions(opts);
@@ -411,6 +414,11 @@ fail:
 out:
     av_channel_layout_uninit(&ch_layout);
     av_dict_free(&opts);
+    if (retry_in_software) {
+        log_warn("Falling back to software decoding.\n");
+        is->hwaccel_off = 1;
+        return component_open(is, stream_index);
+    }
 
     return ret;
 }
@@ -1413,8 +1421,7 @@ int read_thread(void *arg) {
 
     if (st_index[AVMEDIA_TYPE_VIDEO] >= 0) {
         ret = stream_component_open(is, st_index[AVMEDIA_TYPE_VIDEO]);
-        if (ret < 0 && hwaccel && !no_hwaccel && !is->abort_request &&
-            !encoder_enabled()) {
+        if (ret < 0 && is->hwaccel_unavailable && !is->abort_request) {
             fatal_error_pending = 1;
             goto fail;
         }

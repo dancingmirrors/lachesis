@@ -442,6 +442,7 @@ int vk_backend_create(RendererContext *ctx, SDL_Window *window,
 void vk_backend_destroy(RendererContext *ctx);
 int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr, VkInstance inst,
                    VkPhysicalDevice phys, char *buf, size_t size);
+int vk_wanted_render_node(const char *want, char *buf, size_t size);
 int list_vk_devices_standalone(GpuDeviceNames names, enum GpuClass *classes);
 #endif
 

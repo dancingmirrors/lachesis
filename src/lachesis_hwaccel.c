@@ -188,12 +188,18 @@ static int drm_driver_does_vaapi(const char *driver) {
     return 0;
 }
 
-static int rank_gpu_node(const HwaccelGpuNode *node) {
-    const char *want = renderer_wanted_device();
+static int rank_gpu_node(const HwaccelGpuNode *node, const char *want,
+                         const char *wanted) {
+    const char *base = strrchr(node->path, '/');
     char described[128];
 
     if (node->is_renderer) {
         return 0;
+    }
+    if (want &&
+        (!strcmp(node->path, wanted) || !strcmp(node->path, want) ||
+         (base && !strcmp(base + 1, want)))) {
+        return 1;
     }
     if (want) {
         const char *vendor = drm_node_vendor(node->path);
@@ -203,17 +209,24 @@ static int rank_gpu_node(const HwaccelGpuNode *node) {
         if (described[0] &&
             (av_stristr(described, want) ||
              hwaccel_glob_match(want, described))) {
-            return 1;
+            return 2;
         }
     }
 
-    return drm_driver_does_vaapi(node->driver) ? 2 : 3;
+    return drm_driver_does_vaapi(node->driver) ? 3 : 4;
 }
 
-static int list_gpu_nodes(const char *own, HwaccelGpuNode *nodes, int max) {
+static int names_node(const char *want) {
+    return !strncmp(want, "/dev/dri/", 9) || !strncmp(want, "renderD", 7);
+}
+
+static int list_gpu_nodes(const char *own, const char *wanted, int ask,
+                          HwaccelGpuNode *nodes, int max) {
+    const char *want = gpu_device && gpu_device[0] ? gpu_device : NULL;
     int ranks[HWACCEL_MAX_GPU_NODES];
     struct dirent *ent;
     DIR *dir;
+    int matched = 0;
     int num = 0;
 
     if (max <= 0) {
@@ -259,7 +272,11 @@ static int list_gpu_nodes(const char *own, HwaccelGpuNode *nodes, int max) {
     closedir(dir);
 
     for (int i = 0; i < num; i++) {
-        ranks[i] = rank_gpu_node(&nodes[i]);
+        ranks[i] = rank_gpu_node(&nodes[i], want, wanted);
+        matched |= ranks[i] == 1 || ranks[i] == 2;
+    }
+    if (ask && num && !matched) {
+        log_warn("No DRM render node matches '%s'.\n", want);
     }
     for (int i = 1; i < num; i++) {
         HwaccelGpuNode hold = nodes[i];
@@ -280,12 +297,18 @@ static int list_gpu_nodes(const char *own, HwaccelGpuNode *nodes, int max) {
 
 static int gpu_nodes(HwaccelGpuNode *nodes, int max) {
     char own[64];
+    char wanted[64] = "";
+    int ask = 0;
 
     if (renderer_device_node(renderer, own, sizeof(own)) < 0) {
         own[0] = '\0';
+        ask = gpu_device && gpu_device[0] && hwaccel_method_takes_node(hwaccel);
+        if (ask && !names_node(gpu_device)) {
+            renderer_device_node_for(gpu_device, wanted, sizeof(wanted));
+        }
     }
 
-    return list_gpu_nodes(own, nodes, max);
+    return list_gpu_nodes(own, wanted, ask, nodes, max);
 }
 
 #else /* !LACHESIS_HAVE_DRM_NODES */
@@ -305,6 +328,7 @@ static int hwdownload_alloc(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
     const AVHWFramesContext *frames =
         (const AVHWFramesContext *)src->hw_frames_ctx->data;
     enum AVPixelFormat *formats;
+    enum AVPixelFormat format;
     int ret;
 
     if (!dl->pool || dl->width != frames->width ||
@@ -315,9 +339,16 @@ static int hwdownload_alloc(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
         if (ret < 0) {
             return ret;
         }
-        ret = formats[0] == AV_PIX_FMT_NONE
+        format = formats[0];
+        for (int i = 0; formats[i] != AV_PIX_FMT_NONE; i++) {
+            if (formats[i] == frames->sw_format) {
+                format = formats[i];
+                break;
+            }
+        }
+        ret = format == AV_PIX_FMT_NONE
             ? AVERROR(ENOSYS)
-            : av_image_get_buffer_size(formats[0], frames->width,
+            : av_image_get_buffer_size(format, frames->width,
                                        frames->height,
                                        LACHESIS_READBACK_ALIGN);
         if (ret < 0) {
@@ -331,7 +362,7 @@ static int hwdownload_alloc(HwDownload *dl, AVFrame *dst, const AVFrame *src) {
             av_freep(&formats);
             return AVERROR(ENOMEM);
         }
-        dl->format = formats[0];
+        dl->format = format;
         dl->sw_format = frames->sw_format;
         dl->width = frames->width;
         dl->height = frames->height;
@@ -394,6 +425,10 @@ typedef struct HwaccelGpus {
 
 static int hwaccel_takes_node(enum AVHWDeviceType type) {
     return type == AV_HWDEVICE_TYPE_VAAPI || type == AV_HWDEVICE_TYPE_DRM;
+}
+
+int hwaccel_method_takes_node(const char *name) {
+    return name && hwaccel_takes_node(av_hwdevice_find_type_by_name(name));
 }
 
 static void hwaccel_list_gpus(HwaccelGpus *gpus) {

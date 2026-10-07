@@ -1756,6 +1756,18 @@ av_noreturn void encoder_run(VideoState *is) {
             ret = AVERROR(EIO);
             break;
         }
+        if (!enc.started && (ret = hwaccel_check_fallback(is)) < 0 &&
+            !(ret == AVERROR(ESPIPE) && is->realtime)) {
+            if (ret == AVERROR(ESPIPE)) {
+                log_dead("Could not go back to the start of '%s' to decode it "
+                         "in software.\n",
+                         is->filename);
+            } else {
+                log_dead("Could not reopen '%s' to decode it in software: %s.\n",
+                         is->filename, av_err2str(ret));
+            }
+            break;
+        }
         ret = encode_step(is, &wait_on);
         if (ret == AVERROR_EOF) {
             ret = 0;

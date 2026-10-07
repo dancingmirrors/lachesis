@@ -42,6 +42,8 @@ void hwdownload_free(HwDownload *dl);
 
 int hwaccel_glob_match(const char *pattern, const char *text);
 
+int hwaccel_method_takes_node(const char *name);
+
 #define HWACCEL_EXTRA_FRAMES 6
 
 int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,

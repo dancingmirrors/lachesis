@@ -158,8 +158,7 @@ int renderer_can_refine_hw_frames(Renderer *renderer);
 int renderer_refine_hw_frames(Renderer *renderer, AVBufferRef *frames_ref);
 
 int renderer_device_node(Renderer *renderer, char *buf, size_t size);
-
-const char *renderer_wanted_device(void);
+int renderer_device_node_for(const char *want, char *buf, size_t size);
 
 /* Call only from the event loop. Safe to call with a NULL renderer. */
 int renderer_take_image_repaint(Renderer *renderer);

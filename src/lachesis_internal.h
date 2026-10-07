@@ -239,6 +239,7 @@ typedef struct VideoState {
     AVStream *video_st;
     PacketQueue videoq;
     int hwaccel_off;
+    int hwaccel_unavailable;
     /* Maximum duration of a frame, above which we consider the jump a timestamp discontinuity. */
     double max_frame_duration;
     struct SwsContext *sub_convert_ctx;
@@ -422,5 +423,6 @@ void playlist_drop_current(VideoState **pis, int keep_paused);
 void render_fault_fallback(VideoState **pis);
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event);
 int poll_quit_request(void);
+int hwaccel_check_fallback(VideoState *is);
 
 #endif /* LACHESIS_INTERNAL_H */

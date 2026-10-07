@@ -166,7 +166,7 @@ static int add_device_extension(const AVDictionary *opt,
 
 static int list_vk_devices(PFN_vkGetInstanceProcAddr get_proc_addr,
                            VkInstance inst, GpuDeviceNames names,
-                           enum GpuClass *classes) {
+                           enum GpuClass *classes, VkPhysicalDevice *handles) {
     PFN_vkEnumeratePhysicalDevices enumerate;
     PFN_vkGetPhysicalDeviceProperties get_props;
     VkPhysicalDevice devices[MAX_GPU_DEVICES];
@@ -191,6 +191,9 @@ static int list_vk_devices(PFN_vkGetInstanceProcAddr get_proc_addr,
 
         get_props(devices[i], &props);
         snprintf(names[i], 256, "%s", props.deviceName);
+        if (handles) {
+            handles[i] = devices[i];
+        }
         if (!classes) {
             continue;
         }
@@ -269,7 +272,7 @@ int list_vk_devices_standalone(GpuDeviceNames names,
         return AVERROR_EXTERNAL;
     }
 
-    num = list_vk_devices(get_proc_addr, inst, names, classes);
+    num = list_vk_devices(get_proc_addr, inst, names, classes, NULL);
 
     destroy_instance =
         (PFN_vkDestroyInstance)get_proc_addr(inst, "vkDestroyInstance");
@@ -812,6 +815,31 @@ int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr,
     return 0;
 }
 
+/* Via libplacebo rather than SDL so a decoder can ask from its thread. */
+int vk_wanted_render_node(const char *want, char *buf, size_t size) {
+    VkPhysicalDevice handles[MAX_GPU_DEVICES];
+    enum GpuClass classes[MAX_GPU_DEVICES];
+    GpuDeviceNames names;
+    pl_vk_inst inst = pl_vk_inst_create(NULL, NULL);
+    int num, match;
+    int ret = AVERROR(ENOSYS);
+
+    buf[0] = '\0';
+    if (!inst) {
+        return AVERROR_EXTERNAL;
+    }
+    num = list_vk_devices(inst->get_proc_addr, inst->instance, names, classes,
+                          handles);
+    match = num > 0 ? renderer_match_gpu_device(names, classes, num, want) : -1;
+    if (match >= 0) {
+        ret = vk_render_node(inst->get_proc_addr, inst->instance, handles[match],
+                             buf, size);
+    }
+    pl_vk_inst_destroy(&inst);
+
+    return ret;
+}
+
 #endif /* LACHESIS_HAVE_VK_DRM_NODE */
 
 static int create_vk_by_hwcontext(Renderer *renderer,
@@ -1165,7 +1193,7 @@ static int create_vk_by_placebo(Renderer *renderer,
         enum GpuClass classes[MAX_GPU_DEVICES];
         int num = list_vk_devices(ctx->get_proc_addr,
                                   ctx->placebo_instance->instance, names,
-                                  classes);
+                                  classes, NULL);
 
         renderer_report_gpu_devices("Vulkan", names, num, 1);
 

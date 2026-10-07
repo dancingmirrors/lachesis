@@ -55,6 +55,7 @@
 #include "lachesis_aspect.h"
 #include "lachesis_audio.h"
 #include "lachesis_encoder.h"
+#include "lachesis_hwaccel.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
@@ -1183,9 +1184,6 @@ static const struct {
     {"o", "mute", OPT_DISABLES},
     {"o", "audio-spdif", OPT_DISABLES},
     {"o", "audio-spdif-force", OPT_DISABLES},
-    {"o", "hwaccel", OPT_DISABLES},
-    {"o", "hwaccel-codecs", OPT_DISABLES},
-    {"o", "hwaccel-max-size", OPT_DISABLES},
     {"o", "max-texture-size", OPT_DISABLES},
     {"o", "scaler", OPT_DISABLES},
     {"o", "video-bg", OPT_DISABLES},
@@ -1208,13 +1206,15 @@ static const struct {
 static const char *const gpu_users[] = {"supersample", "deinterlace", "interpolate"};
 static const char *const gpu_options[] = {
     "gpu-api",
-    "gpu-device",
     "gpu-params",
     "max-glsl-version",
     "no-shader-cache",
     "no-vulkan",
     "shader-cache-dir",
 };
+static const char *const device_options[] = {"gpu-device"};
+static const char *const hwaccel_users[] = {"hwaccel"};
+static const char *const hwaccel_options[] = {"hwaccel-codecs", "hwaccel-max-size"};
 static const char *const refresh_users[] = {"interpolate"};
 static const char *const refresh_options[] = {"display-fps"};
 
@@ -1246,9 +1246,18 @@ static int option_forgettable(const OptionDef *po) {
         (po->type == OPT_TYPE_FUNC && po->implied_no != NULL);
 }
 
-static void option_forget(const OptionDef *defs, const char *name) {
+static void option_forget_origin(const OptionDef *defs, const char *name) {
     const OptionDef *po = find_option(defs, name);
     size_t i = (size_t)(po - defs);
+
+    if (po->name && i < FF_ARRAY_ELEMS(option_origin)) {
+        option_origin[i] = OPT_FROM_NOWHERE;
+        option_given_as[i] = NULL;
+    }
+}
+
+static void option_forget(const OptionDef *defs, const char *name) {
+    const OptionDef *po = find_option(defs, name);
 
     if (!po->name) {
         return;
@@ -1261,10 +1270,7 @@ static void option_forget(const OptionDef *defs, const char *name) {
     } else {
         po->u.func_arg(NULL, po->name, po->implied_no);
     }
-    if (i < FF_ARRAY_ELEMS(option_origin)) {
-        option_origin[i] = OPT_FROM_NOWHERE;
-        option_given_as[i] = NULL;
-    }
+    option_forget_origin(defs, name);
 }
 
 void validate_option_tables(const OptionDef *defs) {
@@ -1286,6 +1292,15 @@ void validate_option_tables(const OptionDef *defs) {
     }
     for (size_t i = 0; i < FF_ARRAY_ELEMS(gpu_options); i++) {
         av_assert0(find_option(defs, gpu_options[i])->name);
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(device_options); i++) {
+        av_assert0(find_option(defs, device_options[i])->name);
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(hwaccel_users); i++) {
+        av_assert0(find_option(defs, hwaccel_users[i])->name);
+    }
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(hwaccel_options); i++) {
+        av_assert0(find_option(defs, hwaccel_options[i])->name);
     }
     for (size_t i = 0; i < FF_ARRAY_ELEMS(refresh_users); i++) {
         av_assert0(find_option(defs, refresh_users[i])->name);
@@ -1358,6 +1373,10 @@ static void validate_gpu_options(const OptionDef *defs) {
     }
     validate_offscreen_options(defs, gpu_users, FF_ARRAY_ELEMS(gpu_users),
                                gpu_options, FF_ARRAY_ELEMS(gpu_options));
+    if (!hwaccel_method_takes_node(hwaccel) || option_is_disabled(defs, "hwaccel")) {
+        validate_offscreen_options(defs, gpu_users, FF_ARRAY_ELEMS(gpu_users),
+                                   device_options, FF_ARRAY_ELEMS(device_options));
+    }
 }
 
 void validate_option_relations(const OptionDef *defs) {
@@ -1372,8 +1391,21 @@ void validate_option_relations(const OptionDef *defs) {
                      "-o was given.\n");
             option_forget(defs, "normalize");
         }
+        if (option_origin_of(defs, "hwaccel") == OPT_FROM_CONFIG && hwaccel &&
+            !no_hwaccel) {
+            log_warn("-hwaccel from the configuration file is ignored because "
+                     "-o was given.\n");
+        }
+        if (option_origin_of(defs, "hwaccel") == OPT_FROM_CONFIG || no_hwaccel) {
+            av_freep(&hwaccel);
+        }
+        if (!hwaccel) {
+            option_forget_origin(defs, "hwaccel");
+        }
     }
     validate_gpu_options(defs);
+    validate_offscreen_options(defs, hwaccel_users, FF_ARRAY_ELEMS(hwaccel_users),
+                               hwaccel_options, FF_ARRAY_ELEMS(hwaccel_options));
     validate_offscreen_options(defs, refresh_users, FF_ARRAY_ELEMS(refresh_users),
                                refresh_options, FF_ARRAY_ELEMS(refresh_options));
     if (option_origin_of(defs, "o") && option_origin_of(defs, "deinterlace") &&

@@ -1137,12 +1137,13 @@ int poll_quit_request(void) {
     return SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_QUIT, SDL_EVENT_QUIT) > 0;
 }
 
-static void hwaccel_check_fallback(VideoState *is) {
+int hwaccel_check_fallback(VideoState *is) {
     int stream_index;
     double now;
+    int ret;
 
     if (!is || is->video_stream < 0 || !is->viddec.hwaccel_failed) {
-        return;
+        return 0;
     }
 
     stream_index = is->video_stream;
@@ -1150,14 +1151,14 @@ static void hwaccel_check_fallback(VideoState *is) {
     is->viddec.hwaccel_failed = 0;
     log_warn("Falling back to software decoding.\n");
     stream_component_close(is, stream_index);
-    if (stream_component_open(is, stream_index) < 0) {
-        return;
+    if ((ret = stream_component_open(is, stream_index)) < 0) {
+        return ret;
     }
 
     if (!is->ic || !is->ic->pb ||
         !(is->ic->pb->seekable & AVIO_SEEKABLE_NORMAL) ||
         SDL_GetAtomicInt(&is->seek_by_bytes) > 0) {
-        return;
+        return AVERROR(ESPIPE);
     }
     now = effective_playhead(is);
     if (isnan(now)) {
@@ -1165,6 +1166,8 @@ static void hwaccel_check_fallback(VideoState *is) {
     } else {
         stream_seek_exact(is, (int64_t)(now * AV_TIME_BASE));
     }
+
+    return 0;
 }
 
 void refresh_loop_wait_event(VideoState *is, SDL_Event *event) {
