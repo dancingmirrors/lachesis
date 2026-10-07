@@ -1181,9 +1181,6 @@ static const struct {
     {"o", "seek-interval", OPT_DISABLES},
     {"o", "volume", OPT_DISABLES},
     {"o", "mute", OPT_DISABLES},
-    {"o", "normalize", OPT_DISABLES},
-    {"o", "normalize-target", OPT_DISABLES},
-    {"o", "normalize-gain", OPT_DISABLES},
     {"o", "audio-spdif", OPT_DISABLES},
     {"o", "audio-spdif-force", OPT_DISABLES},
     {"o", "hwaccel", OPT_DISABLES},
@@ -1370,6 +1367,11 @@ void validate_option_relations(const OptionDef *defs) {
         }
         option_forget(defs, "benchmark");
         option_forget(defs, "nodisp");
+        if (option_origin_of(defs, "normalize") == OPT_FROM_CONFIG) {
+            log_warn("-normalize from the configuration file is ignored because "
+                     "-o was given.\n");
+            option_forget(defs, "normalize");
+        }
     }
     validate_gpu_options(defs);
     validate_offscreen_options(defs, refresh_users, FF_ARRAY_ELEMS(refresh_users),

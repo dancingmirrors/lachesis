@@ -28,6 +28,7 @@
 #include <libavutil/channel_layout.h>
 #include <libavutil/common.h>
 #include <libavutil/mathematics.h>
+#include <libavutil/samplefmt.h>
 
 #include <SDL3/SDL.h>
 
@@ -54,12 +55,17 @@
 #define SLEW_SEEKING 8.0
 #define SLEW_SETTLED 0.5
 #define SLEW_TOGGLE 18.0
+#define SLEW_CUT_PER_DB 4.0
+#define SLEW_RUSH_S 3.0
+#define SLEW_HANDOFF 40.0
 
 #define CEILING_DB (-1.0)
 #define LIMIT_HOLD_S 0.050
 #define LIMIT_ATTACK_S 0.0005
 #define LIMIT_RELEASE_FAST_S 0.060
 #define LIMIT_RELEASE_SLOW_S 0.800
+#define LIMIT_HANDOFF_DB 6.0
+#define LIMIT_HANDOFF_S 0.1
 
 #define MAX_CHANNELS 64
 
@@ -99,9 +105,12 @@ typedef struct Normalizer {
     double gain;
     double peak_hold;
     double reduction;
+    double deepest;
+    int deep_frames;
+    int rush_frames;
 } Normalizer;
 
-static Normalizer nrm = {.gain = 1.0, .reduction = 1.0};
+static Normalizer nrm = {.gain = 1.0, .reduction = 1.0, .deepest = 1.0};
 
 static SDL_AtomicInt normalize_on;
 static SDL_AtomicInt normalize_toggling;
@@ -117,7 +126,7 @@ int normalize_enabled(void) {
     return SDL_GetAtomicInt(&normalize_on) != 0;
 }
 
-static double normalize_target_lufs(void) {
+double normalize_target_lufs(void) {
     return av_clipd(normalize_target, NORMALIZE_TARGET_MIN, NORMALIZE_TARGET_MAX) +
         av_clipd(normalize_gain, NORMALIZE_GAIN_MIN, NORMALIZE_GAIN_MAX);
 }
@@ -165,6 +174,58 @@ static double biquad_run(const Biquad *f, BiquadState *s, double x) {
     return y;
 }
 
+static int sample_fmt_supported(enum AVSampleFormat fmt) {
+    switch (fmt) {
+    case AV_SAMPLE_FMT_U8:
+    case AV_SAMPLE_FMT_S16:
+    case AV_SAMPLE_FMT_S32:
+    case AV_SAMPLE_FMT_FLT:
+    case AV_SAMPLE_FMT_DBL:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static double sample_load(const uint8_t *p, enum AVSampleFormat fmt) {
+    switch (fmt) {
+    case AV_SAMPLE_FMT_U8:
+        return (*p - 128) * (1.0 / 128.0);
+    case AV_SAMPLE_FMT_S16:
+        return *(const int16_t *)p * (1.0 / 32768.0);
+    case AV_SAMPLE_FMT_S32:
+        return *(const int32_t *)p * (1.0 / 2147483648.0);
+    case AV_SAMPLE_FMT_FLT:
+        return (double)*(const float *)p;
+    default:
+        return *(const double *)p;
+    }
+}
+
+static void sample_store(uint8_t *p, enum AVSampleFormat fmt, double v) {
+    switch (fmt) {
+    case AV_SAMPLE_FMT_U8:
+        *p = av_clip_uint8((int)lrint(v * 128.0) + 128);
+        break;
+    case AV_SAMPLE_FMT_S16:
+        *(int16_t *)p = av_clip_int16((int)lrint(v * 32768.0));
+        break;
+    case AV_SAMPLE_FMT_S32:
+        *(int32_t *)p = av_clipl_int32(llrint(v * 2147483648.0));
+        break;
+    case AV_SAMPLE_FMT_FLT:
+        *(float *)p = (float)v;
+        break;
+    default:
+        *(double *)p = v;
+        break;
+    }
+}
+
+static double measurable(double v) {
+    return isfinite(v) ? av_clipd(v, -1.0, 1.0) : 0.0;
+}
+
 static double channel_weight(enum AVChannel ch) {
     switch (ch) {
     case AV_CHAN_LOW_FREQUENCY:
@@ -202,8 +263,12 @@ void normalize_reset(void) {
     forget_measurement();
     nrm.rate = 0;
     nrm.channels = 0;
+    nrm.gain = FFMIN(nrm.gain, 1.0);
     nrm.peak_hold = 0.0;
     nrm.reduction = 1.0;
+    nrm.deepest = 1.0;
+    nrm.deep_frames = 0;
+    nrm.rush_frames = 0;
 }
 
 static int configure(int rate, int nb_channels, const AVChannelLayout *ch_layout) {
@@ -318,7 +383,7 @@ static void push_sub_block(void) {
 }
 
 static int desired_gain(double *out_db, double *out_slew) {
-    double recent, integrated, measured, confidence, share;
+    double recent = 0.0, integrated = 0.0, measured, confidence, share;
     int have_recent = window_loudness(SUBS_PER_SHORT_TERM, &recent);
     int have_integrated = integrated_loudness(&integrated);
 
@@ -348,36 +413,35 @@ static int desired_gain(double *out_db, double *out_slew) {
     return 1;
 }
 
-void normalize_process(int16_t *samples, int nb_frames, int nb_channels,
-                       int sample_rate, const AVChannelLayout *ch_layout) {
+static void process_slice(uint8_t *const *chan, size_t stride, enum AVSampleFormat packed,
+                          int nb_frames, int nb_channels, int sample_rate, int apply) {
     double frame[MAX_CHANNELS];
-    double target_db = 0.0, slew = SLEW_SEEKING, target;
-    double step_up, step_dn;
-    double attack, release_fast, release_slow, hold_decay, ceiling;
-    double gain, peak_hold, reduction;
+    double target_db = 0.0, slew = SLEW_SEEKING, target, cut;
+    double step_up, step_dn, step_off;
+    double attack, release_fast, release_slow, hold_decay, ceiling, handoff;
+    double gain, peak_hold, reduction, deepest;
     int enabled = normalize_enabled();
+    int deep_min = (int)(LIMIT_HANDOFF_S * sample_rate);
+    int deep = nrm.deep_frames, rush = nrm.rush_frames;
     int have_target, silent, bypass;
-    size_t total, j;
     int i, ch;
 
-    if (nb_frames <= 0 || !configure(sample_rate, nb_channels, ch_layout)) {
-        return;
-    }
-
     silent = 1;
-    total = (size_t)nb_frames * (size_t)nb_channels;
-    for (j = 0; j < total; j++) {
-        if (samples[j]) {
-            silent = 0;
-            break;
+    for (i = 0; silent && i < nb_frames; i++) {
+        for (ch = 0; ch < nb_channels; ch++) {
+            if (sample_load(chan[ch] + stride * (size_t)i, packed) != 0.0) {
+                silent = 0;
+                break;
+            }
         }
     }
 
     gain = nrm.gain;
     peak_hold = nrm.peak_hold;
     reduction = nrm.reduction;
+    deepest = nrm.deepest;
 
-    bypass = !enabled && gain == 1.0 && reduction >= 1.0;
+    bypass = !apply || (!enabled && gain == 1.0 && reduction >= 1.0);
     if (bypass && silent) {
         return;
     }
@@ -393,22 +457,29 @@ void normalize_process(int16_t *samples, int nb_frames, int nb_channels,
     target = pow(10.0, target_db / 20.0);
 
     step_up = pow(10.0, slew / (20.0 * sample_rate));
-    step_dn = 1.0 / step_up;
+    cut = rush > 0 ? FFMAX(slew, SLEW_CUT_PER_DB * (20.0 * log10(gain) - target_db)) : slew;
+    step_dn = pow(10.0, -cut / (20.0 * sample_rate));
+    step_off = pow(10.0, -SLEW_HANDOFF / (20.0 * sample_rate));
 
     hold_decay = exp(-1.0 / (LIMIT_HOLD_S * sample_rate));
     attack = 1.0 - exp(-1.0 / (LIMIT_ATTACK_S * sample_rate));
     release_fast = 1.0 - exp(-1.0 / (LIMIT_RELEASE_FAST_S * sample_rate));
     release_slow = 1.0 - exp(-1.0 / (LIMIT_RELEASE_SLOW_S * sample_rate));
     ceiling = pow(10.0, CEILING_DB / 20.0);
+    handoff = pow(10.0, -LIMIT_HANDOFF_DB / 20.0);
 
     for (i = 0; i < nb_frames; i++) {
-        int16_t *base = samples + (size_t)i * (size_t)nb_channels;
+        size_t offset = stride * (size_t)i;
         double peak = 0.0;
         double energy = 0.0;
-        double needed, coef, applied;
+        double needed, coef, limit, applied;
+
+        if (rush > 0) {
+            rush--;
+        }
 
         for (ch = 0; ch < nb_channels; ch++) {
-            double v = base[ch] * (1.0 / 32768.0);
+            double v = sample_load(chan[ch] + offset, packed);
             double a = fabs(v);
 
             frame[ch] = v;
@@ -424,7 +495,7 @@ void normalize_process(int16_t *samples, int nb_frames, int nb_channels,
                 if (nrm.weight[ch] == 0.0) {
                     continue;
                 }
-                y = biquad_run(&nrm.shelf, &nrm.shelf_state[ch], frame[ch]);
+                y = biquad_run(&nrm.shelf, &nrm.shelf_state[ch], measurable(frame[ch]));
                 y = biquad_run(&nrm.hpf, &nrm.hpf_state[ch], y);
                 energy += nrm.weight[ch] * y * y;
             }
@@ -465,20 +536,36 @@ void normalize_process(int16_t *samples, int nb_frames, int nb_channels,
         if (reduction > 1.0 - 1e-9) {
             reduction = 1.0;
         }
-        applied = gain * (reduction < needed ? reduction : needed);
+        limit = reduction < needed ? reduction : needed;
+        if (limit < deepest) {
+            deepest = limit;
+        }
+        applied = gain * limit;
 
         if (applied != 1.0) {
-            double scale = applied * 32768.0;
-
             for (ch = 0; ch < nb_channels; ch++) {
-                base[ch] = av_clip_int16((int)lrint(frame[ch] * scale));
+                sample_store(chan[ch] + offset, packed, frame[ch] * applied);
             }
+        }
+
+        if (!enabled || gain <= 1.0 || needed >= handoff) {
+            deep = 0;
+        } else if (++deep >= deep_min) {
+            double step = FFMAX(step_off, 1.0 / gain);
+
+            gain *= step;
+            peak_hold *= step;
+            reduction = FFMIN(reduction / step, 1.0);
+            rush = (int)(SLEW_RUSH_S * sample_rate);
         }
     }
 
     nrm.gain = gain;
     nrm.peak_hold = peak_hold;
     nrm.reduction = reduction;
+    nrm.deepest = deepest;
+    nrm.deep_frames = deep;
+    nrm.rush_frames = rush;
     if (have_target && enabled && fabs(gain - target) < 1e-9) {
         SDL_SetAtomicInt(&normalize_toggling, 0);
     }
@@ -486,6 +573,60 @@ void normalize_process(int16_t *samples, int nb_frames, int nb_channels,
     SDL_SetAtomicInt(&reported_gain, (int)lrint(2000.0 * log10(gain)));
     SDL_SetAtomicInt(&reported_reduction,
                      (int)lrint(-2000.0 * log10(FFMAX(reduction, 1e-6))));
+}
+
+static void process(uint8_t *const *data, enum AVSampleFormat fmt, int nb_frames,
+                    int nb_channels, int sample_rate, const AVChannelLayout *ch_layout,
+                    int apply) {
+    uint8_t *chan[MAX_CHANNELS];
+    enum AVSampleFormat packed = av_get_packed_sample_fmt(fmt);
+    int planar = av_sample_fmt_is_planar(fmt);
+    size_t bytes, stride;
+    int ch;
+
+    if (nb_frames <= 0 || !sample_fmt_supported(packed) ||
+        !configure(sample_rate, nb_channels, ch_layout)) {
+        return;
+    }
+
+    bytes = (size_t)av_get_bytes_per_sample(packed);
+    stride = planar ? bytes : bytes * (size_t)nb_channels;
+    for (ch = 0; ch < nb_channels; ch++) {
+        chan[ch] = planar ? data[ch] : data[0] + bytes * (size_t)ch;
+    }
+
+    while (nb_frames > 0) {
+        int n = FFMIN(nb_frames, nrm.sub_frames);
+
+        process_slice(chan, stride, packed, n, nb_channels, sample_rate, apply);
+        for (ch = 0; ch < nb_channels; ch++) {
+            chan[ch] += stride * (size_t)n;
+        }
+        nb_frames -= n;
+    }
+}
+
+void normalize_process(uint8_t *const *data, enum AVSampleFormat fmt, int nb_frames,
+                       int nb_channels, int sample_rate, const AVChannelLayout *ch_layout) {
+    process(data, fmt, nb_frames, nb_channels, sample_rate, ch_layout, 1);
+}
+
+void normalize_measure(uint8_t *const *data, enum AVSampleFormat fmt, int nb_frames,
+                       int nb_channels, int sample_rate, const AVChannelLayout *ch_layout) {
+    process(data, fmt, nb_frames, nb_channels, sample_rate, ch_layout, 0);
+}
+
+int normalize_window_full(void) {
+    return nrm.sub_count >= SUBS_PER_SHORT_TERM;
+}
+
+void normalize_settle(void) {
+    double target_db, slew;
+
+    if (desired_gain(&target_db, &slew)) {
+        nrm.gain = pow(10.0, target_db / 20.0);
+    }
+    forget_measurement();
 }
 
 void normalize_toggle(VideoState *is) {
@@ -522,6 +663,14 @@ void normalize_toggle(VideoState *is) {
         }
     }
     is->force_refresh = 1;
+}
+
+int normalize_source_lufs(double *lufs) {
+    return integrated_loudness(lufs);
+}
+
+double normalize_limited_db(void) {
+    return -20.0 * log10(nrm.deepest);
 }
 
 const char *normalize_status(void) {

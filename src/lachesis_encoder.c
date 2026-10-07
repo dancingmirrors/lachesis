@@ -54,6 +54,7 @@
 #include "lachesis_internal.h"
 #include "lachesis_interpolate.h"
 #include "lachesis_log.h"
+#include "lachesis_normalize.h"
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_seek.h"
@@ -72,6 +73,7 @@
 #define ENCODE_INTERLEAVE_MAX 60
 #define ENCODE_PACE_SNAP 0.002
 #define ENCODE_AUDIO_JUMP 0.1
+#define ENCODE_PREROLL_MAX 10.0
 #define ENCODE_WAIT_MS 5
 #define ENCODE_PROGRESS_US 250000
 #define ENCODE_REFRESH_RATE 60
@@ -149,6 +151,7 @@ typedef struct Encoder {
     int a_started;
     int a_jumps;
     int a_mismatch_warned;
+    int a_preroll;
 
     double anchor_src;
     double anchor_out;
@@ -892,6 +895,10 @@ static int start(VideoState *is, const Frame *vp, const Frame *af, int audio_com
     }
     enc.started = 1;
 
+    if (enc.aenc && normalize_enabled()) {
+        log_info("Normalizing the audio toward %.1f LUFS.\n", normalize_target_lufs());
+        enc.a_preroll = 1;
+    }
     if (enc.venc && enc.aenc) {
         log_info("Converting to '%s' with %s and %s.\n", output_filename,
                  enc.vcodec->name, enc.acodec->name);
@@ -963,7 +970,7 @@ static int push_samples(uint8_t *const *data, int nb_samples) {
     }
     enc.a_samples += nb_samples;
 
-    return drain_audio(0);
+    return enc.a_preroll ? 0 : drain_audio(0);
 }
 
 static int push_silence(int64_t nb_samples) {
@@ -986,6 +993,35 @@ static double audio_out(void) {
 
 static double audio_next_out(void) {
     return enc.a_started ? audio_out() : enc.anchor_out;
+}
+
+static int end_preroll(void) {
+    AVCodecContext *avctx = enc.aenc;
+    int n = av_audio_fifo_size(enc.fifo);
+    uint8_t **data = NULL;
+    int ret;
+
+    enc.a_preroll = 0;
+    normalize_settle();
+    if (n > 0) {
+        if ((ret = av_samples_alloc_array_and_samples(&data, NULL, avctx->ch_layout.nb_channels,
+                                                      n, avctx->sample_fmt, 0)) < 0) {
+            return ret;
+        }
+        ret = av_audio_fifo_read(enc.fifo, (void **)data, n);
+        if (ret == n) {
+            normalize_process(data, avctx->sample_fmt, n, avctx->ch_layout.nb_channels,
+                              avctx->sample_rate, &avctx->ch_layout);
+            ret = av_audio_fifo_write(enc.fifo, (void **)data, n);
+        }
+        av_freep(&data[0]);
+        av_freep(&data);
+        if (ret < n) {
+            return ret < 0 ? ret : AVERROR_BUG;
+        }
+    }
+
+    return drain_audio(0);
 }
 
 static int take_audio(const Frame *af) {
@@ -1026,7 +1062,28 @@ static int take_audio(const Frame *af) {
     enc.anchor_valid = 1;
     enc.a_next_src = src + frame->nb_samples / rate;
 
-    return push_samples(frame->extended_data, frame->nb_samples);
+    if (enc.a_preroll) {
+        normalize_measure(frame->extended_data, frame->format, frame->nb_samples,
+                          frame->ch_layout.nb_channels, frame->sample_rate,
+                          &frame->ch_layout);
+    } else if (normalize_enabled()) {
+        if ((ret = av_frame_make_writable(frame)) < 0) {
+            return ret;
+        }
+        normalize_process(frame->extended_data, frame->format, frame->nb_samples,
+                          frame->ch_layout.nb_channels, frame->sample_rate,
+                          &frame->ch_layout);
+    }
+    if ((ret = push_samples(frame->extended_data, frame->nb_samples)) < 0) {
+        return ret;
+    }
+    if (enc.a_preroll &&
+        (normalize_window_full() ||
+         av_audio_fifo_size(enc.fifo) >= ENCODE_PREROLL_MAX * avctx->sample_rate)) {
+        return end_preroll();
+    }
+
+    return 0;
 }
 
 static double place_video(const Frame *vp, double *src_out, int *synced) {
@@ -1549,6 +1606,9 @@ static int finish(VideoState *is, int ret, int interrupted) {
     if (!enc.started) {
         return ret < 0 ? ret : AVERROR_EXIT;
     }
+    if (enc.a_preroll) {
+        ret = keep_error(ret, end_preroll());
+    }
 
     if (enc.has_audio && !enc.a_started) {
         if (!interrupted) {
@@ -1627,6 +1687,29 @@ static int finish(VideoState *is, int ret, int interrupted) {
                  av_q2d(enc.v_refresh_rate));
     } else if (enc.v_refreshes) {
         log_info("Every picture starts on a refresh, so nothing needed blending.\n");
+    }
+    if (enc.aenc && normalize_enabled()) {
+        double target = normalize_target_lufs();
+        double limited = normalize_limited_db();
+        double lufs, change;
+        const char *most = "";
+
+        if (normalize_source_lufs(&lufs)) {
+            change = target - lufs;
+            if (change > NORMALIZE_BOOST_MAX) {
+                most = ", the most it boosts,";
+            } else if (change < NORMALIZE_CUT_MAX) {
+                most = ", the most it cuts,";
+            }
+            log_info("Normalized the audio by %+.1f dB%s from %.1f LUFS toward %.1f LUFS.\n",
+                     av_clipd(change, NORMALIZE_CUT_MAX, NORMALIZE_BOOST_MAX), most, lufs,
+                     target);
+        } else {
+            log_info("The audio was too short or too quiet to measure its loudness.\n");
+        }
+        if (limited >= 0.1) {
+            log_info("Its peaks were limited by up to %.1f dB.\n", limited);
+        }
     }
     log_info("%s %s to '%s' in %s.\n", interrupted ? "Stopped early after writing" : "Wrote",
              length, output_filename, took);

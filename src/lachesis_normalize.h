@@ -24,6 +24,7 @@
 #include <stdint.h>
 
 #include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
 
 #include "lachesis_internal.h"
 
@@ -42,9 +43,17 @@ int normalize_enabled(void);
 
 void normalize_reset(void);
 
-void normalize_process(int16_t *samples, int nb_frames, int nb_channels,
-                       int sample_rate, const AVChannelLayout *ch_layout);
+void normalize_process(uint8_t *const *data, enum AVSampleFormat fmt, int nb_frames,
+                       int nb_channels, int sample_rate, const AVChannelLayout *ch_layout);
 
+void normalize_measure(uint8_t *const *data, enum AVSampleFormat fmt, int nb_frames,
+                       int nb_channels, int sample_rate, const AVChannelLayout *ch_layout);
+int normalize_window_full(void);
+void normalize_settle(void);
+
+double normalize_target_lufs(void);
+int normalize_source_lufs(double *lufs);
+double normalize_limited_db(void);
 const char *normalize_status(void);
 
 #endif /* LACHESIS_NORMALIZE_H */

@@ -1044,7 +1044,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         memset(stream_start, 0, len_total);
     } else if (!spdif.active && is->audio_tgt.fmt == AV_SAMPLE_FMT_S16 &&
                is->audio_tgt.frame_size > 0) {
-        normalize_process((int16_t *)stream_start,
+        normalize_process(&stream_start, is->audio_tgt.fmt,
                           len_total / is->audio_tgt.frame_size,
                           is->audio_tgt.ch_layout.nb_channels,
                           is->audio_tgt.freq, &is->audio_tgt.ch_layout);
