@@ -1086,7 +1086,8 @@ void stream_cycle_channel(VideoState *is, int codec_type) {
             switch (codec_type) {
             case AVMEDIA_TYPE_AUDIO:
                 if (st->codecpar->sample_rate != 0 &&
-                    st->codecpar->ch_layout.nb_channels != 0) {
+                    st->codecpar->ch_layout.nb_channels != 0 &&
+                    audio_stream_decodable(st)) {
                     goto the_end;
                 }
                 break;

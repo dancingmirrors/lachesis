@@ -855,6 +855,44 @@ static void asf_fix_index(AVFormatContext *ic) {
     }
 }
 
+static const char *codec_label(const AVCodecParameters *par, char *buf) {
+    if (par->codec_id == AV_CODEC_ID_NONE && par->codec_tag) {
+        return av_fourcc_make_string(buf, par->codec_tag);
+    }
+
+    return avcodec_get_name(par->codec_id);
+}
+
+int audio_stream_decodable(const AVStream *st) {
+    return audio_codec_name || avcodec_find_decoder(st->codecpar->codec_id);
+}
+
+static int find_audio_stream(AVFormatContext *ic, int wanted, int related) {
+    char from[AV_FOURCC_MAX_STRING_SIZE], to[AV_FOURCC_MAX_STRING_SIZE];
+    const AVCodec *dec;
+    int best = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, wanted, related,
+                                   NULL, 0);
+    int alt = -1;
+
+    if (best < 0 || audio_stream_decodable(ic->streams[best])) {
+        return best;
+    }
+    if (wanted < 0) {
+        alt = av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO, -1, related, &dec, 0);
+    }
+    if (alt < 0) {
+        log_warn("This FFmpeg cannot decode the %s audio.\n",
+                 codec_label(ic->streams[best]->codecpar, from));
+        return best;
+    }
+    log_warn("This FFmpeg cannot decode the %s audio, "
+             "so using the %s audio instead.\n",
+             codec_label(ic->streams[best]->codecpar, from),
+             codec_label(ic->streams[alt]->codecpar, to));
+
+    return alt;
+}
+
 static const AVInputFormat *guess_archive_entry_format(const char *entry_name) {
     const char *dot = strrchr(entry_name, '.');
     if (!dot) {
@@ -1392,10 +1430,8 @@ int read_thread(void *arg) {
     }
     if (!audio_disable) {
         st_index[AVMEDIA_TYPE_AUDIO] =
-            av_find_best_stream(ic, AVMEDIA_TYPE_AUDIO,
-                                st_index[AVMEDIA_TYPE_AUDIO],
-                                st_index[AVMEDIA_TYPE_VIDEO],
-                                NULL, 0);
+            find_audio_stream(ic, st_index[AVMEDIA_TYPE_AUDIO],
+                              st_index[AVMEDIA_TYPE_VIDEO]);
     }
     if (!video_disable && !subtitle_disable) {
         st_index[AVMEDIA_TYPE_SUBTITLE] =

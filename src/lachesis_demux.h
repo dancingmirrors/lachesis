@@ -26,6 +26,7 @@
 
 extern AVDictionary *format_opts;
 
+int audio_stream_decodable(const AVStream *st);
 int stream_component_open(VideoState *is, int stream_index);
 int read_thread(void *arg);
 int demux_queues_full(const VideoState *is);
