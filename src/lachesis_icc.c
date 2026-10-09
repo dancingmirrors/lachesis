@@ -32,8 +32,8 @@
 #define ICC_HEADER_SIZE 128
 #define ICC_TAG_ENTRY_SIZE 12
 
-#define ICC_SIG_ACSP 0x61637370u /* 'acsp' */
-#define ICC_SIG_VCGT 0x76636774u /* 'vcgt' */
+#define ICC_SIG_ACSP 0x61637370u // 'acsp'
+#define ICC_SIG_VCGT 0x76636774u // 'vcgt'
 
 #define ICC_RAMP_MAX 4096
 #define ICC_RAMP_FORMULA 256
@@ -47,7 +47,7 @@ static unsigned rd16(const uint8_t *p) {
     return ((unsigned)p[0] << 8) | p[1];
 }
 
-/* s15Fixed16Number, the fixed point format ICC uses for everything numeric. */
+// s15Fixed16Number, the fixed point format ICC uses for everything numeric.
 static double rd_s15f16(const uint8_t *p) {
     return (double)(int32_t)rd32(p) / 65536.0;
 }
@@ -127,7 +127,7 @@ int icc_profile_inspect(const void *data, size_t len, IccProfileInfo *info,
         return AVERROR_INVALIDDATA;
     }
 
-    /* Too short to hold even a type signature is as good as absent. */
+    // Too short to hold even a type signature is as good as absent.
     info->has_vcgt = find_tag(p, len, ICC_SIG_VCGT, &vcgt_len) && vcgt_len >= 12;
 
     return 0;
@@ -155,7 +155,7 @@ static int vcgt_from_table(const uint8_t *tag, size_t tag_len,
         return AVERROR_INVALIDDATA;
     }
 
-    /* A ramp longer than this would be a 1D texture no GPU has to support. */
+    // A ramp longer than this would be a 1D texture no GPU has to support.
     want = entries > ICC_RAMP_MAX ? ICC_RAMP_MAX : entries;
 
     out = av_malloc_array(want, 3 * sizeof(*out));

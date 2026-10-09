@@ -52,4 +52,4 @@ float equalizer_pl_contrast(int contrast);
 float equalizer_pl_gamma(int gamma);
 float equalizer_pl_saturation(int saturation);
 
-#endif /* LACHESIS_EQUALIZER_H */
+#endif // LACHESIS_EQUALIZER_H

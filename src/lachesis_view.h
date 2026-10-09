@@ -36,4 +36,4 @@ float view_zoom_step(VideoState *is, int direction);
 float view_zoom_reset(VideoState *is);
 void view_pan_by(VideoState *is, float dx, float dy);
 
-#endif /* LACHESIS_VIEW_H */
+#endif // LACHESIS_VIEW_H

@@ -33,4 +33,4 @@ int interpolate_rate_matches(double frame_dur, double vsync, int *hold);
 
 const char *interpolate_status(void);
 
-#endif /* LACHESIS_INTERPOLATE_H */
+#endif // LACHESIS_INTERPOLATE_H

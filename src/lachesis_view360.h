@@ -140,4 +140,4 @@ void view360_pl_hook_update(const struct pl_hook *hook, float yaw, float pitch,
                             enum View360Projection projection, int rotate,
                             const View360Viewport *viewport);
 
-#endif /* LACHESIS_VIEW360_H */
+#endif // LACHESIS_VIEW360_H

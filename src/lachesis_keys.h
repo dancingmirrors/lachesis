@@ -28,4 +28,4 @@ void event_loop(VideoState **pis);
 
 void delete_prompt_cancel(VideoState **pis);
 
-#endif /* LACHESIS_KEYS_H */
+#endif // LACHESIS_KEYS_H

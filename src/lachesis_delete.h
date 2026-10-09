@@ -28,4 +28,4 @@ const char *delete_current_name(const VideoState *is);
 
 int delete_current_file(VideoState **pis, int keep_paused);
 
-#endif /* LACHESIS_DELETE_H */
+#endif // LACHESIS_DELETE_H

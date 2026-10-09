@@ -19,11 +19,11 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_hwaccel.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer_internal.h"
-/* clang-format on */
+// clang-format on
 
 #if LACHESIS_HAVE_VULKAN
 
@@ -62,7 +62,7 @@ static void hwctx_unlock_queue(void *priv, uint32_t qf, uint32_t qidx) {
 #endif
 }
 
-/* https://github.com/KhronosGroup/MoltenVK/issues/2618 */
+// https://github.com/KhronosGroup/MoltenVK/issues/2618
 static int want_host_image_copy(const AVDictionary *opt) {
     const AVDictionaryEntry *entry = av_dict_get(opt, "host_image_copy", NULL, 0);
     int want = 0;
@@ -244,7 +244,7 @@ int list_vk_devices_standalone(GpuDeviceNames names,
         ? (PFN_vkCreateInstance)get_proc_addr(NULL, "vkCreateInstance")
         : NULL;
 #ifdef VK_KHR_portability_enumeration
-    /* MoltenVK and friends are hidden from a plain instance. */
+    // MoltenVK and friends are hidden from a plain instance.
     {
         static const char *const portability[] = {
             VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
@@ -496,7 +496,7 @@ typedef struct VkBackedExtension {
     VkFeatureLocation at[2];
 } VkBackedExtension;
 
-/* clang-format off */
+// clang-format off
 static const VkBackedExtension backed_extensions[] = {
     {VK_KHR_SHADER_SUBGROUP_ROTATE_EXTENSION_NAME, "shaderSubgroupRotate",
      {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_ROTATE_FEATURES_KHR,
@@ -544,9 +544,10 @@ static const VkBackedExtension backed_extensions[] = {
        offsetof(VkPhysicalDeviceVideoMaintenance2FeaturesKHR, videoMaintenance2)},
      }},
 #endif
-    /* Due to the way libplacebo's vk_features_normalize() works, listing
-     * VK_KHR_video_decode_vp9 here would only cause us to withhold it.
-     */
+    //
+    // Due to the way libplacebo's vk_features_normalize() works, listing
+    // VK_KHR_video_decode_vp9 here would only cause us to withhold it.
+    //
 #ifdef VK_KHR_video_encode_av1
     {VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME, "videoEncodeAV1",
      {{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_AV1_FEATURES_KHR,
@@ -612,7 +613,7 @@ static const VkBackedExtension backed_extensions[] = {
      }},
 #endif
 };
-/* clang-format on */
+// clang-format on
 
 static const void *find_feature(const VkPhysicalDeviceFeatures2 *features,
                                 VkStructureType type) {
@@ -815,7 +816,7 @@ int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr,
     return 0;
 }
 
-/* Via libplacebo rather than SDL so a decoder can ask from its thread. */
+// Via libplacebo rather than SDL so a decoder can ask from its thread.
 int vk_wanted_render_node(const char *want, char *buf, size_t size) {
     VkPhysicalDevice handles[MAX_GPU_DEVICES];
     enum GpuClass classes[MAX_GPU_DEVICES];
@@ -840,7 +841,7 @@ int vk_wanted_render_node(const char *want, char *buf, size_t size) {
     return ret;
 }
 
-#endif /* LACHESIS_HAVE_VK_DRM_NODE */
+#endif // LACHESIS_HAVE_VK_DRM_NODE
 
 static int create_vk_by_hwcontext(Renderer *renderer,
                                   const char **ext, unsigned num_ext,
@@ -1079,7 +1080,7 @@ static void add_queue_family(AVVulkanDeviceContext *hwctx, int *nb_qf,
 }
 
 #if LIBAVUTIL_VERSION_INT < AV_VERSION_INT(60, 20, 100)
-/* XXX: Or -gpu-params create_by_placebo=0. */
+// XXX: Or -gpu-params create_by_placebo=0.
 static const char *fallback_device_extensions[] = {
     VK_KHR_VIDEO_QUEUE_EXTENSION_NAME,
     VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME,
@@ -1128,13 +1129,13 @@ static int create_vk_by_placebo(Renderer *renderer,
         placebo_proc_addr = hide_host_image_copy(placebo_proc_addr);
     }
 
-    /* clang-format off */
+    // clang-format off
     ctx->placebo_instance = pl_vk_inst_create(ctx->log_ctx, pl_vk_inst_params(
         .get_proc_addr = placebo_proc_addr,
         .debug = enable_debug(opt),
         .extensions = ext,
         .num_extensions = num_ext));
-    /* clang-format on */
+    // clang-format on
     if (!ctx->placebo_instance) {
         return AVERROR_EXTERNAL;
     }
@@ -1213,7 +1214,7 @@ static int create_vk_by_placebo(Renderer *renderer,
         }
     }
 
-    /* clang-format off */
+    // clang-format off
     ctx->placebo_vulkan = pl_vulkan_create(ctx->log_ctx,
                                            pl_vulkan_params(
                                                .instance = ctx->placebo_instance->instance,
@@ -1225,7 +1226,7 @@ static int create_vk_by_placebo(Renderer *renderer,
                                                .features = present_timing ? vkpresent_device_features() : NULL,
                                                .extra_queues = VK_QUEUE_VIDEO_DECODE_BIT_KHR,
                                                .device_name = device_name, ));
-    /* clang-format on */
+    // clang-format on
     av_free(merged_exts);
 #if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)
     av_free(dev_exts);
@@ -1274,7 +1275,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     vk_dev_ctx->enabled_dev_extensions = ctx->dev_extensions;
     vk_dev_ctx->nb_enabled_dev_extensions = ctx->num_dev_extensions;
 
-    /* Otherwise we get 16 graphics queues. */
+    // Otherwise we get 16 graphics queues.
     uint32_t nvidia = nvidia_proprietary(ctx->get_proc_addr, ctx->inst,
                                          ctx->placebo_vulkan->phys_device);
     int nb_qf = 0;
@@ -1542,4 +1543,4 @@ void vk_backend_destroy(RendererContext *ctx) {
     vkpresent_shutdown();
 }
 
-#endif /* LACHESIS_HAVE_VULKAN */
+#endif // LACHESIS_HAVE_VULKAN

@@ -47,4 +47,4 @@ void deinterlace_apply(struct pl_frame *pl_frame,
                        struct pl_render_params *pl_params,
                        const AVFrame *frame, const RenderParams *params);
 
-#endif /* LACHESIS_DEINTERLACE_H */
+#endif // LACHESIS_DEINTERLACE_H

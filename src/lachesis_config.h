@@ -30,4 +30,4 @@
 #define LACHESIS_HAVE_DRM_NODES 1
 #endif
 
-#endif /* LACHESIS_CONFIG_H */
+#endif // LACHESIS_CONFIG_H

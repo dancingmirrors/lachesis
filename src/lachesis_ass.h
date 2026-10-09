@@ -61,4 +61,4 @@ typedef const char *(*LassStyleFont)(const char *name, size_t len, void *ctx);
 int lass_route_emoji(const char *in, const char *font, LassStyleFont lookup,
                      void *ctx, char *out, size_t outsz);
 
-#endif /* LACHESIS_ASS_H */
+#endif // LACHESIS_ASS_H

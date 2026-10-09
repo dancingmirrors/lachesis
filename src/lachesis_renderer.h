@@ -140,27 +140,27 @@ const enum AVPixelFormat *renderer_supported_pixfmts(Renderer *renderer,
 
 int renderer_maps_hw_frames(Renderer *renderer);
 
-/* Safe to call with a NULL renderer. */
+// Safe to call with a NULL renderer.
 int renderer_max_texture_size(Renderer *renderer);
 
 int renderer_is_vsync_blocked(Renderer *renderer);
 
-/* Safe to call with a NULL renderer. */
+// Safe to call with a NULL renderer.
 int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
                          double *convert_ms, double *render_ms,
                          double *present_ms);
 
-/* NULL unless the backend can decode into its own memory. */
+// NULL unless the backend can decode into its own memory.
 int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);
 
-/* Safe to call with a NULL renderer. */
+// Safe to call with a NULL renderer.
 int renderer_can_refine_hw_frames(Renderer *renderer);
 int renderer_refine_hw_frames(Renderer *renderer, AVBufferRef *frames_ref);
 
 int renderer_device_node(Renderer *renderer, char *buf, size_t size);
 int renderer_device_node_for(const char *want, char *buf, size_t size);
 
-/* Call only from the event loop. Safe to call with a NULL renderer. */
+// Call only from the event loop. Safe to call with a NULL renderer.
 int renderer_take_image_repaint(Renderer *renderer);
 
 int renderer_display(Renderer *renderer, AVFrame *frame, RenderParams *params);
@@ -204,4 +204,4 @@ void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll,
 
 int renderer_set_supersample(Renderer *renderer, enum SupersampleLevel level);
 
-#endif /* LACHESIS_RENDERER_H */
+#endif // LACHESIS_RENDERER_H

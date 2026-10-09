@@ -188,7 +188,7 @@ static void seek_relative(VideoState *is, double incr) {
     seek_relative_exact(is, incr, 0);
 }
 
-/* We "roll" as a 90° rotation we can keep the controls sane. */
+// We "roll" as a 90° rotation we can keep the controls sane.
 static void sbs360_view_move(VideoState *cur_stream, float sx, float sy) {
     int quadrant = (((int)lroundf(sbs360_roll / 90.0f)) % 4 + 4) % 4;
     float dyaw, dpitch;
@@ -756,7 +756,7 @@ void event_loop(VideoState **pis) {
                 sbs360_drag = 1;
                 sbs360_drag_last_x = event.button.x;
                 sbs360_drag_last_y = event.button.y;
-                /* Deliberately no break. */
+                // Deliberately no break.
             }
             if ((SDL_GetModState() & SDL_KMOD_CTRL) &&
                 event.button.button == SDL_BUTTON_LEFT) {
@@ -814,7 +814,7 @@ void event_loop(VideoState **pis) {
             }
             break;
         case SDL_EVENT_MOUSE_WHEEL: {
-            /* Try to account for the precise delta of trackpads. */
+            // Try to account for the precise delta of trackpads.
             static float wheel_bank;
             float dy = event.wheel.y;
             int notches;
@@ -888,7 +888,7 @@ void event_loop(VideoState **pis) {
             }
             if (event.user.code == FF_QUIT_REASON_ERROR && playlist_nav_dir < 0 &&
                 playlist_pos > 0) {
-                /* Also handle "previous" entries in case we encounter a broken file. */
+                // Also handle "previous" entries in case we encounter a broken file.
                 playlist_switch(pis, playlist_pos - 1);
                 break;
             }

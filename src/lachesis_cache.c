@@ -354,7 +354,7 @@ static void cache_note(struct CacheEntry **entries, unsigned *num,
     ++*num;
 }
 
-/* Any failure here simply leaves the cache directory as large as it was. */
+// Any failure here simply leaves the cache directory as large as it was.
 static void cache_prune(const ShaderCache *sc) {
     struct CacheEntry *entries = NULL;
     unsigned have = 0, num = 0;
@@ -609,7 +609,7 @@ static void cache_migrate(ShaderCache *sc, pl_log log) {
              tries, spent);
 }
 
-/* Any failure simply leaves rendering uncached. */
+// Any failure simply leaves rendering uncached.
 void shader_cache_open(ShaderCache *sc, pl_gpu gpu, pl_log log,
                        const char *backend, const AVDictionary *opt) {
     char dir[4096];

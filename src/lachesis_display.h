@@ -31,4 +31,4 @@ void apply_present_feedback(void);
 int render_ever_worked(void);
 void render_fault_forget(void);
 
-#endif /* LACHESIS_DISPLAY_H */
+#endif // LACHESIS_DISPLAY_H

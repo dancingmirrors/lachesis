@@ -78,7 +78,7 @@ static av_unused av_printf_format(1, 2) void log_dead(const char *fmt, ...) {
     va_end(ap);
 }
 
-/* Like log_dead(), but never returns. */
+// Like log_dead(), but never returns.
 static av_unused av_noreturn av_printf_format(1, 2) void fatal_quit(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -89,4 +89,4 @@ static av_unused av_noreturn av_printf_format(1, 2) void fatal_quit(const char *
     exit(1);
 }
 
-#endif /* LACHESIS_LOG_H */
+#endif // LACHESIS_LOG_H

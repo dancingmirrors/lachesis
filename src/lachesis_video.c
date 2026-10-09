@@ -251,17 +251,17 @@ int video_thread(void *arg) {
             continue;
         }
 
-        /* Downloading the frame below changes all three of these. */
+        // Downloading the frame below changes all three of these.
         enum AVPixelFormat raw_format = frame->format;
         int raw_w = frame->width;
         int raw_h = frame->height;
 
-        /* clang-format off */
+        // clang-format off
         if (last_w != raw_w || last_h != raw_h ||
             last_format != raw_format ||
             last_serial != is->viddec.pkt_serial ||
             last_vfilter_idx != is->vfilter_idx) {
-            /* clang-format on */
+            // clang-format on
             const char *vfilters = vfilters_list ? vfilters_list[is->vfilter_idx] : NULL;
             int is_hw = frame->hw_frames_ctx != NULL;
 

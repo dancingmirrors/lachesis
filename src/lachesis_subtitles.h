@@ -53,4 +53,4 @@ int subtitles_render(VideoState *is, int canvas_w, int canvas_h,
                      const SDL_Rect *video_rect, double now,
                      SubtitleOverlay *out);
 
-#endif /* LACHESIS_SUBTITLE_H */
+#endif // LACHESIS_SUBTITLE_H

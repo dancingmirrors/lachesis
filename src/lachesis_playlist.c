@@ -30,10 +30,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-/* clang-format off */
+// clang-format off
 #include <io.h>
 #include <windows.h>
-/* clang-format on */
+// clang-format on
 #else
 #include <unistd.h>
 #endif
@@ -316,7 +316,7 @@ void playlist_clear(void) {
     av_freep(&playlist_entries);
 }
 
-/* A Fisher-Yates shuffle. */
+// A Fisher-Yates shuffle.
 void playlist_shuffle(void) {
     if (playlist_size < 2) {
         return;
@@ -549,7 +549,7 @@ static void parser_init(PlaylistParser *p, const char *name,
     p->fmt = fmt;
     p->buf = buf;
     p->len = len;
-    /* A UTF-8 BOM. */
+    // A UTF-8 BOM.
     p->pos = (len >= 3 && !memcmp(buf, "\xef\xbb\xbf", 3)) ? 3 : 0;
     p->sink = sink;
     p->opaque = opaque;
@@ -590,7 +590,7 @@ static char *parser_line(PlaylistParser *p) {
         p->lineno++;
 
         if (line_len && line[line_len - 1] == '\r') {
-            /* Tolerate CRLF. */
+            // Tolerate CRLF.
             line_len--;
         }
         while (line_len && (unsigned char)line[0] <= ' ') {
@@ -621,7 +621,7 @@ static int parser_add(PlaylistParser *p, const char *location) {
         parser_skip(p, "a malformed entry", NULL);
         return 0;
     }
-    /* "\\host\share" and "//host/share" would leak credentials to a peer. */
+    // "\\host\share" and "//host/share" would leak credentials to a peer.
     if (is_separator(location[0]) && is_separator(location[1])) {
         parser_skip(p, "a network share", location);
         return 0;
@@ -843,7 +843,7 @@ static int xml_next(XmlScanner *s, XmlElement *el) {
             s->pos++;
         }
         if (s->pos == name) {
-            /* A stray '<'. */
+            // A stray '<'.
             continue;
         }
         xml_name(el->name, sizeof(el->name), name, (size_t)(s->pos - name));
@@ -918,7 +918,7 @@ static int xml_attr(const XmlElement *el, const char *want, char *out,
             p++;
         }
         if (p >= end || *p != '=') {
-            /* An attribute with no value. */
+            // An attribute with no value.
             continue;
         }
         p++;
@@ -1088,7 +1088,7 @@ static int parse_lines(PlaylistParser *p) {
             if (is_hls_tag(line)) {
                 return AVERROR_INVALIDDATA;
             }
-            /* The #EXTINF title is intentionally dropped. */
+            // The #EXTINF title is intentionally dropped.
             continue;
         }
         if ((p->fmt->flags & PLAYLIST_DIRECTIVES) &&
@@ -1204,7 +1204,7 @@ static int parse_pls(PlaylistParser *p) {
             value++;
         }
         if (av_strncasecmp(line, "File", 4)) {
-            /* TitleN and LengthN are intentionally dropped. */
+            // TitleN and LengthN are intentionally dropped.
             continue;
         }
 
@@ -1381,7 +1381,7 @@ static int is_media_file(const char *path) {
             name = p + 1;
         }
     }
-    /* No dot is not the same as no extension. */
+    // No dot is not the same as no extension.
     ext = strrchr(name, '.');
     if (!ext) {
         return 1;

@@ -48,4 +48,4 @@ void media_info_clear_audio_passthrough(void);
 void media_info_note_video_output(int width, int height, AVRational sar,
                                   AVRational frame_rate);
 
-#endif /* LACHESIS_INFORMATION_H */
+#endif // LACHESIS_INFORMATION_H

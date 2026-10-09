@@ -42,10 +42,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-/* clang-format off */
+// clang-format off
 #include <windows.h>
 #include <sddl.h>
-/* clang-format on */
+// clang-format on
 #else
 #include <sys/socket.h>
 #include <sys/time.h>
@@ -62,7 +62,7 @@
 #include "lachesis_playlist.h"
 #include "lachesis_single.h"
 
-/* Bumped only if the wire format stops being backwards compatible. */
+// Bumped only if the wire format stops being backwards compatible.
 #define SINGLE_MAGIC "LACHESIS-SINGLE-1"
 
 #define SINGLE_VERB_PLAY "play"
@@ -219,7 +219,7 @@ static int single_path_is_local_stream(const char *path) {
 }
 
 #if !defined(_WIN32)
-/* Keeps concurrent graphical sessions from stealing each other's files. */
+// Keeps concurrent graphical sessions from stealing each other's files.
 static void single_session_key(char *buf, size_t size) {
     const char *display = getenv("WAYLAND_DISPLAY");
     uint32_t hash = 2166136261u;
@@ -361,7 +361,7 @@ static SingleRequest *single_parse(char *blob, size_t len) {
     } else if (!strcmp(verb, SINGLE_VERB_QUEUE)) {
         req->mode = SINGLE_QUEUE;
     } else {
-        /* Guessing here would mean guessing at whether to wipe the playlist. */
+        // Guessing here would mean guessing at whether to wipe the playlist.
         single_request_free(req);
         return NULL;
     }
@@ -670,7 +670,7 @@ static void single_server_forget(void) {
     single_pipe_name[0] = '\0';
 }
 
-/* Unblocks the listener's ConnectNamedPipe() so that it can see single_stop. */
+// Unblocks the listener's ConnectNamedPipe() so that it can see single_stop.
 static void single_server_wake(void) {
     HANDLE h;
 
@@ -763,7 +763,7 @@ static int single_client_send(const char *payload, size_t len) {
     return ok ? 1 : -1;
 }
 
-#else /* POSIX */
+#else // POSIX
 
 static int single_sock = -1;
 static char single_sock_path[SINGLE_ENDPOINT_MAX];
@@ -988,7 +988,7 @@ static int single_client_send(const char *payload, size_t len) {
     return ok ? 1 : -1;
 }
 
-#endif /* POSIX */
+#endif // POSIX
 
 #if defined(_WIN32)
 typedef HANDLE SingleConnHandle;
@@ -1039,7 +1039,7 @@ static int single_listen_thread(void *arg av_unused) {
             if (SDL_GetAtomicInt(&single_stop)) {
                 break;
             }
-            /* Idle rather than spin, and give up if it never recovers. */
+            // Idle rather than spin, and give up if it never recovers.
             if (++fails >= SINGLE_ACCEPT_FAILS) {
                 log_warn("Giving up on the single instance endpoint.\n");
                 break;

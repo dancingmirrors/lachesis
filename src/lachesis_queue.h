@@ -60,7 +60,7 @@ typedef struct FrameData {
 typedef struct Frame {
     AVFrame *frame;
     AVSubtitle sub;
-    /* Identifies the frame to libplacebo's mix cache. */
+    // Identifies the frame to libplacebo's mix cache.
     uint64_t id;
     int serial;
     double pts;
@@ -135,4 +135,4 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub);
 void decoder_abort(Decoder *d, FrameQueue *fq);
 void decoder_destroy(Decoder *d);
 
-#endif /* LACHESIS_QUEUE_H */
+#endif // LACHESIS_QUEUE_H

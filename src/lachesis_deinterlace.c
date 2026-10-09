@@ -47,7 +47,7 @@ static double deinterlace_field_rate(const VideoState *is) {
     return 2.0 * playback_speed / is->deint_frame_dur;
 }
 
-/* A new picture always starts over from its first field. */
+// A new picture always starts over from its first field.
 void deinterlace_new_picture(VideoState *is, const Frame *vp) {
     if (vp->id != is->deint_frame_id) {
         is->deint_frame_id = vp->id;
@@ -89,7 +89,7 @@ void deinterlace_clear(VideoState *is) {
     is->deint_active = 0;
 }
 
-/* Keeps the frame about to leave the queue around as YADIF's past reference. */
+// Keeps the frame about to leave the queue around as YADIF's past reference.
 void deinterlace_retire_frame(VideoState *is) {
     Frame *vp;
 
@@ -143,7 +143,7 @@ void deinterlace_apply(struct pl_frame *pl_frame,
     static const struct pl_deinterlace_params deint = {
         .algo = PL_DEINTERLACE_YADIF,
     };
-    /* See libplacebo's validate_structs() if there are mysterious failures. */
+    // See libplacebo's validate_structs() if there are mysterious failures.
     enum pl_field first = PL_FIELD_TOP;
 
     if (!params->deinterlace) {

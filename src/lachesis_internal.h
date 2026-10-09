@@ -47,13 +47,13 @@
 
 #define FFP_MIX_MAXVOLUME 128
 #define VOLUME_BOOST_MAX_PCT 300
-/* No A/V sync correction is done if below this threshold. */
+// No A/V sync correction is done if below this threshold.
 #define AV_NOSYNC_THRESHOLD 10.0
 #define AV_SYNC_THRESHOLD_MIN 0.04
 #define AV_SYNC_THRESHOLD_MAX 0.1
-/* Number of audio samples over which the audio difference average is computed. */
+// Number of audio samples over which the audio difference average is computed.
 #define AUDIO_DIFF_AVG_NB 20
-/* How long audio waits for the first picture at startup and after a seek. */
+// How long audio waits for the first picture at startup and after a seek.
 #define AUDIO_START_MAX_WAIT_US (10 * 1000000)
 #define AUDIO_RESYNC_MAX_WAIT_US (2 * 1000000)
 
@@ -101,14 +101,14 @@ typedef struct VideoState {
     SDL_AtomicInt audio_read_thread_done;
     SDL_AtomicInt sub_read_thread_done;
     volatile int abandoned;
-    /* Held while a reader claims something the rest of the process shares. */
+    // Held while a reader claims something the rest of the process shares.
     SDL_Mutex *pipeline_mutex;
     int force_refresh;
     int paused;
     int last_paused;
     int queue_attachments_req;
     int seek_req;
-    /* Bumped by every request so the demuxer can tell a newer one from the request it's already servicing. */
+    // Bumped by every request so the demuxer can tell a newer one from the request it's already servicing.
     int seek_serial;
     int seek_flags;
     int64_t seek_pos;
@@ -192,7 +192,7 @@ typedef struct VideoState {
     double decode_cost;
     int64_t cost_decode_us;
     int64_t cost_budget_us;
-    /* How long the video thread spent parked on a full picture queue. */
+    // How long the video thread spent parked on a full picture queue.
     int64_t stall_us;
     int64_t stall_mark_us;
     int64_t stall_fold_us;
@@ -240,7 +240,7 @@ typedef struct VideoState {
     PacketQueue videoq;
     int hwaccel_off;
     int hwaccel_unavailable;
-    /* Maximum duration of a frame, above which we consider the jump a timestamp discontinuity. */
+    // Maximum duration of a frame, above which we consider the jump a timestamp discontinuity.
     double max_frame_duration;
     struct SwsContext *sub_convert_ctx;
     int sub_convert_src_w, sub_convert_src_h;
@@ -312,10 +312,10 @@ typedef struct VideoState {
 
     int vfilter_idx;
     int oversize_warned_w, oversize_warned_h;
-    AVFilterContext *in_video_filter; /* The first filter in the video chain. */
-    AVFilterContext *out_video_filter; /* The last filter in the video chain. */
-    AVFilterContext *in_audio_filter; /* The first filter in the audio chain. */
-    AVFilterContext *out_audio_filter; /* The last filter in the audio chain. */
+    AVFilterContext *in_video_filter; // The first filter in the video chain.
+    AVFilterContext *out_video_filter; // The last filter in the video chain.
+    AVFilterContext *in_audio_filter; // The first filter in the audio chain.
+    AVFilterContext *out_audio_filter; // The last filter in the audio chain.
     AVFilterGraph *agraph;
 
     int last_video_stream, last_audio_stream, last_subtitle_stream;
@@ -425,4 +425,4 @@ void refresh_loop_wait_event(VideoState *is, SDL_Event *event);
 int poll_quit_request(void);
 int hwaccel_check_fallback(VideoState *is);
 
-#endif /* LACHESIS_INTERNAL_H */
+#endif // LACHESIS_INTERNAL_H

@@ -499,7 +499,7 @@ int parse_video_background(const char *value, uint8_t rgba[4]) {
     if (!strcmp(value, "tiles")) {
         return VIDEO_BACKGROUND_TILES;
     }
-    /* Any other value is parsed as a color. */
+    // Any other value is parsed as a color.
     if (av_parse_color(rgba, value, -1, NULL) < 0) {
         return -1;
     }
@@ -738,7 +738,7 @@ static int arg_is_spdif_codecs(const char *arg) {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
 const OptionDef options[] = {
-    CMDUTILS_COMMON_OPTIONS /* Just a comment to make clang-format ignore this line. */
+    CMDUTILS_COMMON_OPTIONS // Just a comment to make clang-format ignore this line.
     {"v", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_version}, "show version"},
     OPT_ALIAS("version", "v"),
     {"quiet", OPT_TYPE_FUNC, 0, {.func_arg = opt_quiet}, "silence all logging (overrides -loglevel)"},
@@ -838,20 +838,20 @@ const OptionDef options[] = {
 };
 #pragma GCC diagnostic pop
 
-/* clang-format off */
+// clang-format off
 #define PRINT_LIB_VERSION(libname, LIBNAME)                                              \
     av_log(NULL, AV_LOG_INFO, "  lib%-11s %2d.%3d.%3d / %2d.%3d.%3d\n", #libname,        \
            LIB##LIBNAME##_VERSION_MAJOR, LIB##LIBNAME##_VERSION_MINOR,                   \
            LIB##LIBNAME##_VERSION_MICRO, AV_VERSION_MAJOR(libname##_version()),          \
            AV_VERSION_MINOR(libname##_version()), AV_VERSION_MICRO(libname##_version()))
-/* clang-format on */
+// clang-format on
 
 int opt_version(void *optctx av_unused, const char *opt av_unused,
                 const char *arg av_unused) {
     int this_year = program_birth_year;
     time_t t = time(NULL);
 
-    /* Make sure the banner is visible regardless of loglevel. */
+    // Make sure the banner is visible regardless of loglevel.
     if (av_log_get_level() < AV_LOG_INFO) {
         av_log_set_level(AV_LOG_INFO);
     }
@@ -1726,7 +1726,7 @@ int parse_config_option(void *optctx, const char *opt, const char *arg,
         log_dead("%s: unknown option '%s'.\n", src, opt);
         return AVERROR(EINVAL);
     }
-    /* For example --help, --version... */
+    // For example --help, --version...
     if (po->flags & OPT_EXIT) {
         log_dead("%s: option '%s' is not allowed here.\n", src, opt);
         return AVERROR(EINVAL);

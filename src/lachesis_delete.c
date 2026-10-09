@@ -139,7 +139,7 @@ static wchar_t *delete_extended_path(wchar_t *w) {
         return full;
     }
 
-    /* UNC paths swap their leading "\\" for the "\\?\UNC\" prefix. */
+    // UNC paths swap their leading "\\" for the "\\?\UNC\" prefix.
     const wchar_t *prefix = (full[0] == L'\\' && full[1] == L'\\')
         ? L"\\\\?\\UNC\\"
         : L"\\\\?\\";
@@ -236,7 +236,7 @@ static int delete_unlink(const char *path, char *err, size_t errsz) {
     return ok;
 }
 
-#else /* !_WIN32 */
+#else // !_WIN32
 
 static int delete_check(const char *path, char *err, size_t errsz) {
     struct stat st;
@@ -266,7 +266,7 @@ static int delete_unlink(const char *path, char *err, size_t errsz) {
     return 1;
 }
 
-#endif /* _WIN32 */
+#endif // _WIN32
 
 int delete_current_file(VideoState **pis, int keep_paused) {
     VideoState *is = *pis;

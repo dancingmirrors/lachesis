@@ -40,10 +40,10 @@ extern int single_mode;
 
 enum SingleRole single_claim(char **paths, int n_paths);
 
-/* These two are main thread only. */
+// These two are main thread only.
 void single_poll(void);
 void single_handle_event(VideoState **pis);
 
 void single_shutdown(void);
 
-#endif /* LACHESIS_SINGLE_H */
+#endif // LACHESIS_SINGLE_H

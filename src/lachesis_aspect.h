@@ -32,4 +32,4 @@ int aspect_override_active(void);
 
 AVRational aspect_override_sar(int pic_width, int pic_height, AVRational sar);
 
-#endif /* LACHESIS_ASPECT_H */
+#endif // LACHESIS_ASPECT_H

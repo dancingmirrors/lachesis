@@ -42,4 +42,4 @@ int degrade_drop_late_frame(VideoState *is, double dpts, int64_t interval_us);
 
 const char *degrade_status(const VideoState *is);
 
-#endif /* LACHESIS_DEGRADE_H */
+#endif // LACHESIS_DEGRADE_H

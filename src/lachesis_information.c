@@ -452,7 +452,7 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
     snprintf(buf, bufsz, "%s", cached);
 }
 
-/* Make sure we don't somehow inherit the previous file's lines. */
+// Make sure we don't somehow inherit the previous file's lines.
 void media_info_reset(void) {
     audio_device_driver_line[0] = '\0';
     audio_device_format_line[0] = '\0';

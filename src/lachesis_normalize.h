@@ -56,4 +56,4 @@ int normalize_source_lufs(double *lufs);
 double normalize_limited_db(void);
 const char *normalize_status(void);
 
-#endif /* LACHESIS_NORMALIZE_H */
+#endif // LACHESIS_NORMALIZE_H

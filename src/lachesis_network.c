@@ -46,7 +46,7 @@ static char *build_default_ytdl_format(void) {
     char sel[512];
     size_t off = 0;
 
-    /* clang-format off */
+    // clang-format off
 #define ADD_SEL(codec)                                    \
     do {                                                  \
         int n = snprintf(sel + off, sizeof(sel) - off,    \
@@ -55,7 +55,7 @@ static char *build_default_ytdl_format(void) {
             off += (size_t)n;                             \
         }                                                 \
     } while (0)
-    /* clang-format on */
+    // clang-format on
 
     sel[0] = '\0';
     if (caps & RENDERER_DECODE_CAP_AV1) {
@@ -156,12 +156,12 @@ void set_ytdl_http_opts(AVDictionary **opts) {
 
 struct YtdlChunkedIO {
     char *url;
-    int64_t pos; /* The current logical byte position. */
-    int64_t size; /* The total resource size, or -1 if unknown. */
-    int64_t chunk; /* The request size in bytes. */
-    int64_t inner_read; /* The bytes consumed from the current inner request. */
-    AVIOContext *inner; /* The current chunk's HTTP context, or NULL. */
-    AVIOContext *pb; /* The wrapper context handed to the demuxer. */
+    int64_t pos; // The current logical byte position.
+    int64_t size; // The total resource size, or -1 if unknown.
+    int64_t chunk; // The request size in bytes.
+    int64_t inner_read; // The bytes consumed from the current inner request.
+    AVIOContext *inner; // The current chunk's HTTP context, or NULL.
+    AVIOContext *pb; // The wrapper context handed to the demuxer.
     VideoState *is;
 };
 
@@ -187,7 +187,7 @@ static int ytdl_chunked_open_inner(struct YtdlChunkedIO *c) {
             c->size = sz;
         }
     }
-    /* This should work with any lavf version. */
+    // This should work with any lavf version.
     if (c->pos > 0 && avio_seek(c->inner, c->pos, SEEK_SET) < 0) {
         avio_closep(&c->inner);
         return AVERROR(EIO);

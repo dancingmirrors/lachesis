@@ -27,4 +27,4 @@ int load_config_file(void *optctx, const OptionDef *defs);
 
 const char *user_home_dir(void);
 
-#endif /* LACHESIS_RC_H */
+#endif // LACHESIS_RC_H

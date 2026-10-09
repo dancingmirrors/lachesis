@@ -19,10 +19,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_log.h"
 #include "lachesis_renderer_internal.h"
-/* clang-format on */
+// clang-format on
 
 #if LACHESIS_HAVE_D3D11
 
@@ -327,7 +327,7 @@ int d3d11_refine_hw_frames(RendererContext *ctx, AVHWFramesContext *frames) {
     }
     dev_hwctx = frames->device_ctx->hwctx;
     if (dev_hwctx->device != ctx->placebo_d3d11->device) {
-        /* Another device's textures cannot be sampled here anyway. */
+        // Another device's textures cannot be sampled here anyway.
         return 0;
     }
     format = d3d11_decoder_format(frames->sw_format);
@@ -357,13 +357,13 @@ static int d3d11_create_swapchain(RendererContext *ctx, SDL_Window *window,
         w = h = 1;
     }
 
-    /* clang-format off */
+    // clang-format off
     ctx->swapchain = pl_d3d11_create_swapchain(ctx->placebo_d3d11,
                                                pl_d3d11_swapchain_params(
                                                    .window = hwnd,
                                                    .width = w,
                                                    .height = h, ));
-    /* clang-format on */
+    // clang-format on
     if (!ctx->swapchain) {
         return AVERROR_EXTERNAL;
     }
@@ -404,7 +404,7 @@ int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
 
     adapter = software ? NULL : d3d11_pick_adapter();
 
-    /* clang-format off */
+    // clang-format off
     ctx->placebo_d3d11 = pl_d3d11_create(ctx->log_ctx,
                                          pl_d3d11_params(
                                              .debug = enable_debug(opt),
@@ -413,7 +413,7 @@ int d3d11_backend_create(RendererContext *ctx, SDL_Window *window,
                                              .force_software = software,
                                              .flags = software ? 0 : D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                                              .min_feature_level = D3D_FEATURE_LEVEL_10_0, ));
-    /* clang-format on */
+    // clang-format on
     if (adapter) {
         IDXGIAdapter1_Release(adapter);
     }
@@ -580,7 +580,7 @@ bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
             int sub_w = i ? desc->log2_chroma_w : 0;
             int sub_h = i ? desc->log2_chroma_h : 0;
 
-            /* clang-format off */
+            // clang-format off
             *slot = pl_d3d11_wrap(ctx->gpu,
                                   pl_d3d11_wrap_params(
                                       .tex = (ID3D11Resource *)texture,
@@ -588,7 +588,7 @@ bool map_d3d11_frame(RendererContext *ctx, const AVFrame *frame,
                                       .fmt = view_fmt[i],
                                       .w = AV_CEIL_RSHIFT(full_w, sub_w),
                                       .h = AV_CEIL_RSHIFT(full_h, sub_h), ));
-            /* clang-format on */
+            // clang-format on
             if (!*slot) {
                 return false;
             }
@@ -624,4 +624,4 @@ void d3d11_backend_destroy(RendererContext *ctx) {
     pl_d3d11_destroy(&ctx->placebo_d3d11);
 }
 
-#endif /* LACHESIS_HAVE_D3D11 */
+#endif // LACHESIS_HAVE_D3D11

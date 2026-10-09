@@ -45,4 +45,4 @@ int encoder_open_audio(const AVChannelLayout *layout, int sample_rate,
 
 av_noreturn void encoder_run(VideoState *is);
 
-#endif /* LACHESIS_ENCODER_H */
+#endif // LACHESIS_ENCODER_H

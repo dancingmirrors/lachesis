@@ -34,7 +34,7 @@
 
 enum SupersampleLevel supersample_level = SUPERSAMPLE_OFF;
 
-/* clang-format off */
+// clang-format off
 static const char supersample_shader[] =
     "//!PARAM strength\n"
     "//!DESC Sharpening strength\n"
@@ -91,7 +91,7 @@ static const char supersample_shader[] =
     "\n"
     "    return vec4((e.rgb + lobe * (b + d + f + h)) / (1.0 + 4.0 * lobe), e.a);\n"
     "}\n";
-/* clang-format on */
+// clang-format on
 
 static float supersample_strength(enum SupersampleLevel level) {
     switch (level) {

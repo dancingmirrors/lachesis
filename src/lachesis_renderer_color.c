@@ -19,14 +19,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_alloc.h"
 #include "lachesis_config.h"
 #include "lachesis_icc.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
 #include "lachesis_renderer_internal.h"
-/* clang-format on */
+// clang-format on
 
 #include <math.h>
 #include <stddef.h>

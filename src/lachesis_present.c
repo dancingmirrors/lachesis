@@ -579,7 +579,7 @@ av_unused static int64_t driver_ns_to_relative_us(uint64_t driver_ns) {
     return 0;
 }
 
-/* Both called with the lock held. */
+// Both called with the lock held.
 static int have_submitted(void) {
     return vkp.submitted_tail != vkp.submitted_head;
 }
@@ -642,7 +642,7 @@ static int waiter_thread(void *unused) {
 
     return 0;
 }
-#endif /* HAVE_PRESENT_WAIT */
+#endif // HAVE_PRESENT_WAIT
 
 static VKAPI_ATTR VkResult VKAPI_CALL
 hook_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
@@ -660,7 +660,7 @@ hook_create_swapchain(VkDevice device, const VkSwapchainCreateInfoKHR *info,
     }
     SDL_UnlockMutex(vkp.lock);
 
-    /* Otherwise an overlay can leave the window transparent. */
+    // Otherwise an overlay can leave the window transparent.
     if (vkp.force_opaque &&
         info->compositeAlpha != VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) {
         opaque = *info;
@@ -749,7 +749,7 @@ hook_queue_present(VkQueue queue, const VkPresentInfoKHR *info) {
     }
 
     return res;
-#endif /* HAVE_PRESENT_WAIT */
+#endif // HAVE_PRESENT_WAIT
 }
 
 static PFN_vkVoidFunction hook_lookup(const char *name) {
@@ -1027,7 +1027,7 @@ static int poll_display_timing(VkSwapchainKHR swapchain, VkPresentSample *out) {
 
     return 1;
 }
-#endif /* HAVE_DISPLAY_TIMING */
+#endif // HAVE_DISPLAY_TIMING
 
 static int poll_present_wait(VkPresentSample *out) {
     int64_t display_us = 0;
@@ -1134,7 +1134,7 @@ void vkpresent_shutdown(void) {
     memset(&vkp, 0, sizeof(vkp));
 }
 
-#endif /* LACHESIS_HAVE_VULKAN */
+#endif // LACHESIS_HAVE_VULKAN
 
 #if LACHESIS_HAVE_D3D11
 
@@ -1321,4 +1321,4 @@ void d3dpresent_shutdown(void) {
     memset(&d3dp, 0, sizeof(d3dp));
 }
 
-#endif /* LACHESIS_HAVE_D3D11 */
+#endif // LACHESIS_HAVE_D3D11

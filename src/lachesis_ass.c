@@ -40,7 +40,7 @@ static void lass_message_cb(int level, const char *fmt, va_list va, void *data) 
 
     (void)data;
 
-    /* 0 is fatal, 1 is error, 2 is warning, and 4 is info. */
+    // 0 is fatal, 1 is error, 2 is warning, and 4 is info.
     if (level > 4) {
         return;
     }
@@ -313,7 +313,7 @@ size_t lass_escape(char *out, size_t outsz, const char *text) {
         return 0;
     }
 
-    /* clang-format off */
+    // clang-format off
 #define LASS_PUT(str, n)             \
     do {                             \
         if (o + (n) >= outsz) {      \
@@ -323,7 +323,7 @@ size_t lass_escape(char *out, size_t outsz, const char *text) {
         memcpy(out + o, (str), (n)); \
         o += (n);                    \
     } while (0)
-    /* clang-format on */
+    // clang-format on
 
     for (const char *p = text; *p; p++) {
         unsigned char c = (unsigned char)*p;

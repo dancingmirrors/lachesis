@@ -19,7 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_alloc.h"
 #include "lachesis_config.h"
 #include "lachesis_log.h"
@@ -27,7 +27,7 @@
 #include "lachesis_renderer_internal.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
-/* clang-format on */
+// clang-format on
 
 #include <stddef.h>
 #include <stdint.h>
@@ -140,7 +140,7 @@ static void vo_frames_drop(Vo *vo) {
     }
 }
 
-/* Called with the lock held. */
+// Called with the lock held.
 static int vo_job_take(Vo *vo, AVFrame *frame, const RenderParams *params,
                        int blank) {
     int num_mix = params->mix_frames ? params->mix_num_frames : 0;
@@ -224,7 +224,7 @@ typedef struct VoPending {
     float yaw, pitch, roll, hfov;
 } VoPending;
 
-/* Called with the lock held. */
+// Called with the lock held.
 static void vo_pending_take(Vo *vo, VoPending *p) {
     p->pending = vo->pending;
     vo->pending = 0;

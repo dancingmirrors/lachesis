@@ -25,4 +25,4 @@
 
 void icon_set_window_icon(SDL_Window *window);
 
-#endif /* LACHESIS_ICON_H */
+#endif // LACHESIS_ICON_H

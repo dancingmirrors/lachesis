@@ -58,4 +58,4 @@ void playlist_warn_unsafe_disabled(const char *path, int open_failed);
 
 const char *playlist_protocol_whitelist(const char *url);
 
-#endif /* LACHESIS_PLAYLIST_H */
+#endif // LACHESIS_PLAYLIST_H

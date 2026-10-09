@@ -34,4 +34,4 @@ void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
                           int *last_w, int *last_h, AVRational *last_sar,
                           AVRational *last_fr);
 
-#endif /* LACHESIS_VFILTER_H */
+#endif // LACHESIS_VFILTER_H

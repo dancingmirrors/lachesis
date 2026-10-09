@@ -198,7 +198,7 @@ static const char *ass_style_font_locked(const char *name, size_t len,
     return NULL;
 }
 
-/* ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text */
+// ReadOrder,Layer,Style,Name,MarginL,MarginR,MarginV,Effect,Text
 static int ass_route_emoji_locked(const char *in, char *out, size_t outsz) {
     const char *style = NULL, *text = NULL;
     const char *cur_font;
@@ -823,7 +823,7 @@ int subtitle_thread(void *arg) {
             sp->height = is->subdec.avctx->height;
             sp->uploaded = 0;
 
-            /* Now we can update the picture count. */
+            // Now we can update the picture count.
             frame_queue_push(&is->subpq);
         }
     }
@@ -1019,7 +1019,7 @@ static int external_subtitle_open(VideoState *is) {
     if (!is->filename || is->subtitle_st || subtitle_disable) {
         return -1;
     }
-    /* Only here to skip the stat calls. */
+    // Only here to skip the stat calls.
     if (is->archive_path || strstr(is->filename, "://")) {
         return -1;
     }

@@ -311,7 +311,7 @@ static int gpu_nodes(HwaccelGpuNode *nodes, int max) {
     return list_gpu_nodes(own, wanted, ask, nodes, max);
 }
 
-#else /* !LACHESIS_HAVE_DRM_NODES */
+#else // !LACHESIS_HAVE_DRM_NODES
 
 static int gpu_nodes(HwaccelGpuNode *nodes, int max) {
     (void)nodes;
@@ -320,7 +320,7 @@ static int gpu_nodes(HwaccelGpuNode *nodes, int max) {
     return 0;
 }
 
-#endif /* LACHESIS_HAVE_DRM_NODES */
+#endif // LACHESIS_HAVE_DRM_NODES
 
 #define LACHESIS_READBACK_ALIGN 64
 
@@ -663,7 +663,7 @@ static int hwaccel_decodes(const AVCodec *codec, enum AVHWDeviceType type) {
     }
 }
 
-/* For example, libdav1d outranks the native AV1 but decodes in software only. */
+// For example, libdav1d outranks the native AV1 but decodes in software only.
 static const AVCodec *hwaccel_decoder(const AVCodec *codec,
                                       enum AVHWDeviceType type) {
     void *iter = NULL;

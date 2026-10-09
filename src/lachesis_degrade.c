@@ -378,7 +378,7 @@ static int degrade_mending(const VideoState *is, double lag) {
         is->degrade_lag_peak - lag > DEGRADE_LATE_SECS;
 }
 
-/* Ping to check if we completely stalled while held for tempo. */
+// Ping to check if we completely stalled while held for tempo.
 static int degrade_watch_shown(VideoState *is, int64_t now) {
     if (is->degrade_shown != is->degrade_shown_mark) {
         is->degrade_shown_mark = is->degrade_shown;
@@ -417,7 +417,7 @@ static void degrade_content_skip(VideoState *is, double lag) {
                                             FFMAX(CONTENT_SKIP_MAX_JUMP, lag),
                                             &land);
     if (dropped <= 0.0) {
-        /* Nothing to land on in what we have buffered. */
+        // Nothing to land on in what we have buffered.
         return;
     }
     is->last_content_skip_us = now;
@@ -627,7 +627,7 @@ void degrade_frame(VideoState *is, double dpts, int64_t decode_us,
     }
     now = av_gettime_relative();
 
-    /* A seek invalidates every measurement, but not the verdict. */
+    // A seek invalidates every measurement, but not the verdict.
     if (is->viddec.pkt_serial != is->degrade_serial) {
         is->degrade_serial = is->viddec.pkt_serial;
         is->degrade_deaf = decoder_is_deaf(is->viddec.avctx);
@@ -673,7 +673,7 @@ int degrade_drop_late_frame(VideoState *is, double dpts, int64_t interval_us) {
             (frame_queue_nb_remaining(&is->pictq) > 0 ||
              degrade_can_catch_up(is, now))) {
             is->frame_drops_early++;
-            /* Real voodoo here. */
+            // Real voodoo here.
             return 0;
         }
     }

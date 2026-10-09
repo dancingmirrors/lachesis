@@ -37,4 +37,4 @@ void shader_cache_open(ShaderCache *sc, pl_gpu gpu, pl_log log,
                        const char *backend, const AVDictionary *opt);
 void shader_cache_close(ShaderCache *sc, pl_gpu gpu);
 
-#endif /* LACHESIS_CACHE_H */
+#endif // LACHESIS_CACHE_H

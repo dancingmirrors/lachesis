@@ -84,4 +84,4 @@ supersample_deband_params(enum SupersampleLevel level);
 const struct pl_filter_config *
 supersample_upscaler(enum SupersampleLevel level);
 
-#endif /* LACHESIS_SUPERSAMPLE_H */
+#endif // LACHESIS_SUPERSAMPLE_H

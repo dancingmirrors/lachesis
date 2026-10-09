@@ -26,10 +26,10 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-/* clang-format off */
+// clang-format off
 #include <io.h>
 #include <windows.h>
-/* clang-format on */
+// clang-format on
 #define LACHESIS_STDERR_ISATTY() _isatty(_fileno(stderr))
 #define LACHESIS_STDERR_WRITE(buf, len) _write(_fileno(stderr), buf, len)
 #else
@@ -130,7 +130,7 @@ static size_t log_status_budget(void) {
     return columns > 1 ? (size_t)columns - 1 : 0;
 }
 
-/* All of these expect the caller to hold log_mutex. */
+// All of these expect the caller to hold log_mutex.
 static void log_live_erase(void) {
     size_t cols = log_live_shown;
     size_t budget;
@@ -256,7 +256,7 @@ void log_status_break(void) {
     }
     log_live = LOG_LIVE_NONE;
     if (LACHESIS_STDERR_WRITE("\n", 1) < 0) {
-        /* Nothing to do. */
+        // Nothing to do.
     }
 }
 
@@ -353,7 +353,7 @@ void log_init(void) {
     log_stderr_tty = LACHESIS_STDERR_ISATTY();
     log_mutex = SDL_CreateMutex();
     if (!log_mutex) {
-        /* Is this reachable anywhere? */
+        // Is this reachable anywhere?
     }
     av_log_set_callback(log_av_callback);
 }

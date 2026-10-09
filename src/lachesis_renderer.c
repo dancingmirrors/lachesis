@@ -19,7 +19,7 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_alloc.h"
 #include "lachesis_cache.h"
 #include "lachesis_config.h"
@@ -35,7 +35,7 @@
 #include "lachesis_scale.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
-/* clang-format on */
+// clang-format on
 
 #include <inttypes.h>
 #include <limits.h>
@@ -233,7 +233,7 @@ static void placebo_scan_loaded_libs(struct placebo_lib_scan *scan) {
     dl_iterate_phdr(placebo_phdr_cb, scan);
 #endif
 }
-#endif /* LACHESIS_CAN_ITERATE_LIBS */
+#endif // LACHESIS_CAN_ITERATE_LIBS
 
 static void check_libplacebo_consistency(void) {
     static int done = 0;
@@ -254,7 +254,7 @@ static void check_libplacebo_consistency(void) {
         scan.versions[0] != PL_API_VER) {
         log_warn("PL_API_VER mismatch detected.\n");
     }
-#endif /* LACHESIS_CAN_ITERATE_LIBS */
+#endif // LACHESIS_CAN_ITERATE_LIBS
 }
 
 static int build_pixfmt_list(RendererContext *ctx) {
@@ -304,7 +304,7 @@ static void vk_log_cb(void *log_priv, enum pl_log_level level,
 static int create(Renderer *renderer, SDL_Window *window, AVDictionary *opt) {
     struct pl_log_params log_params = {
         .log_cb = vk_log_cb,
-        /* Not PL_LOG_WARN due to useless spam. */
+        // Not PL_LOG_WARN due to useless spam.
         .log_level = enable_debug(opt) ? PL_LOG_DEBUG : PL_LOG_ERR,
         .log_priv = renderer,
     };
@@ -466,7 +466,7 @@ static void clip_crops_to_target(struct pl_frame *image, struct pl_frame *target
     *dst = vis;
 }
 
-/* Theoretically needs consideration for fractional scaling. */
+// Theoretically needs consideration for fractional scaling.
 static View360Viewport clip_360_viewport(struct pl_frame *target,
                                          const SDL_Rect *clip) {
     View360Viewport viewport = VIEW360_VIEWPORT_WHOLE;
@@ -547,7 +547,7 @@ static bool samples_directly(const struct pl_filter_config *config) {
         pl_filter_config_eq(config, &pl_filter_nearest);
 }
 
-/* Fixed by libplacebo commit 118d8106640796d3f2ceb55f8634a32a58a47aa2. */
+// Fixed by libplacebo commit 118d8106640796d3f2ceb55f8634a32a58a47aa2.
 static bool downscaler_garbles(RendererContext *ctx,
                                const struct pl_filter_config *config,
                                float ratio, bool skip_aa) {
@@ -997,8 +997,10 @@ static int map_frame_mix(RendererContext *ctx, const AVFrame *frame,
     return mix->num;
 }
 
-/* pl_frame replaces the first frame, whose crop, rotation and alpha the others
- * follow. */
+//
+// pl_frame replaces the first frame, whose crop, rotation and alpha the others
+// follow.
+//
 static bool render_mix(RendererContext *ctx, FrameMix *mix,
                        const struct pl_frame *pl_frame,
                        const RenderParams *params,
@@ -1146,7 +1148,7 @@ static struct pl_render_params base_render_params(const RendererContext *ctx,
                                                   const RenderParams *params,
                                                   const ImageState *image,
                                                   struct pl_color_adjustment *adjustment) {
-    /* clang-format off */
+    // clang-format off
     return (struct pl_render_params){
         PL_RENDER_DEFAULTS
         .upscaler = pick_upscaler(ctx, image),
@@ -1161,7 +1163,7 @@ static struct pl_render_params base_render_params(const RendererContext *ctx,
         .disable_linear_scaling = ctx->benchmark,
         .skip_anti_aliasing = ctx->benchmark,
     };
-    /* clang-format on */
+    // clang-format on
 }
 
 #define IMAGE_SETTLE_US 250000
@@ -1361,8 +1363,11 @@ int renderer_draw_frame(Renderer *renderer, AVFrame *frame,
     t_rnd += _ts3 - _ts2;
 
 out:
-    /* A swapchain frame that was started must always be submitted regardless of rendering failure, otherwise its
-     * acquired image is never released and the next pl_swapchain_start_frame() blocks forever in AcquireNextImage. */
+    //
+    // A swapchain frame that was started must always be submitted regardless of rendering
+    // failure, otherwise its acquired image is never released and the next
+    // pl_swapchain_start_frame() blocks forever in AcquireNextImage.
+    //
     if (frame_started) {
         if (!pl_swapchain_submit_frame(ctx->swapchain)) {
             if (ret == 0) {
@@ -1434,7 +1439,7 @@ done:
     return ret;
 }
 
-/* Work around a libplacebo bug. */
+// Work around a libplacebo bug.
 static int capture_recover(RendererContext *ctx,
                            const struct pl_render_errors *before, int fatal) {
     struct pl_render_errors now = pl_renderer_get_errors(ctx->renderer);
@@ -1496,7 +1501,7 @@ static int render_offscreen(RendererContext *ctx, AVFrame *frame,
         next_ref = NULL;
     }
 
-    /* Unlike drawing, keeps the mix slots: a screenshot shares them. */
+    // Unlike drawing, keeps the mix slots: a screenshot shares them.
     if (map_frame_mix(ctx, frame, params, &mix) > 0) {
         pl_frame = mix.images[0];
     } else if (!map_video_frame(ctx, frame, &pl_frame)) {
@@ -1715,7 +1720,7 @@ static int capture_test(Renderer *renderer) {
     frame = alloc_self_test_frame(255);
     pixels = frame ? av_mallocz(size * size * 4) : NULL;
     if (!pixels) {
-        /* Being out of memory is not the renderer's fault. */
+        // Being out of memory is not the renderer's fault.
         av_frame_free(&frame);
         return 0;
     }
@@ -1738,7 +1743,7 @@ static int capture_test(Renderer *renderer) {
     return ret;
 }
 
-/* Unlike for screenshots, the planes have to be readable. */
+// Unlike for screenshots, the planes have to be readable.
 static int capture_frame_test(RendererContext *ctx) {
     enum { size = LACHESIS_SELF_TEST_SIZE };
     RenderParams params = {.target_rect = {0, 0, size, size}};
@@ -1752,7 +1757,7 @@ static int capture_frame_test(RendererContext *ctx) {
         out->width = size;
         out->height = size;
     }
-    /* Being out of memory is not the renderer's fault. */
+    // Being out of memory is not the renderer's fault.
     if (frame && out && av_frame_get_buffer(out, 0) >= 0) {
         memset(out->data[0], 0, (size_t)out->linesize[0] * size);
         ret = capture_frame(ctx, frame, &params, out);
@@ -2137,9 +2142,10 @@ static int offscreen_video_init(const char *driver) {
     return ret;
 }
 
-/* SDL offers its offscreen driver only when asked, and even a hidden kmsdrm
- * window takes over the console.
- */
+//
+// SDL offers its offscreen driver only when asked, and even a hidden kmsdrm
+// window takes over the console.
+//
 static int offscreen_open_gl(const RendererOpenParams *params, Renderer **out,
                              char *why, size_t why_size) {
     static const char *const drivers[] = {NULL, "offscreen"};

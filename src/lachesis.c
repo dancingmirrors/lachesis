@@ -75,13 +75,13 @@
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
-/* clang-format off */
+// clang-format off
 #include <direct.h>
 #include <io.h>
 #include <windows.h>
 #include <shellapi.h>
-/* clang-format on */
-#undef main /* We don't want SDL to override our main(). */
+// clang-format on
+#undef main // We don't want SDL to override our main().
 #define PATH_SEPARATOR '\\'
 #else
 #include <unistd.h>
@@ -127,7 +127,7 @@ const int program_birth_year = 2003;
 
 static void init_dynload(void) {
 #ifdef _WIN32
-    /* Remove the current working directory from the DLL search path as a security precaution. */
+    // Remove the current working directory from the DLL search path as a security precaution.
     SetDllDirectoryW(L"");
 #endif
 }
@@ -723,7 +723,7 @@ static VideoState *stream_open(const char *filename,
     is->from_playlist = from_playlist;
     is->archive_path = NULL;
     is->entry_name = NULL;
-    /* These must be set before read_thread is created. */
+    // These must be set before read_thread is created.
     if (archive_path && entry_name) {
         is->archive_path = av_strdup(archive_path);
         is->entry_name = av_strdup(entry_name);
@@ -964,7 +964,7 @@ void render_fault_fallback(VideoState **pis) {
         return;
     }
 
-    /* Avoid an infinite loop. */
+    // Avoid an infinite loop.
     renderer_faulted_apis |= 1u << renderer_api(renderer);
     if (gpu_api != RENDERER_API_AUTO &&
         (renderer_faulted_apis & (1u << gpu_api))) {
@@ -1082,7 +1082,7 @@ void stream_cycle_channel(VideoState *is, int codec_type) {
         }
         st = is->ic->streams[p ? (int)p->stream_index[stream_index] : stream_index];
         if (st->codecpar->codec_type == codec_type) {
-            /* Check that parameters are okay. */
+            // Check that parameters are okay.
             switch (codec_type) {
             case AVMEDIA_TYPE_AUDIO:
                 if (st->codecpar->sample_rate != 0 &&
@@ -1129,7 +1129,7 @@ int poll_quit_request(void) {
     if (quit_signal) {
         return 1;
     }
-    /* A hidden window still has messages to answer, but no events we want. */
+    // A hidden window still has messages to answer, but no events we want.
     if (SDL_WasInit(SDL_INIT_VIDEO)) {
         SDL_PumpEvents();
         SDL_FlushEvents(SDL_EVENT_QUIT + 1, SDL_EVENT_USER - 1);
@@ -1323,7 +1323,7 @@ static int opt_input_file(void *optctx av_unused, const char *filename) {
 }
 
 static int add_input_file(const char *filename) {
-    /* Keep input_filename pointing to the first file. */
+    // Keep input_filename pointing to the first file.
     if (!input_filename) {
         input_filename = av_strdup(filename);
         if (!input_filename) {
@@ -1396,7 +1396,7 @@ static const char *video_driver_list(char *buf, size_t size,
                 buf[len] = '\0';
                 return buf;
             }
-            /* A truncated name is a driver that does not exist. */
+            // A truncated name is a driver that does not exist.
             if (av_strlcat(buf, name, size) >= size) {
                 buf[len] = '\0';
                 return buf;
@@ -1445,7 +1445,7 @@ static const char *audio_driver_list(char *buf, size_t size) {
             buf[len] = '\0';
             return buf;
         }
-        /* A truncated name is a driver that does not exist. */
+        // A truncated name is a driver that does not exist.
         if (av_strlcat(buf, name, size) >= size) {
             buf[len] = '\0';
             return buf;
@@ -1626,7 +1626,7 @@ int main(int argc, char **argv) {
     signal(SIGINT, sigterm_handler);
     signal(SIGTERM, sigterm_handler);
 
-    /* The command line wins. */
+    // The command line wins.
     ret = load_config_file(NULL, options);
     if (ret < 0) {
         uninit_opts();
@@ -1792,6 +1792,6 @@ int main(int argc, char **argv) {
     }
     event_loop(&is);
 
-    /* Never returns. */
+    // Never returns.
     return 0;
 }

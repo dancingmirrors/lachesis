@@ -438,7 +438,7 @@ static void audio_hold_for_seek(VideoState *is) {
     audio_device_pause();
 }
 
-/* Replace whatever is pending rather than dropping the request. */
+// Replace whatever is pending rather than dropping the request.
 static void stream_seek_to(VideoState *is, int64_t pos, int64_t rel, int by_bytes,
                            int exact, int64_t exact_pts) {
     audio_hold_for_seek(is);
@@ -535,7 +535,7 @@ void ab_loop_toggle(VideoState *is) {
         ab_loop_fmt_time(playhead_elapsed(is, ab_loop_a), a_buf, sizeof(a_buf));
         ab_loop_fmt_time(playhead_elapsed(is, ab_loop_b), b_buf, sizeof(b_buf));
         osd_show_message("A-B loop: %s - %s", a_buf, b_buf);
-        /* Snap back to A. */
+        // Snap back to A.
         stream_seek(is, (int64_t)(ab_loop_a * AV_TIME_BASE),
                     (int64_t)((ab_loop_a - pos) * AV_TIME_BASE), 0);
     } else {

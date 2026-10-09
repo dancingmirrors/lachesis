@@ -28,4 +28,4 @@ void screenshot_report(const SDL_Event *event);
 
 int screenshot_shutdown(void);
 
-#endif /* LACHESIS_SCREENSHOT_H */
+#endif // LACHESIS_SCREENSHOT_H

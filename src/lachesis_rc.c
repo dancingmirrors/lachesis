@@ -136,7 +136,7 @@ static char *parse_value(char *v) {
             *close = '\0';
             return v + 1;
         }
-        /* Fall through and take the value literally. */
+        // Fall through and take the value literally.
     }
 
     int seen = 0;
@@ -214,7 +214,7 @@ int load_config_file(void *optctx, const OptionDef *defs) {
             p = line + strlen(line);
         }
 
-        /* Tolerate CRLF. */
+        // Tolerate CRLF.
         size_t len = strlen(line);
         if (len && line[len - 1] == '\r') {
             line[len - 1] = '\0';

@@ -33,4 +33,4 @@
 #define LACHESIS_INF ((double)INFINITY)
 #endif
 
-#endif /* LACHESIS_MATH_H */
+#endif // LACHESIS_MATH_H

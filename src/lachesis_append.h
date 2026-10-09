@@ -43,4 +43,4 @@ int64_t append_io_read(struct AppendIO *a, void *buf, size_t size,
                        int expect_more);
 int64_t append_io_seek(struct AppendIO *a, int64_t offset, int whence);
 
-#endif /* LACHESIS_APPEND_H */
+#endif // LACHESIS_APPEND_H

@@ -48,7 +48,7 @@ static const struct pl_filter_config *filter_at(int i) {
     return i < pl_num_filter_configs ? pl_filter_configs[i] : &haasnsoft;
 }
 
-/* Frame mixing filters live in the same list but are no use to us here. */
+// Frame mixing filters live in the same list but are no use to us here.
 static int is_scaler(const struct pl_filter_config *config) {
     return config && (config->allowed & PL_FILTER_SCALING) != 0;
 }

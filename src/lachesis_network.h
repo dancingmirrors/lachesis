@@ -44,4 +44,4 @@ struct YtdlChunkedIO *ytdl_chunked_create(const char *url, VideoState *is);
 void ytdl_chunked_free(struct YtdlChunkedIO **pc);
 AVIOContext *ytdl_chunked_pb(struct YtdlChunkedIO *c);
 
-#endif /* LACHESIS_NETWORK_H */
+#endif // LACHESIS_NETWORK_H

@@ -19,10 +19,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_log.h"
 #include "lachesis_renderer_internal.h"
-/* clang-format on */
+// clang-format on
 
 #if LACHESIS_HAVE_OPENGL
 
@@ -118,7 +118,7 @@ const char *gl_apply_profile_hints(int attempt, const AVDictionary *opt) {
     SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
     SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-    /* No destination alpha. */
+    // No destination alpha.
     SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 0);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
@@ -254,7 +254,7 @@ static int gl_render_node(RendererContext *ctx, char *buf, size_t size) {
     return 0;
 }
 
-#endif /* LACHESIS_HAVE_DRM_NODES */
+#endif // LACHESIS_HAVE_DRM_NODES
 
 int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                       AVDictionary *opt) {
@@ -293,7 +293,7 @@ int gl_backend_create(RendererContext *ctx, SDL_Window *window,
     }
     ctx->gl_egl_display = egl_display;
 
-    /* clang-format off */
+    // clang-format off
     ctx->placebo_gl = pl_opengl_create(ctx->log_ctx,
                                        pl_opengl_params(
                                            .get_proc_addr = gl_get_proc_addr,
@@ -317,20 +317,20 @@ int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                                                .release_current = gl_release_current,
                                                .priv = ctx, ));
     }
-    /* clang-format on */
+    // clang-format on
     if (!ctx->placebo_gl) {
         return AVERROR_EXTERNAL;
     }
 
     ctx->gpu = ctx->placebo_gl->gpu;
 
-    /* clang-format off */
+    // clang-format off
     ctx->swapchain = pl_opengl_create_swapchain(ctx->placebo_gl,
                                                 pl_opengl_swapchain_params(
                                                     .swap_buffers = gl_swap_buffers,
                                                     .framebuffer.flipped = false,
                                                     .priv = ctx, ));
-    /* clang-format on */
+    // clang-format on
     if (!ctx->swapchain) {
         return AVERROR_EXTERNAL;
     }
@@ -403,4 +403,4 @@ void gl_backend_destroy(RendererContext *ctx) {
     }
 }
 
-#endif /* LACHESIS_HAVE_OPENGL */
+#endif // LACHESIS_HAVE_OPENGL

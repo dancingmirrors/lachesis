@@ -550,7 +550,7 @@ void *alloc_wrap_realloc(void *ptr, size_t size, const char *loc) {
 void *alloc_wrap_realloc_f(void *ptr, size_t nelem, size_t elsize, const char *loc) {
     void *ret;
 
-    /* This one frees ptr even when it fails. */
+    // This one frees ptr even when it fails.
     alloc_forget(ptr);
     ret = av_realloc_f(ptr, nelem, elsize);
     alloc_remember(ret, alloc_mul(nelem, elsize), loc);

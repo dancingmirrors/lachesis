@@ -45,6 +45,6 @@ int d3dpresent_poll(D3DPresentSample *out);
 void d3dpresent_disable(void);
 void d3dpresent_shutdown(void);
 
-#endif /* LACHESIS_HAVE_D3D11 */
+#endif // LACHESIS_HAVE_D3D11
 
-#endif /* LACHESIS_PRESENT_D3D11_H */
+#endif // LACHESIS_PRESENT_D3D11_H

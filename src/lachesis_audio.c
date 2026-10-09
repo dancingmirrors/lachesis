@@ -98,7 +98,7 @@ typedef struct SpdifContext {
 
 static SpdifContext spdif;
 
-/* clang-format off */
+// clang-format off
 #define LACHESIS_CH_LAYOUT_9POINT1POINT6                                  \
     (AV_CH_FRONT_LEFT | AV_CH_FRONT_RIGHT | AV_CH_FRONT_CENTER |          \
      AV_CH_LOW_FREQUENCY | AV_CH_BACK_LEFT | AV_CH_BACK_RIGHT |           \
@@ -106,7 +106,7 @@ static SpdifContext spdif;
      AV_CH_SIDE_LEFT | AV_CH_SIDE_RIGHT | AV_CH_TOP_FRONT_LEFT |          \
      AV_CH_TOP_FRONT_RIGHT | AV_CH_TOP_BACK_LEFT | AV_CH_TOP_BACK_RIGHT | \
      AV_CH_TOP_SIDE_LEFT | AV_CH_TOP_SIDE_RIGHT)
-/* clang-format on */
+// clang-format on
 
 static void channel_layout_default(AVChannelLayout *layout, int nb_channels) {
     if (nb_channels == 16) {
@@ -432,7 +432,7 @@ static void spdif_check_burst_period(int64_t pkt_duration, AVRational tb,
 
 static inline int cmp_audio_fmts(enum AVSampleFormat fmt1, int64_t channel_count1,
                                  enum AVSampleFormat fmt2, int64_t channel_count2) {
-    /* If channel count == 1, planar and non-planar formats are the same. */
+    // If channel count == 1, planar and non-planar formats are the same.
     if (channel_count1 == 1 && channel_count2 == 1) {
         return av_get_packed_sample_fmt(fmt1) != av_get_packed_sample_fmt(fmt2);
     } else {
@@ -775,7 +775,7 @@ int audio_thread(void *arg) {
                 af->serial = is->auddec.pkt_serial;
                 af->duration = av_q2d((AVRational){frame->nb_samples, frame->sample_rate});
 
-                /* Convert atempo's compressed output timeline back to the real source timeline. */
+                // Convert atempo's compressed output timeline back to the real source timeline.
                 if (graph_speed != 1.0 && !isnan(af->pts)) {
                     if (isnan(atempo_base_pts)) {
                         atempo_base_pts = af->pts;
@@ -927,14 +927,14 @@ static int audio_decode_frame(VideoState *is) {
             return -1;
         }
         if (wanted_nb_samples != af->frame->nb_samples) {
-            /* clang-format off */
+            // clang-format off
             if (swr_set_compensation(
                     is->swr_ctx,
                     (wanted_nb_samples - af->frame->nb_samples) *
                         is->audio_tgt.freq / af->frame->sample_rate,
                     wanted_nb_samples * is->audio_tgt.freq /
                         af->frame->sample_rate) < 0) {
-                /* clang-format on */
+                // clang-format on
                 return -1;
             }
         }
@@ -1019,7 +1019,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         if ((unsigned int)is->audio_buf_index >= is->audio_buf_size) {
             audio_size = audio_decode_frame(is);
             if (audio_size < 0) {
-                /* Just output silence upon error. */
+                // Just output silence upon error.
                 is->audio_buf = NULL;
                 is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
             } else {
@@ -1152,7 +1152,7 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
     if (av_channel_layout_copy(&audio_hw_params->ch_layout, wanted_channel_layout) < 0) {
         return -1;
     }
-    /* clang-format off */
+    // clang-format off
     audio_hw_params->frame_size =
         av_samples_get_buffer_size(NULL, audio_hw_params->ch_layout.nb_channels,
                                    1, audio_hw_params->fmt, 1);
@@ -1160,7 +1160,7 @@ int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout, int wanted_
         av_samples_get_buffer_size(NULL, audio_hw_params->ch_layout.nb_channels,
                                    audio_hw_params->freq, audio_hw_params->fmt,
                                    1);
-    /* clang-format on */
+    // clang-format on
     if (audio_hw_params->bytes_per_sec <= 0 || audio_hw_params->frame_size <= 0) {
         return -1;
     }

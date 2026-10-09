@@ -231,7 +231,7 @@ void video_prepare_overlays(VideoState *is) {
     is->render_params.sub_pixels = NULL;
     is->render_params.text_sub_pixels = NULL;
     is->render_params.next_frame = NULL;
-    /* This thread owns the composited subtitle surface, so it frees it. */
+    // This thread owns the composited subtitle surface, so it frees it.
     subtitles_reap();
     video_update_target_rect(is);
     osd_prepare(is);
@@ -275,10 +275,10 @@ static void video_image_display(VideoState *is) {
     if (ret == AVERROR(EAGAIN)) {
         display_deferred++;
     } else if (ret == AVERROR(ERANGE)) {
-        /* Doesn't imply the renderer doesn't work. */
+        // Doesn't imply the renderer doesn't work.
     } else if (ret < 0) {
         int limit = render_ever_ok ? RENDER_FAULT_LIMIT_LATE : RENDER_FAULT_LIMIT;
-        /* Can't be used to determine the renderer's health. */
+        // Can't be used to determine the renderer's health.
         if (!(SDL_GetWindowFlags(window) &
               (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN | SDL_WINDOW_OCCLUDED)) &&
             !render_fault_event_sent && ++render_fail_streak >= limit) {
@@ -358,7 +358,7 @@ static int audio_start_picture_shown(VideoState *is) {
     return shown && shown->serial != is->audio_start_serial;
 }
 
-/* Returns whether the window could be painted at all. */
+// Returns whether the window could be painted at all.
 static int video_display(VideoState *is) {
     int owed = display_deferred;
 
@@ -387,7 +387,7 @@ static int video_display(VideoState *is) {
     if (is->video_st) {
         video_image_display(is);
     } else {
-        /* Nothing to do. */
+        // Nothing to do.
         is->render_params.eq_brightness = 0;
         is->render_params.eq_gamma = 0;
         is->render_params.eq_contrast = 0;
@@ -451,7 +451,7 @@ static int open_is_slow(VideoState *is) {
         av_gettime_relative() - is->open_started_us >= SLOW_OPEN_US;
 }
 
-/* The OSD runs on wall clock time so it has to be painted even when the video is not. */
+// The OSD runs on wall clock time so it has to be painted even when the video is not.
 int osd_wants_repaint(VideoState *is, double now) {
     unsigned state;
 
@@ -585,12 +585,12 @@ void video_refresh(void *opaque, double *remaining_time) {
                 int presenting = display_disable ||
                     (last_done > 0 &&
                      av_gettime_relative() - last_done < 100000);
-                /* clang-format off */
+                // clang-format off
                 if (!benchmark && !is->step && presenting &&
                     (playback_speed > 1.0 ||
                      get_master_sync_type(is) != AV_SYNC_VIDEO_MASTER) &&
                     time > is->frame_timer + duration) {
-                    /* clang-format on */
+                    // clang-format on
                     is->frame_drops_late++;
                     deinterlace_retire_frame(is);
                     frame_queue_next(&is->pictq);
@@ -608,7 +608,7 @@ void video_refresh(void *opaque, double *remaining_time) {
                         sp2 = NULL;
                     }
 
-                    /* clang-format off */
+                    // clang-format off
                     if (sp->serial != is->subtitleq.serial ||
                         (is->vidclk.pts >
                          (sp->pts + (sp->sub.end_display_time / 1000.0))) ||
@@ -616,7 +616,7 @@ void video_refresh(void *opaque, double *remaining_time) {
                          is->vidclk.pts >
                              (sp2->pts +
                               (sp2->sub.start_display_time / 1000.0)))) {
-                        /* clang-format on */
+                        // clang-format on
                         frame_queue_next(&is->subpq);
                     } else {
                         break;

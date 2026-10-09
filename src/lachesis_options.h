@@ -68,9 +68,9 @@ typedef struct OptionDef {
     int (*is_value)(const char *arg);
 } OptionDef;
 
-/* clang-format off */
+// clang-format off
 #define OPT_ALIAS(name, target) {name, OPT_TYPE_ALIAS, 0, {.alias_of = target}}
-/* clang-format on */
+// clang-format on
 
 int parse_number(const char *context, const char *numstr, enum OptionType type,
                  double min, double max, double *dst);
@@ -99,14 +99,14 @@ void parse_all_files(int argc, char **argv, const OptionDef *defs);
 int opt_loglevel(void *optctx, const char *opt, const char *arg);
 int opt_quiet(void *optctx, const char *opt, const char *arg);
 
-/* clang-format off */
+// clang-format off
 #define CMDUTILS_COMMON_OPTIONS \
     {"h", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"}, \
     OPT_ALIAS("?", "h"), \
     OPT_ALIAS("help", "h"), \
     OPT_ALIAS("-help", "h"), \
     {"loglevel", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_loglevel}, "set the logging level", "loglevel"},
-/* clang-format on */
+// clang-format on
 int opt_help(void *optctx, const char *opt, const char *arg);
 
 extern const OptionDef options[];
@@ -192,7 +192,7 @@ extern int start_windowed;
 
 int parse_video_background(const char *value, uint8_t rgba[4]);
 
-/* For -video-bg. */
+// For -video-bg.
 int video_background_translucent(void);
 
 #define AUTOFIT_MIN 0.05
@@ -214,4 +214,4 @@ extern double display_fps_override;
 extern int no_vsync_snap;
 extern double fps_convert;
 
-#endif /* LACHESIS_OPTIONS_H */
+#endif // LACHESIS_OPTIONS_H

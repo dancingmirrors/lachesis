@@ -55,8 +55,10 @@ double aligned_start_pts(VideoState *is);
 void stream_seek(VideoState *is, int64_t pos, int64_t rel, int by_bytes);
 void stream_seek_exact(VideoState *is, int64_t pos);
 
-/* An exact seek lands on a keyframe ahead of the target and then throws away
- * what it decodes until the target arrives. */
+//
+// An exact seek lands on a keyframe ahead of the target and then throws away
+// what it decodes until the target arrives.
+//
 void exact_seek_arm(VideoState *is, int64_t target);
 void exact_seek_cancel(VideoState *is);
 int exact_seek_drop_video(VideoState *is, double pts);
@@ -75,4 +77,4 @@ void ab_loop_toggle(VideoState *is);
 void ab_loop_check(VideoState *is);
 void ab_loop_reset(void);
 
-#endif /* LACHESIS_SEEK_H */
+#endif // LACHESIS_SEEK_H

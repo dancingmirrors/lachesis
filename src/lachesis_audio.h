@@ -35,8 +35,10 @@
 
 extern int64_t audio_callback_time;
 
-/* Bumped whenever the playback speed changes so the audio thread rebuilds its
- * atempo filter chain. */
+//
+// Bumped whenever the playback speed changes so the audio thread rebuilds its
+// atempo filter chain.
+//
 extern int audio_speed_serial;
 
 int audio_open(void *opaque, AVChannelLayout *wanted_channel_layout,
@@ -55,4 +57,4 @@ int audio_spdif_open(VideoState *is, AVStream *st, int *hw_buf_size);
 int audio_spdif_active(void);
 int audio_spdif_names_known(const char *list);
 
-#endif /* LACHESIS_AUDIO_H */
+#endif // LACHESIS_AUDIO_H

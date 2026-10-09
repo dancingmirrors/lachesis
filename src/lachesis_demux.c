@@ -389,7 +389,7 @@ static int component_open(VideoState *is, int stream_index) {
         is->subtitle_st = ic->streams[stream_index];
 
         if ((ret = decoder_init(&is->subdec, avctx, &is->subtitleq, is->continue_read_thread)) < 0) {
-            /* Otherwise the libass track outlives the stream that feeds it. */
+            // Otherwise the libass track outlives the stream that feeds it.
             subtitles_track_close();
             is->subtitle_stream = -1;
             is->subtitle_st = NULL;
@@ -534,7 +534,7 @@ static int detect_still_image(const AVFormatContext *ic) {
             return 1;
         }
     }
-    /* There might be an additional edge case to consider here. */
+    // There might be an additional edge case to consider here.
     if (!strcmp(name, "mjpeg")) {
         for (unsigned int i = 0; i < ic->nb_streams; i++) {
             if (ic->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
@@ -583,9 +583,10 @@ typedef struct AsfSimpleIndex {
     const uint8_t *entries;
 } AsfSimpleIndex;
 
-/* Walk the top level objects like FFmpeg does, which finds the same data
- * packets and the same index objects after them.
- */
+//
+// Walk the top level objects like FFmpeg does, which finds the same data
+// packets and the same index objects after them.
+//
 static int asf_read_layout(AVIOContext *pb, int64_t fsize, AsfLayout *layout) {
     uint8_t obj[92];
     int64_t pos = 30;
@@ -765,10 +766,11 @@ static int asf_video_streams(AVFormatContext *ic, AVStream **video) {
     return n;
 }
 
-/* FFmpeg reads only the first simple index and files it under whichever
- * stream it first seeks in, which is the wrong one when the file has
- * another video stream with a lower number.
- */
+//
+// FFmpeg reads only the first simple index and files it under whichever
+// stream it first seeks in, which is the wrong one when the file has
+// another video stream with a lower number.
+//
 static int asf_load_indexes(AVFormatContext *ic, const AsfLayout *layout,
                             const uint8_t *buf, int size, int whole,
                             int64_t fsize) {
@@ -799,7 +801,7 @@ static int asf_load_indexes(AVFormatContext *ic, const AsfLayout *layout,
                 }
                 asf_extend_index(ic, video[i], &idx[i], layout, fsize, &budget, 0);
             }
-            /* What seeks without video. */
+            // What seeks without video.
             for (unsigned int i = 0; i < ic->nb_streams; i++) {
                 AVStream *st = ic->streams[i];
 
@@ -1098,7 +1100,7 @@ static int audio_read_thread(void *arg) {
     return 0;
 }
 
-/* This thread gets the stream from disk or the network. */
+// This thread gets the stream from disk or the network.
 int read_thread(void *arg) {
     VideoState *is = arg;
     AVFormatContext *ic = NULL;
@@ -1353,7 +1355,7 @@ int read_thread(void *arg) {
                          !!(ic->iformat->flags & AVFMT_TS_DISCONT) &&
                          strcmp("ogg", ic->iformat->name));
 
-    /* XXX */
+    // XXX
     is->max_frame_duration =
         (ic->iformat->flags & (AVFMT_TS_DISCONT | AVFMT_NOTIMESTAMPS)) ? 10.0
                                                                        : 3600.0;
@@ -1709,7 +1711,7 @@ int read_thread(void *arg) {
             (!is->audio_st || (is->auddec.finished == is->audioq.serial && frame_queue_nb_remaining(&is->sampq) == 0)) &&
             (!is->video_st || (is->viddec.finished == is->videoq.serial && frame_queue_nb_remaining(&is->pictq) == 0))) {
             if (is->loop_remaining != 1 && restarted && !lap_read) {
-                /* Can't seek back to the start. */
+                // Can't seek back to the start.
                 is->loop_remaining = 1;
             }
             if (is->is_still_image && !still_range_done) {
@@ -1796,10 +1798,10 @@ int read_thread(void *arg) {
         }
         if (pkt->stream_index == is->audio_stream && pkt_in_play_range && !is->audio_ic) {
             packet_queue_put(&is->audioq, pkt);
-            /* clang-format off */
+            // clang-format off
         } else if (pkt->stream_index == is->video_stream && pkt_in_play_range &&
                    !(is->video_st->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
-            /* clang-format on */
+            // clang-format on
             packet_queue_put(&is->videoq, pkt);
         } else if (pkt->stream_index == is->subtitle_stream && pkt_in_play_range) {
             packet_queue_put(&is->subtitleq, pkt);
@@ -1833,15 +1835,17 @@ fail:
     avformat_close_input(&kept_ic);
     if (!is->ic) {
         avformat_close_input(&ic);
-        /* ic->pb is not freed by avformat_close_input with AVFMT_FLAG_CUSTOM_IO,
-         * so free it now since is->ic was never set.
-         */
+        //
+        // ic->pb is not freed by avformat_close_input with AVFMT_FLAG_CUSTOM_IO,
+        // so free it now since is->ic was never set.
+        //
         archive_entry_close_avio(is->archive_avio);
         is->archive_avio = NULL;
     }
-    /* If is->ic was set, stream_close() will call avformat_close_input and then
-     * free the archive I/O.
-     */
+    //
+    // If is->ic was set, stream_close() will call avformat_close_input and then
+    // free the archive I/O.
+    //
     av_dict_free(&fmt_opts);
     av_dict_free(&base_opts);
     av_packet_free(&pkt);

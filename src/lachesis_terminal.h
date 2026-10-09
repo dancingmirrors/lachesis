@@ -26,4 +26,4 @@ void terminal_input_init(void);
 void terminal_input_poll(void);
 void terminal_restore_now(void);
 
-#endif /* LACHESIS_TERMINAL_H */
+#endif // LACHESIS_TERMINAL_H

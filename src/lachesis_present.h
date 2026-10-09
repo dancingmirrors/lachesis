@@ -66,4 +66,4 @@ double present_snap(double ideal_sec, double now_sec);
 
 void present_get_stats(PresentStats *st);
 
-#endif /* LACHESIS_PRESENT_H */
+#endif // LACHESIS_PRESENT_H

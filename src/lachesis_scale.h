@@ -29,4 +29,4 @@ int scale_filter_set(const char *name);
 
 void scale_filter_list(void);
 
-#endif /* LACHESIS_SCALE_H */
+#endif // LACHESIS_SCALE_H

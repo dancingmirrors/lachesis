@@ -58,4 +58,4 @@ unsigned osd_state(VideoState *is);
 
 void format_time(char *buf, int bufsz, double secs);
 
-#endif /* LACHESIS_OSD_H */
+#endif // LACHESIS_OSD_H

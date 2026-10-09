@@ -54,6 +54,6 @@ int vkpresent_poll(VkPresentSample *out);
 void vkpresent_disable(void);
 void vkpresent_shutdown(void);
 
-#endif /* LACHESIS_HAVE_VULKAN */
+#endif // LACHESIS_HAVE_VULKAN
 
-#endif /* LACHESIS_PRESENT_VULKAN_H */
+#endif // LACHESIS_PRESENT_VULKAN_H

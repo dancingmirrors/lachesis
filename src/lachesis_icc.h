@@ -24,8 +24,8 @@
 #include <stddef.h>
 
 typedef struct IccProfileInfo {
-    char device_class[5]; /* 'mntr', 'scnr', 'prtr'... */
-    char color_space[5]; /* 'RGB ', 'GRAY', 'Lab '... */
+    char device_class[5]; // 'mntr', 'scnr', 'prtr'...
+    char color_space[5]; // 'RGB ', 'GRAY', 'Lab '...
     int version_major;
     int version_minor;
     int has_vcgt;
@@ -46,4 +46,4 @@ void icc_gamma_ramp_scale(IccGammaRamp *ramp, const float scale[3]);
 int icc_gamma_ramp_is_identity(const IccGammaRamp *ramp);
 void icc_gamma_ramp_free(IccGammaRamp *ramp);
 
-#endif /* LACHESIS_ICC_H */
+#endif // LACHESIS_ICC_H

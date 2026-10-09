@@ -19,14 +19,14 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_alloc.h"
 #include "lachesis_config.h"
 #include "lachesis_hwaccel.h"
 #include "lachesis_log.h"
 #include "lachesis_renderer.h"
 #include "lachesis_renderer_internal.h"
-/* clang-format on */
+// clang-format on
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -127,7 +127,7 @@ static int create_hw_frame(Renderer *renderer, AVFrame *frame) {
         return ret;
     }
 
-    /* Make sure the view usage doesn't exceed the real image usage. */
+    // Make sure the view usage doesn't exceed the real image usage.
     if (frame->format == AV_PIX_FMT_VAAPI) {
         vk_frame_ctx = hw_frame->hwctx;
         vk_frame_ctx->usage = VK_IMAGE_USAGE_SAMPLED_BIT;
@@ -253,7 +253,7 @@ static int convert_frame_vulkan(Renderer *renderer, AVFrame *frame) {
     return ret;
 }
 
-#endif /* LACHESIS_HAVE_VULKAN */
+#endif // LACHESIS_HAVE_VULKAN
 
 static int convert_frame_readback(RendererContext *ctx, AVFrame *frame) {
     static int warned_download;
@@ -347,7 +347,7 @@ int convert_frame(Renderer *renderer, AVFrame *frame) {
 }
 
 #if PL_API_VER <= 360
-/* Fixed by libplacebo commit c93aa134ab62365ce1177efff99b8e1e66a818e7. */
+// Fixed by libplacebo commit c93aa134ab62365ce1177efff99b8e1e66a818e7.
 static bool callbacks_leak(const RendererContext *ctx) {
 #if PL_API_VER == 360
     if (pl_fix_ver() >= 1) {

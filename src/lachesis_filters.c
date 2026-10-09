@@ -64,7 +64,7 @@ int check_filtergraph(const char *desc) {
 
     AVFilterGraph *graph = avfilter_graph_alloc();
     if (!graph) {
-        /* "Out of memory" doesn't count. */
+        // "Out of memory" doesn't count.
         return 0;
     }
 
@@ -113,7 +113,7 @@ int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
         }
     }
 
-    /* Reorder the filters to ensure that inputs of the custom filters are merged first. */
+    // Reorder the filters to ensure that inputs of the custom filters are merged first.
     for (i = 0; i < graph->nb_filters - nb_filters; i++) {
         FFSWAP(AVFilterContext *, graph->filters[i], graph->filters[i + nb_filters]);
     }
@@ -226,7 +226,7 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
 
     last_filter = filt_out;
 
-    /* clang-format off */
+    // clang-format off
 #define INSERT_FILT(name, arg)                                                  \
     do {                                                                        \
         AVFilterContext *filt_ctx;                                              \
@@ -243,9 +243,9 @@ int configure_video_filters(AVFilterGraph *graph, VideoState *is, const char *vf
                                                                                 \
         last_filter = filt_ctx;                                                 \
     } while (0)
-    /* clang-format on */
+    // clang-format on
 
-    /* INSERT_FILT() builds the chain backwards. */
+    // INSERT_FILT() builds the chain backwards.
     max_dim = display_max_texture_size();
     if (max_dim > 0 && (force_autoscale || frame->width > max_dim || frame->height > max_dim)) {
         int scale_ret;
@@ -395,7 +395,7 @@ void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
     *last_sar = osar;
     *last_fr = ofr;
 
-    /* The renderer still has to hold the uncropped surface. */
+    // The renderer still has to hold the uncropped surface.
     max_dim = display_max_texture_size();
     if (max_dim > 0 && (lw > max_dim || lh > max_dim)) {
         log_warn("%dx%d exceeds %d.\n", lw, lh, max_dim);

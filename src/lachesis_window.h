@@ -43,4 +43,4 @@ void finish_raise(void);
 void refresh_display_info(VideoState *is);
 void window_uninit(void);
 
-#endif /* LACHESIS_WINDOW_H */
+#endif // LACHESIS_WINDOW_H

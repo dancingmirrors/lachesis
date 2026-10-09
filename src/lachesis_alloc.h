@@ -87,6 +87,6 @@ void alloc_wrap_freep(void *ptr);
 #define av_free(ptr) alloc_wrap_free(ptr)
 #define av_freep(ptr) alloc_wrap_freep(ptr)
 
-#endif /* LACHESIS_ALLOC_INTERNAL */
+#endif // LACHESIS_ALLOC_INTERNAL
 
-#endif /* LACHESIS_ALLOC_H */
+#endif // LACHESIS_ALLOC_H

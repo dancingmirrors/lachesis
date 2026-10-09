@@ -22,7 +22,7 @@
 #ifndef LACHESIS_RENDERER_INTERNAL_H
 #define LACHESIS_RENDERER_INTERNAL_H
 
-/* clang-format off */
+// clang-format off
 #include "lachesis_cache.h"
 #include "lachesis_config.h"
 #include "lachesis_hwaccel.h"
@@ -30,7 +30,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
-/* clang-format on */
+// clang-format on
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -81,7 +81,7 @@
 #endif
 #endif
 
-#endif /* LACHESIS_HAVE_VULKAN */
+#endif // LACHESIS_HAVE_VULKAN
 
 #if LACHESIS_HAVE_OPENGL
 #include <libplacebo/opengl.h>
@@ -154,7 +154,7 @@ typedef struct VoFeedback {
 
 #define VO_FEEDBACK_RING 8
 
-/* State the event loop wanted set but could not. */
+// State the event loop wanted set but could not.
 #define VO_PENDING_360 (1u << 0)
 #define VO_PENDING_SUPERSAMPLE (1u << 1)
 
@@ -166,9 +166,9 @@ typedef struct VoFrame {
 typedef struct Vo {
     SDL_Thread *thread;
     SDL_Mutex *lock;
-    /* The thread waits here for something to draw. */
+    // The thread waits here for something to draw.
     SDL_Condition *wake;
-    /* Everyone else waits here for it to finish. */
+    // Everyone else waits here for it to finish.
     SDL_Condition *idle;
 
     int quit;
@@ -246,7 +246,7 @@ typedef struct RendererContext {
     AVHWFramesConstraints *constraints;
     char device_request[256];
     unsigned decode_caps;
-    /* Not necessarily the requested mode. */
+    // Not necessarily the requested mode.
     VkPresentModeKHR present_mode;
 
     PFN_vkGetInstanceProcAddr get_proc_addr;
@@ -280,11 +280,11 @@ typedef struct RendererContext {
         uint64_t serial;
     } d3d11_pools[LACHESIS_D3D11_VIEW_POOLS];
     uint64_t d3d11_serial;
-    /* Whether decoder textures can double as shader resources. */
+    // Whether decoder textures can double as shader resources.
     int d3d11_bind_shader;
 #endif
 
-    /* See build_pixfmt_list(). */
+    // See build_pixfmt_list().
     enum AVPixelFormat *pixfmts;
     int num_pixfmts;
 
@@ -477,4 +477,4 @@ int dxgi_list_adapters(IDXGIFactory1 *factory, GpuDeviceNames names,
                        enum GpuClass *classes, IDXGIAdapter1 **adapters);
 #endif
 
-#endif /* LACHESIS_RENDERER_INTERNAL_H */
+#endif // LACHESIS_RENDERER_INTERNAL_H

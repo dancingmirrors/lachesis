@@ -33,7 +33,7 @@
 #define VIEW360_VC_LO 130.0
 #define VIEW360_VC_HI 180.0
 
-/* clang-format off */
+// clang-format off
 static const char view360_shader[] =
     "//!PARAM yaw\n"
     "//!DESC Horizontal view angle (degrees, positive = right)\n"
@@ -234,7 +234,7 @@ static const char view360_shader[] =
     "\n"
     "    return HOOKED_tex(st);\n"
     "}\n";
-/* clang-format on */
+// clang-format on
 
 const struct pl_hook *view360_pl_hook_create(const struct pl_gpu_t *gpu) {
     return pl_mpv_user_shader_parse(gpu, view360_shader,

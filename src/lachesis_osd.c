@@ -647,7 +647,7 @@ static void osd_draw_status(VideoState *is, OsdLayout *L) {
     format_time(dur_str, sizeof(dur_str), dur);
     pct = (dur > 0 && !isnan(pos) && pos >= 0) ? (int)(100.0 * pos / dur + 0.5)
                                                : 0;
-    /* XXX */
+    // XXX
     sym = (is->paused || is->step) ? "\xEE\x80\x82" : "\xEE\x80\x81";
     snprintf(line, sizeof(line), "%s / %s (%d%%)", pos_str, dur_str, pct);
 
@@ -821,7 +821,7 @@ typedef struct {
     int subtitle, del, info, ab_loop, message, status, volume;
 } OsdVis;
 
-/* The actual policy. */
+// The actual policy.
 static OsdVis osd_resolve(VideoState *is) {
     int64_t now = (int64_t)SDL_GetTicks();
     OsdVis v = {0};
@@ -968,7 +968,7 @@ static int osd_composite(VideoState *is, int cw, int ch,
     if (!img || !lass_bounds(img, cw, ch, &b)) {
         return 0;
     }
-    /* Byte order R, G, B, A, which is what the overlay upload wants. */
+    // Byte order R, G, B, A, which is what the overlay upload wants.
     if (!osd_surface_ensure(b.x1 - b.x0, b.y1 - b.y0,
                             SDL_PIXELFORMAT_RGBA32)) {
         return 0;
@@ -1111,7 +1111,7 @@ void osd_invalidate_info(void) {
 }
 
 void osd_show_delete_prompt(const char *name) {
-    /* Anything besides Y cancels. */
+    // Anything besides Y cancels.
     snprintf(osd_delete_prompt, sizeof(osd_delete_prompt), "Delete %s?",
              name && name[0] ? name : "this file");
     osd_delete_prompt_active = 1;
