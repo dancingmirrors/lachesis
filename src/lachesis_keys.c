@@ -695,7 +695,7 @@ void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                 }
                 break;
-            case SDLK_KP_1: {
+            case SDLK_KP_2: {
                 enum SupersampleLevel next;
 
                 if (refuse_without_video(cur_stream)) {
