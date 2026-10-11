@@ -1,0 +1,41 @@
+name: lachesis OpenBSD
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: actions/checkout@v7
+        uses: actions/checkout@v7
+
+      - name: Install dependencies, build, run
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            set -x
+            pkg_add ccache cmake ffmpeg git gmake libarchive libass libevdev-openbsd libinput-openbsd libplacebo libxkbcommon mpv ninja sdl3 wayland wayland-protocols
+            
+          run: |
+            set -ex
+
+            git config --global --add safe.directory "$PWD"
+            export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/local/share/pkgconfig
+            export LACHESIS_LEAK_REPORT=1
+            CFLAGS="-Werror" ./configure
+            ninja -v -C build
+
+            ./build/lachesis -h
+            ./build/lachesis --version
+
+            ffmpeg -y -f lavfi -i testsrc2=size=64x64:rate=1:duration=1 -c:v libx264 /tmp/test.mp4
+            #SDL_VIDEO_DRIVER=offscreen ./build/lachesis -an -gpu-api vulkan -loglevel debug -vn /tmp/test.mp4
+            SDL_VIDEO_DRIVER=offscreen ./build/lachesis -an -gpu-api opengl -loglevel debug -vn /tmp/test.mp4
