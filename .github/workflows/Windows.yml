@@ -119,6 +119,96 @@ jobs:
             done
           done
 
+      - name: Add license texts to portable bundle
+        run: |
+          set -x
+          export LC_ALL=C
+
+          dist=lachesis-windows-x86_64
+          cp LICENSE.* "$dist/"
+
+          lic="$dist/licenses"
+          tmp=$(mktemp -d)
+          rm -fr "$lic"
+          mkdir -p "$lic"
+          : > "$tmp/owners"
+          for dll in "$dist"/*.dll; do
+            if pkg=$(pacman -Qqo "/ucrt64/bin/${dll##*/}"); then
+              echo "$pkg ${dll##*/}" >> "$tmp/owners"
+            else
+              echo "::warning::No MSYS2 package owns ${dll##*/}"
+            fi
+          done
+          sort -o "$tmp/owners" "$tmp/owners"
+
+          cat > "$lic/README.txt" <<EOF
+          lachesis's own license texts are the LICENSE.* files next to lachesis.exe,
+          and its source is at $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/tree/$GITHUB_SHA.
+
+          The DLLs are unmodified files from the MSYS2 UCRT64 packages listed below.
+          Each package's license texts are in the directory of the same name, and its
+          source is at https://repo.msys2.org/mingw/sources/.
+
+          EOF
+
+          names='(copying|copyright|licen[cs]e|notice|patents|unlicense)[^/]*|license\.terms|licenses/[^/]+'
+          for pkg in $(cut -d' ' -f1 "$tmp/owners" | uniq); do
+            ver=$(pacman -Q "$pkg" | cut -d' ' -f2)
+            name=${pkg#mingw-w64-ucrt-x86_64-}
+            dest="$lic/$name"
+            mkdir -p "$dest"
+
+            pacman -Qlq "$pkg" | grep '^/ucrt64/share/licenses/.*[^/]$' > "$tmp/files" || true
+            while read -r f; do
+              rel=${f#/ucrt64/share/licenses/}
+              rel=${rel#*/}
+              mkdir -p "$dest/$(dirname "$rel")"
+              cp "$f" "$dest/$rel"
+            done < "$tmp/files"
+
+            if [ ! -s "$tmp/files" ]; then
+              base=$(sed -n '/^%BASE%$/{n;p;q}' "/var/lib/pacman/local/$pkg-$ver/desc")
+              src="$tmp/src"
+              rm -fr "$src"
+              mkdir -p "$src/x"
+              if curl -fsSL --retry 3 --retry-all-errors -o "$src/src.tar.zst" \
+                "https://repo.msys2.org/mingw/sources/$base-$ver.src.tar.zst"; then
+                tar -xf "$src/src.tar.zst" -C "$src"
+              fi
+              for a in "$src/$base"/*.tar.{bz2,gz,lz,xz,zst} "$src/$base"/*.tgz; do
+                [ -f "$a" ] || continue
+                tar -tf "$a" | grep -iE "^(\./)?[^/]+/($names)$" > "$src/members" || true
+                [ -s "$src/members" ] || continue
+                tar -xf "$a" -C "$src/x" -T "$src/members"
+                while read -r m; do
+                  rel=${m#./}
+                  rel=${rel#*/}
+                  mkdir -p "$dest/$(dirname "$rel")"
+                  cp "$src/x/$m" "$dest/$rel"
+                done < "$src/members"
+              done
+              # VCS sources are included as bare git repositories.
+              for repo in "$src/$base"/*/; do
+                [ -f "$repo/HEAD" ] || continue
+                n=$(basename "$repo")
+                rev=$(sed -n "/^\s*source = .*git+.*$n.*#/{s/.*#[a-z]*=//;s/?.*//;p;q}" "$src/$base/.SRCINFO")
+                git --git-dir="$repo" ls-tree -r --name-only "${rev:-HEAD}" | grep -iE "^($names)$" > "$src/members" || true
+                while read -r m; do
+                  mkdir -p "$dest/$(dirname "$m")"
+                  git --git-dir="$repo" show "${rev:-HEAD}:$m" > "$dest/$m"
+                done < "$src/members"
+              done
+            fi
+
+            if [ -z "$(ls -A "$dest")" ]; then
+              echo "::warning::No license text found for $pkg"
+            fi
+            licenses=$(pacman -Qi "$pkg" | sed -n 's/^Licenses *: //p')
+            dlls=$(awk -v p="$pkg" '$1 == p {print $2}' "$tmp/owners" | paste -sd ' ')
+            echo "$name $ver ($licenses): $dlls" >> "$lic/README.txt"
+          done
+          rm -fr "$tmp"
+
       - name: Upload artifact
         uses: actions/upload-artifact@v7
         with:
