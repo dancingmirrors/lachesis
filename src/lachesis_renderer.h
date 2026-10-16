@@ -204,4 +204,8 @@ void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll,
 
 int renderer_set_supersample(Renderer *renderer, enum SupersampleLevel level);
 
+int renderer_load_shaders(Renderer *renderer);
+void renderer_enable_shaders(Renderer *renderer, int on);
+int renderer_shaders_failed(Renderer *renderer);
+
 #endif // LACHESIS_RENDERER_H

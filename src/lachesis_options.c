@@ -31,6 +31,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #include <libavcodec/avcodec.h>
@@ -62,6 +63,7 @@
 #include "lachesis_playlist.h"
 #include "lachesis_rc.h"
 #include "lachesis_scale.h"
+#include "lachesis_shader.h"
 #include "lachesis_single.h"
 #include "lachesis_tonemap.h"
 
@@ -601,6 +603,56 @@ static int opt_icc_intent(void *optctx av_unused, const char *opt,
     return store_string(&icc_intent, arg);
 }
 
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & S_IFMT) == S_IFREG)
+#endif
+
+static int opt_shader(void *optctx av_unused, const char *opt, const char *arg) {
+    struct stat st;
+    char *path;
+    FILE *f;
+    int ret;
+
+    if (!arg[0]) {
+        shader_clear();
+        return 0;
+    }
+    path = expand_home(arg);
+    if (!path) {
+        return AVERROR(ENOMEM);
+    }
+    if (!stat(path, &st) && !S_ISREG(st.st_mode)) {
+        log_dead("The shader '%s' is not a regular file!\n", path);
+        av_free(path);
+        return AVERROR(EINVAL);
+    }
+    f = fopen(path, "rb");
+    if (!f) {
+        log_dead("Failed to open the shader '%s': %s!\n", path, strerror(errno));
+        av_free(path);
+        return AVERROR(EINVAL);
+    }
+    fclose(f);
+    ret = shader_add(path);
+    av_free(path);
+    if (ret == AVERROR(E2BIG)) {
+        log_dead("-%s can be given at most %d times.\n", opt, SHADER_MAX);
+        return AVERROR(EINVAL);
+    }
+
+    return ret;
+}
+
+static int opt_shader_params(void *optctx av_unused, const char *opt,
+                             const char *arg) {
+    if (shader_params_set(arg) < 0) {
+        log_dead("-%s must be name=value pairs separated by ':'.\n", opt);
+        return AVERROR(EINVAL);
+    }
+
+    return 0;
+}
+
 static int opt_gpu_device(void *optctx av_unused, const char *opt av_unused,
                           const char *arg) {
     if (!strcmp(arg, "help")) {
@@ -851,6 +903,8 @@ const OptionDef options[] = {
     {"deinterlace", OPT_TYPE_BOOL, 0, {&deinterlace}, "deinterlace with YADIF"},
     {"supersample", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_ARG_OPTIONAL, {.func_arg = opt_supersample}, "sharpen and deband video", "level", supersample_level_names, "medium", "off"},
     {"scaler", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_scale}, "set the scaler (or help)", "filter"},
+    {"shader", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_shader}, "add a user shader in mpv's GLSL hook format (pass more than once to chain them)", "file", NULL, NULL, ""},
+    {"shader-params", OPT_TYPE_FUNC, OPT_FUNC_ARG, {.func_arg = opt_shader_params}, "set user shader parameters with a list of name=value pairs separated by ':'", "params"},
     {"r", OPT_TYPE_DOUBLE, 0, {&fps_convert}, "convert video to this frame rate with the fps filter", "fps"},
     {
         NULL,
@@ -1145,6 +1199,8 @@ static const struct {
     {"vn", "interpolate", OPT_DISABLES},
     {"vn", "supersample", OPT_DISABLES},
     {"vn", "scaler", OPT_DISABLES},
+    {"vn", "shader", OPT_DISABLES},
+    {"vn", "shader-params", OPT_DISABLES},
     {"vn", "video-bg", OPT_DISABLES},
     {"vn", "tone-mapping", OPT_DISABLES},
     {"vn", "no-hdr-peak-detect", OPT_DISABLES},
@@ -1173,6 +1229,8 @@ static const struct {
 
     {"normalize", "normalize-target", OPT_NEEDS},
     {"normalize", "normalize-gain", OPT_NEEDS},
+
+    {"shader", "shader-params", OPT_NEEDS},
 
     {"sn", "scodec", OPT_DISABLES},
     {"sn", "sub-offset", OPT_DISABLES},
@@ -1227,7 +1285,12 @@ static const struct {
     {"icc-profile", "icc-auto", OPT_DISABLES},
 };
 
-static const char *const gpu_users[] = {"supersample", "deinterlace", "interpolate"};
+static const char *const gpu_users[] = {
+    "supersample",
+    "deinterlace",
+    "interpolate",
+    "shader",
+};
 static const char *const gpu_options[] = {
     "gpu-api",
     "gpu-params",

@@ -49,6 +49,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_screenshot.h"
 #include "lachesis_seek.h"
+#include "lachesis_shader.h"
 #include "lachesis_single.h"
 #include "lachesis_view.h"
 
@@ -694,6 +695,21 @@ void event_loop(VideoState **pis) {
                         view360_clamp_hfov(view360_projection, sbs360_hfov + 5.0f);
                     cur_stream->force_refresh = 1;
                 }
+                break;
+            case SDLK_KP_1:
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
+                if (!shader_count()) {
+                    osd_show_message("Shaders: none");
+                } else if (renderer_shaders_failed(renderer) >= shader_count()) {
+                    osd_show_message("Shaders: unavailable");
+                } else {
+                    shader_enabled = !shader_enabled;
+                    renderer_enable_shaders(renderer, shader_enabled);
+                    osd_show_message("Shaders: %s", shader_enabled ? "on" : "off");
+                }
+                cur_stream->force_refresh = 1;
                 break;
             case SDLK_KP_2: {
                 enum SupersampleLevel next;

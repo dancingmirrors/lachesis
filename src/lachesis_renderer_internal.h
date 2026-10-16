@@ -28,6 +28,7 @@
 #include "lachesis_hwaccel.h"
 #include "lachesis_icc.h"
 #include "lachesis_renderer.h"
+#include "lachesis_shader.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
 // clang-format on
@@ -157,6 +158,7 @@ typedef struct VoFeedback {
 // State the event loop wanted set but could not.
 #define VO_PENDING_360 (1u << 0)
 #define VO_PENDING_SUPERSAMPLE (1u << 1)
+#define VO_PENDING_SHADERS (1u << 2)
 
 typedef struct VoFrame {
     AVFrame *frame;
@@ -191,6 +193,7 @@ typedef struct Vo {
     VoOverlay text_sub;
 
     float view360_yaw, view360_pitch, view360_roll, view360_hfov;
+    int shaders_on;
 
     unsigned pending;
     enum View360Layout pending_360_layout;
@@ -318,6 +321,10 @@ typedef struct RendererContext {
     const struct pl_hook *supersample_hook;
     enum SupersampleLevel supersample_level;
 
+    ShaderSet *shaders;
+    int shaders_on;
+    int shaders_failed;
+
     int benchmark;
 
 #if PL_API_VER < 351
@@ -439,6 +446,7 @@ int renderer_draw_frame(Renderer *renderer, AVFrame *frame,
 int renderer_draw_blank(Renderer *renderer, RenderParams *params);
 int renderer_apply_360(RendererContext *ctx, enum View360Layout layout,
                        enum View360Projection projection);
+int renderer_apply_shaders(RendererContext *ctx);
 
 int vo_start(RendererContext *ctx);
 int vo_stop(RendererContext *ctx);

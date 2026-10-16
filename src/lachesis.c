@@ -115,6 +115,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_screenshot.h"
 #include "lachesis_seek.h"
+#include "lachesis_shader.h"
 #include "lachesis_single.h"
 #include "lachesis_subtitles.h"
 #include "lachesis_terminal.h"
@@ -528,6 +529,7 @@ static void uninit_opts(void) {
     }
     av_freep(&vfilters_list);
     nb_vfilters = 0;
+    shader_free_all();
     av_freep(&video_codec_name);
     av_freep(&audio_codec_name);
     av_freep(&subtitle_codec_name);
@@ -947,6 +949,13 @@ static void open_renderer(enum RendererApi api) {
     if (supersample_level != SUPERSAMPLE_OFF &&
         renderer_set_supersample(renderer, supersample_level) < 0) {
         fatal_quit("Failed to enable the supersample shader!\n");
+    }
+
+    if (shader_count() > 0) {
+        if (renderer_load_shaders(renderer) < 0) {
+            log_warn("The shaders are unavailable.\n");
+        }
+        renderer_enable_shaders(renderer, shader_enabled);
     }
 
     present_update_display_mode();
@@ -1637,6 +1646,7 @@ int main(int argc, char **argv) {
         exit(1);
     }
     int nb_config_vfilters = nb_vfilters;
+    shader_config_done();
 
     ret = parse_options(NULL, argc, argv, options, opt_input_file);
     if (ret < 0) {

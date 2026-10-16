@@ -58,6 +58,7 @@
 #include "lachesis_options.h"
 #include "lachesis_osd.h"
 #include "lachesis_seek.h"
+#include "lachesis_shader.h"
 
 #define ENCODE_VIDEO_TB ((AVRational){1, 60000})
 #define ENCODE_FALLBACK_FRAME_DURATION 0.04
@@ -78,6 +79,7 @@
 #define ENCODE_PROGRESS_US 250000
 #define ENCODE_REFRESH_RATE 60
 #define ENCODE_TB_MAX 65535
+#define ENCODE_WORK_DETAIL 256
 
 static const struct {
     const char *ext;
@@ -211,7 +213,8 @@ static int interpolates(const VideoState *is) {
 
 int encoder_renders(const VideoState *is) {
     return encoder_enabled() &&
-        (supersample_level != SUPERSAMPLE_OFF || deinterlace || interpolates(is));
+        (supersample_level != SUPERSAMPLE_OFF || deinterlace || interpolates(is) ||
+         shader_count() > 0);
 }
 
 double encoder_refresh_rate(void) {
@@ -764,20 +767,73 @@ static int render_video(AVFrame *src, RenderParams *params, AVFrame **dst) {
     return 0;
 }
 
+enum {
+    WORK_SUPERSAMPLE,
+    WORK_DEINTERLACE,
+    WORK_INTERPOLATE,
+    WORK_SHADER,
+    WORK_NB,
+};
+
+enum WorkForm {
+    FORM_FLAG,
+    FORM_VERB,
+    FORM_DOING,
+};
+
+static const char *const work_names[WORK_NB][3] = {
+    [WORK_SUPERSAMPLE] = {"-supersample", "supersample", "supersampling"},
+    [WORK_DEINTERLACE] = {"-deinterlace", "deinterlace", "deinterlacing"},
+    [WORK_INTERPOLATE] = {"-interpolate", "interpolate", "interpolating"},
+    [WORK_SHADER] = {"-shader", "run the shaders", "running"},
+};
+
+static size_t list_item(char *buf, size_t size, int listed, int num,
+                        const char *item) {
+    if (listed) {
+        av_strlcat(buf, num > 2 ? ", " : " ", size);
+        if (listed + 1 == num) {
+            av_strlcat(buf, "and ", size);
+        }
+    }
+
+    return av_strlcat(buf, item, size);
+}
+
+static const char *list_work(unsigned want, enum WorkForm form,
+                             char details[][ENCODE_WORK_DETAIL], char *buf,
+                             size_t size) {
+    int num = av_popcount(want);
+    int listed = 0;
+
+    buf[0] = '\0';
+    for (int i = 0; i < WORK_NB; i++) {
+        if (!(want & (1u << i))) {
+            continue;
+        }
+        list_item(buf, size, listed++, num, work_names[i][form]);
+        if (details) {
+            av_strlcat(buf, details[i], size);
+        }
+    }
+
+    return buf;
+}
+
+static void describe_shaders(char *buf, size_t size) {
+    int num = shader_count();
+    size_t len = 0;
+
+    snprintf(buf, size, " the shader%s ", num > 1 ? "s" : "");
+    for (int i = 0; i < num; i++) {
+        len = list_item(buf, size, i, num, shader_name(i));
+    }
+    if (len >= size) {
+        snprintf(buf, size, " %d shaders", num);
+    }
+}
+
 static int open_renderer(const VideoState *is, const Frame *vp, AVFrame **probe) {
-    static const struct {
-        const char *flags;
-        const char *verb;
-        const char *doing;
-    } work[] = {
-        [1] = {"-supersample", "supersample", "Supersampling"},
-        [2] = {"-deinterlace", "deinterlace", "Deinterlacing"},
-        [3] = {"-supersample and -deinterlace", "supersample and deinterlace",
-               "Supersampling and deinterlacing"},
-        [4] = {"-interpolate", "interpolate", "Interpolating"},
-        [5] = {"-supersample and -interpolate", "supersample and interpolate",
-               "Supersampling and interpolating"},
-    };
     RendererOpenParams params = {
         .title = program_name,
         .api = gpu_api,
@@ -785,10 +841,13 @@ static int open_renderer(const VideoState *is, const Frame *vp, AVFrame **probe)
         .device = gpu_device,
     };
     RenderParams probe_params = {.deinterlace = deinterlace};
-    int want = (supersample_level != SUPERSAMPLE_OFF ? 1 : 0) | (deinterlace ? 2 : 0) |
-        (interpolates(is) ? 4 : 0);
+    unsigned want = (supersample_level != SUPERSAMPLE_OFF ? 1u << WORK_SUPERSAMPLE : 0) |
+        (deinterlace ? 1u << WORK_DEINTERLACE : 0) |
+        (interpolates(is) ? 1u << WORK_INTERPOLATE : 0) |
+        (shader_count() > 0 ? 1u << WORK_SHADER : 0);
+    char details[WORK_NB][ENCODE_WORK_DETAIL] = {{0}};
+    char work[512];
     const char *device;
-    char rate[32] = "";
     char why[512];
     int ret;
 
@@ -797,37 +856,50 @@ static int open_renderer(const VideoState *is, const Frame *vp, AVFrame **probe)
     }
     if (deinterlace) {
         enc.v_fields = 2;
-        snprintf(rate, sizeof(rate), " to %.4g FPS",
+        snprintf(details[WORK_DEINTERLACE], ENCODE_WORK_DETAIL, " to %.4g FPS",
                  enc.v_fields / video_duration(vp));
     }
     if (interpolates(is)) {
         enc.v_refresh_rate = av_d2q(FFMAX(encoder_refresh_rate(), 1.0 / ENCODE_TB_MAX),
                                     ENCODE_TB_MAX);
-        snprintf(rate, sizeof(rate), " to %.4g FPS", av_q2d(enc.v_refresh_rate));
+        snprintf(details[WORK_INTERPOLATE], ENCODE_WORK_DETAIL, " to %.4g FPS",
+                 av_q2d(enc.v_refresh_rate));
+    }
+    if (shader_count() > 0) {
+        describe_shaders(details[WORK_SHADER], ENCODE_WORK_DETAIL);
     }
     params.opt = build_renderer_options(1);
     ret = renderer_open_offscreen(&params, &enc.renderer, why, sizeof(why));
     av_dict_free(&params.opt);
     if (ret < 0) {
         log_dead("Converting with %s needs a GPU, but none would render: %s.\n",
-                 work[want].flags, why);
+                 list_work(want, FORM_FLAG, NULL, work, sizeof(work)), why);
         return ret;
+    }
+    if (shader_count() > 0 &&
+        ((ret = renderer_load_shaders(enc.renderer)) < 0 ||
+         renderer_shaders_failed(enc.renderer) > 0)) {
+        log_dead("The %s renderer cannot run the shaders.\n",
+                 renderer_api_name(enc.renderer));
+        return ret < 0 ? ret : AVERROR_EXTERNAL;
     }
     if ((supersample_level != SUPERSAMPLE_OFF &&
          (ret = renderer_set_supersample(enc.renderer, supersample_level)) < 0) ||
         (ret = render_video(vp->frame, &probe_params, probe)) < 0) {
         log_dead("The %s renderer cannot %s: %s.\n",
-                 renderer_api_name(enc.renderer), work[want].verb, av_err2str(ret));
+                 renderer_api_name(enc.renderer),
+                 list_work(want, FORM_VERB, NULL, work, sizeof(work)),
+                 av_err2str(ret));
         return ret;
     }
 
+    list_work(want, FORM_DOING, details, work, sizeof(work));
+    work[0] = av_toupper(work[0]);
     device = renderer_device_name(enc.renderer);
     if (device) {
-        log_info("%s%s on %s (%s).\n", work[want].doing, rate,
-                 renderer_api_name(enc.renderer), device);
+        log_info("%s on %s (%s).\n", work, renderer_api_name(enc.renderer), device);
     } else {
-        log_info("%s%s on %s.\n", work[want].doing, rate,
-                 renderer_api_name(enc.renderer));
+        log_info("%s on %s.\n", work, renderer_api_name(enc.renderer));
     }
 
     return 0;

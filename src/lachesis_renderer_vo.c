@@ -222,6 +222,7 @@ typedef struct VoPending {
     enum View360Projection projection;
     enum SupersampleLevel supersample;
     float yaw, pitch, roll, hfov;
+    int shaders_on;
 } VoPending;
 
 // Called with the lock held.
@@ -235,6 +236,7 @@ static void vo_pending_take(Vo *vo, VoPending *p) {
     p->pitch = vo->view360_pitch;
     p->roll = vo->view360_roll;
     p->hfov = vo->view360_hfov;
+    p->shaders_on = vo->shaders_on;
 }
 
 static void vo_pending_apply(RendererContext *ctx, const VoPending *p) {
@@ -254,6 +256,10 @@ static void vo_pending_apply(RendererContext *ctx, const VoPending *p) {
         }
         ctx->supersample_level =
             ctx->supersample_hook ? p->supersample : SUPERSAMPLE_OFF;
+    }
+    ctx->shaders_on = p->shaders_on;
+    if ((p->pending & VO_PENDING_SHADERS) && renderer_apply_shaders(ctx) < 0) {
+        log_warn("The shaders are unavailable.\n");
     }
 }
 

@@ -41,6 +41,7 @@
 #include "lachesis_osd.h"
 #include "lachesis_present.h"
 #include "lachesis_seek.h"
+#include "lachesis_shader.h"
 #include "lachesis_supersample.h"
 
 static const char *active_hwaccel = NULL;
@@ -51,7 +52,7 @@ static char audio_device_format_line[96] = "";
 static char audio_passthrough_line[96] = "";
 static char media_info_vout_line[128] = "";
 
-static char playback_stats_cached[1024] = "";
+static char playback_stats_cached[2048] = "";
 static int64_t playback_stats_next_refresh_us = 0;
 
 static const char *media_info_renderer(void) {
@@ -343,6 +344,20 @@ static enum SupersampleState playback_stats_supersample(void) {
     return SUPERSAMPLE_RUNNING;
 }
 
+static enum ShaderState playback_stats_shader(void) {
+    if (!renderer) {
+        return SHADER_NO_RENDERER;
+    }
+    if (benchmark) {
+        return SHADER_BENCHMARKING;
+    }
+    if (!shader_enabled) {
+        return SHADER_OFF;
+    }
+
+    return SHADER_RUNNING;
+}
+
 void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
     if (bufsz == 0) {
         return;
@@ -440,11 +455,14 @@ void format_playback_stats(const VideoState *is, char *buf, size_t bufsz) {
         snprintf(cached, cached_size,
                  "Dropped frames: %d (early %d, late %d)\n%s\n%s\n"
                  "Decoding: %s\n"
-                 "Interpolation: %s\nDeinterlacing: %s\nSupersampling: %s\n%s%s",
+                 "Interpolation: %s\nDeinterlacing: %s\nSupersampling: %s\n"
+                 "Shaders: %s\n%s%s",
                  early + late, early, late, sync_line, disp_line,
                  degrade_status(is), interpolate_status(), deinterlace_status(is),
                  supersample_status(supersample_level,
                                     playback_stats_supersample()),
+                 shader_status(playback_stats_shader(),
+                               renderer_shaders_failed(renderer)),
                  timing, audio_line);
     }
 

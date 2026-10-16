@@ -249,6 +249,7 @@ add_sources(
     "src/lachesis_scale.c",
     "src/lachesis_screenshot.c",
     "src/lachesis_seek.c",
+    "src/lachesis_shader.c",
     "src/lachesis_single.c",
     "src/lachesis_subtitles.c",
     "src/lachesis_supersample.c",

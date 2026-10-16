@@ -33,6 +33,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_renderer_internal.h"
 #include "lachesis_scale.h"
+#include "lachesis_shader.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
 // clang-format on
@@ -67,9 +68,9 @@
 
 #define LACHESIS_MAX_OVERLAYS 3
 #if PL_API_VER < 351
-#define LACHESIS_MAX_HOOKS 3
+#define LACHESIS_MAX_HOOKS (3 + SHADER_MAX)
 #else
-#define LACHESIS_MAX_HOOKS 2
+#define LACHESIS_MAX_HOOKS (2 + SHADER_MAX)
 #endif
 
 #if defined(__APPLE__)
@@ -703,6 +704,10 @@ static void setup_render(RendererContext *ctx, struct pl_frame *pl_frame,
 
     int num_hooks = 0;
 
+    if (ctx->shaders && ctx->shaders_on && !ctx->benchmark) {
+        num_hooks = shader_set_hooks(ctx->shaders, hooks, SHADER_MAX);
+    }
+
     if (view360) {
         view360_pl_hook_update(ctx->sbs360_hook, ctx->sbs360_yaw,
                                ctx->sbs360_pitch, ctx->sbs360_roll,
@@ -1246,6 +1251,23 @@ static ImageState track_image(RendererContext *ctx, const RenderParams *params) 
     return image;
 }
 
+static void note_disabled_hooks(RendererContext *ctx) {
+    struct pl_render_errors errors;
+
+    if (!ctx->shaders) {
+        return;
+    }
+    errors = pl_renderer_get_errors(ctx->renderer);
+    if (errors.num_disabled_hooks <= 0) {
+        return;
+    }
+    shader_set_note_disabled(ctx->shaders, errors.disabled_hooks,
+                             errors.num_disabled_hooks);
+    vo_state_lock(ctx);
+    ctx->shaders_failed = shader_set_num_failed(ctx->shaders);
+    vo_state_unlock(ctx);
+}
+
 int renderer_draw_frame(Renderer *renderer, AVFrame *frame,
                         RenderParams *params) {
     struct pl_swapchain_frame swap_frame = {0};
@@ -1407,6 +1429,7 @@ int renderer_draw_frame(Renderer *renderer, AVFrame *frame,
     t_rnd += _ts3 - _ts2;
 
 out:
+    note_disabled_hooks(ctx);
     //
     // A swapchain frame that was started must always be submitted regardless of rendering
     // failure, otherwise its acquired image is never released and the next
@@ -1574,6 +1597,7 @@ static int render_offscreen(RendererContext *ctx, AVFrame *frame,
     if (!ok) {
         ret = AVERROR_EXTERNAL;
     }
+    note_disabled_hooks(ctx);
 
     if (capture_recover(ctx, &errors,
                         PL_RENDER_ERR_HOOKS | PL_RENDER_ERR_FBO |
@@ -1864,6 +1888,7 @@ static void destroy(Renderer *renderer) {
     if (ctx->supersample_hook) {
         supersample_pl_hook_destroy(&ctx->supersample_hook);
     }
+    shader_set_free(&ctx->shaders);
 
     icc_forget(ctx);
     cal_drop(ctx);
@@ -1947,6 +1972,8 @@ static Renderer *renderer_alloc(enum RendererApi api) {
     }
     ctx->api.class = &renderer_class;
     ctx->api.backend = api;
+    ctx->shaders_on = 1;
+    ctx->vo.shaders_on = 1;
 
     return &ctx->api;
 }
@@ -2436,6 +2463,72 @@ int renderer_set_supersample(Renderer *renderer, enum SupersampleLevel level) {
     vo_release(ctx);
 
     return 0;
+}
+
+int renderer_apply_shaders(RendererContext *ctx) {
+    int failed;
+
+    shader_set_free(&ctx->shaders);
+    if (shader_count() > 0) {
+        ctx->shaders = shader_set_load(ctx->gpu);
+    }
+    failed = ctx->shaders ? shader_set_num_failed(ctx->shaders) : shader_count();
+    vo_state_lock(ctx);
+    ctx->shaders_failed = failed;
+    vo_state_unlock(ctx);
+
+    return shader_count() > 0 && !ctx->shaders ? AVERROR(ENOMEM) : 0;
+}
+
+int renderer_load_shaders(Renderer *renderer) {
+    RendererContext *ctx = (RendererContext *)renderer;
+    int ret;
+
+    if (!ctx) {
+        return AVERROR(EINVAL);
+    }
+    if (!vo_borrow(ctx, VO_BORROW_WAIT_MS)) {
+        vo_state_lock(ctx);
+        ctx->vo.pending |= VO_PENDING_SHADERS;
+        vo_state_unlock(ctx);
+        return 0;
+    }
+    vo_state_lock(ctx);
+    ctx->vo.pending &= ~VO_PENDING_SHADERS;
+    vo_state_unlock(ctx);
+    ret = renderer_apply_shaders(ctx);
+    vo_release(ctx);
+
+    return ret;
+}
+
+void renderer_enable_shaders(Renderer *renderer, int on) {
+    RendererContext *ctx = (RendererContext *)renderer;
+
+    if (!ctx) {
+        return;
+    }
+    if (ctx->vo.lock) {
+        SDL_LockMutex(ctx->vo.lock);
+        ctx->vo.shaders_on = on;
+        SDL_UnlockMutex(ctx->vo.lock);
+    } else {
+        ctx->shaders_on = on;
+    }
+}
+
+int renderer_shaders_failed(Renderer *renderer) {
+    RendererContext *ctx = (RendererContext *)renderer;
+    int failed;
+
+    if (!ctx) {
+        return 0;
+    }
+    vo_state_lock(ctx);
+    failed = ctx->shaders_failed;
+    vo_state_unlock(ctx);
+
+    return failed;
 }
 
 void renderer_update_360(Renderer *renderer, float yaw, float pitch, float roll, float hfov) {
