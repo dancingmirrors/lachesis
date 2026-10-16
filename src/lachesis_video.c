@@ -132,6 +132,42 @@ static void hwframe_download_inplace(HwDownload *dl, AVFrame *frame) {
     av_frame_free(&sw);
 }
 
+static int crop_in_system_memory(VideoState *is, AVFilterGraph **graph,
+                                 const char *vfilters, AVFrame *frame,
+                                 HwDownload *download, int *download_active) {
+    AVFrame *hw = av_frame_clone(frame);
+    int ret;
+
+    if (!hw) {
+        return AVERROR(ENOMEM);
+    }
+    log_info("Cropping in system memory due to an FFmpeg bug.\n");
+    avfilter_graph_free(graph);
+    *graph = avfilter_graph_alloc();
+    if (!*graph) {
+        av_frame_free(&hw);
+        return AVERROR(ENOMEM);
+    }
+    hwframe_download_inplace(download, frame);
+    ret = configure_video_filters(*graph, is, vfilters, frame, 0);
+    if (ret >= 0) {
+        *download_active = 1;
+        av_frame_free(&hw);
+        return 0;
+    }
+
+    av_frame_unref(frame);
+    av_frame_move_ref(frame, hw);
+    av_frame_free(&hw);
+    avfilter_graph_free(graph);
+    *graph = avfilter_graph_alloc();
+    if (!*graph) {
+        return AVERROR(ENOMEM);
+    }
+
+    return configure_video_filters(*graph, is, vfilters, frame, 0);
+}
+
 static int get_video_frame(VideoState *is, AVFrame *frame) {
     int got_picture;
     int had_packets = is->videoq.nb_packets > 0;
@@ -283,7 +319,10 @@ int video_thread(void *arg) {
                 ret = configure_video_filters(graph, is, vfilters, frame, 0);
             }
 
-            if (ret < 0 && is_hw) {
+            if (ret >= 0 && is_hw && filtergraph_miscrops_hw_frames(graph, frame)) {
+                ret = crop_in_system_memory(is, &graph, vfilters, frame,
+                                            &download, &download_active);
+            } else if (ret < 0 && is_hw) {
                 avfilter_graph_free(&graph);
                 graph = avfilter_graph_alloc();
                 if (!graph) {

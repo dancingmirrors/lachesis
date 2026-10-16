@@ -37,6 +37,7 @@
 #include <libavutil/macros.h>
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 #include <libavutil/rational.h>
 
@@ -367,6 +368,33 @@ int filtergraph_output_oversize(AVFilterContext *filt_out) {
 
     return av_buffersink_get_w(filt_out) > max_dim ||
         av_buffersink_get_h(filt_out) > max_dim;
+}
+
+// Workaround for e.g. -vf crop,crop with -hwaccel.
+int filtergraph_miscrops_hw_frames(const AVFilterGraph *graph,
+                                   const AVFrame *frame) {
+    int cropped = frame->crop_left || frame->crop_top || frame->crop_right ||
+        frame->crop_bottom;
+
+    for (unsigned i = 0; i < graph->nb_filters; i++) {
+        const AVFilterContext *filt = graph->filters[i];
+        const AVPixFmtDescriptor *desc;
+
+        if (strcmp(filt->filter->name, "crop") || !filt->nb_inputs ||
+            !filt->inputs[0]) {
+            continue;
+        }
+        desc = av_pix_fmt_desc_get(filt->inputs[0]->format);
+        if (!desc || !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL)) {
+            continue;
+        }
+        if (cropped) {
+            return 1;
+        }
+        cropped = 1;
+    }
+
+    return 0;
 }
 
 void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,

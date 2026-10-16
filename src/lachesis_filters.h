@@ -30,6 +30,9 @@ int configure_filtergraph(AVFilterGraph *graph, const char *filtergraph,
                           AVFilterContext *source_ctx, AVFilterContext *sink_ctx);
 int filtergraph_output_oversize(AVFilterContext *filt_out);
 
+int filtergraph_miscrops_hw_frames(const AVFilterGraph *graph,
+                                   const AVFrame *frame);
+
 void report_filter_output(AVFilterContext *filt_out, const AVFrame *frame,
                           int *last_w, int *last_h, AVRational *last_sar,
                           AVRational *last_fr);
