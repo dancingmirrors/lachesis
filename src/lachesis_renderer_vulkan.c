@@ -747,6 +747,31 @@ static uint32_t nvidia_proprietary(PFN_vkGetInstanceProcAddr get_proc_addr,
     return props.properties.driverVersion;
 }
 
+// https://forums.developer.nvidia.com/t/378828
+static void note_decode_quirks(RendererContext *ctx, const AVDictionary *opt,
+                               VkPhysicalDevice phys) {
+    const AVDictionaryEntry *entry = av_dict_get(opt, "h264_baseline", NULL, 0);
+    uint32_t nvidia;
+
+    ctx->decode_quirks = 0;
+    if (!(ctx->decode_caps & RENDERER_DECODE_CAP_H264)) {
+        return;
+    }
+    if (entry && entry->value && entry->value[0]) {
+        if (!strtol(entry->value, NULL, 10)) {
+            ctx->decode_quirks |= RENDERER_DECODE_QUIRK_H264_BASELINE;
+        }
+        return;
+    }
+    nvidia = nvidia_proprietary(ctx->get_proc_addr, ctx->inst, phys);
+    if (!nvidia) {
+        return;
+    }
+    ctx->decode_quirks |= RENDERER_DECODE_QUIRK_H264_BASELINE;
+    log_warn("NVIDIA driver %u.%u.%u baseline profile hack is active.\n",
+             nvidia >> 22, (nvidia >> 14) & 0xff, (nvidia >> 6) & 0xff);
+}
+
 #ifdef LACHESIS_HAVE_VK_DRM_NODE
 
 int vk_render_node(PFN_vkGetInstanceProcAddr get_proc_addr,
@@ -980,6 +1005,7 @@ static int create_vk_by_hwcontext(Renderer *renderer,
         return AVERROR_EXTERNAL;
     }
     note_decode_caps(ctx, import_exts, num_import_exts);
+    note_decode_quirks(ctx, opt, hwctx->phys_dev);
 
     return 0;
 }
@@ -1309,6 +1335,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     }
 
     note_decode_caps(ctx, ctx->dev_extensions, ctx->num_dev_extensions);
+    note_decode_quirks(ctx, opt, ctx->placebo_vulkan->phys_device);
 
     return 0;
 }

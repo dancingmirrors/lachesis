@@ -711,6 +711,20 @@ static int vulkan_decodes(enum AVCodecID codec_id) {
     return bit ? (caps & bit) != 0 : caps != 0;
 }
 
+static const char *vulkan_corrupts(const AVCodecContext *avctx) {
+    unsigned quirks = renderer_video_decode_quirks(renderer);
+
+    if ((quirks & RENDERER_DECODE_QUIRK_H264_BASELINE) &&
+        avctx->codec_id == AV_CODEC_ID_H264 &&
+        (avctx->profile & ~AV_PROFILE_H264_CONSTRAINED) ==
+            AV_PROFILE_H264_BASELINE) {
+        return "this driver exhibits H.264 baseline profile corruption with Vulkan "
+               "acceleration (pass -gpu-params h264_baseline=1 to try anyway)";
+    }
+
+    return NULL;
+}
+
 static double codec_decode_effort(enum AVCodecID codec_id) {
     switch (codec_id) {
     case AV_CODEC_ID_VVC:
@@ -806,7 +820,17 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
     if (hwaccel) {
         enum AVHWDeviceType type = av_hwdevice_find_type_by_name(hwaccel);
         const AVCodec *hw_codec = hwaccel_decoder(*codec, type);
+        const char *corrupts = hw_codec && type == AV_HWDEVICE_TYPE_VULKAN
+            ? vulkan_corrupts(avctx)
+            : NULL;
         int why = 0;
+
+        if (corrupts) {
+            av_log_set_level(saved_level);
+            log_warn("Not using hwaccel %s for %s: %s.\n",
+                     hwaccel, avcodec_get_name(avctx->codec_id), corrupts);
+            return 0;
+        }
 
         for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
              loc <= HWACCEL_ON_ANY_GPU; loc++) {
@@ -815,8 +839,7 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
                 av_log_set_level(saved_level);
                 if (!hw_codec) {
                     av_buffer_unref(device_ctx);
-                    log_warn("No decoder for %s can use hwaccel %s. "
-                             "Decoding in software.\n",
+                    log_warn("No decoder for %s can use hwaccel %s.\n",
                              avcodec_get_name(avctx->codec_id), hwaccel);
                     return 0;
                 }
@@ -843,10 +866,19 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
             if (!hw_codec) {
                 continue;
             }
-            if (type == AV_HWDEVICE_TYPE_VULKAN &&
-                (loc != HWACCEL_ON_RENDERER ||
-                 !vulkan_decodes(avctx->codec_id))) {
-                continue;
+            if (type == AV_HWDEVICE_TYPE_VULKAN) {
+                const char *corrupts;
+
+                if (loc != HWACCEL_ON_RENDERER ||
+                    !vulkan_decodes(avctx->codec_id)) {
+                    continue;
+                }
+                corrupts = vulkan_corrupts(avctx);
+                if (corrupts) {
+                    log_verbose("Not using hwaccel %s for %s: %s.\n", name,
+                                avcodec_get_name(avctx->codec_id), corrupts);
+                    continue;
+                }
             }
 
             if (loc == HWACCEL_ON_ANY_GPU &&
@@ -855,7 +887,7 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
                     said_off_gpu = 1;
                     log_verbose("Not using hwaccel %s: it would decode on a "
                                 "GPU other than the renderer's. Pass "
-                                "--hwaccel=%s to use it anyway.\n",
+                                "-hwaccel=%s to use it anyway.\n",
                                 name, name);
                 }
                 continue;

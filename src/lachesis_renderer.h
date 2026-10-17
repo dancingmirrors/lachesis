@@ -109,6 +109,8 @@ typedef struct RenderParams {
 #define RENDERER_DECODE_CAP_AV1 (1u << 2)
 #define RENDERER_DECODE_CAP_VP9 (1u << 3)
 
+#define RENDERER_DECODE_QUIRK_H264_BASELINE (1u << 0)
+
 typedef struct RendererOpenParams {
     const char *title;
     int width;
@@ -134,6 +136,7 @@ const char *renderer_device_name(const Renderer *renderer);
 int renderer_list_gpu_devices(void);
 
 unsigned renderer_video_decode_caps(Renderer *renderer);
+unsigned renderer_video_decode_quirks(Renderer *renderer);
 
 const enum AVPixelFormat *renderer_supported_pixfmts(Renderer *renderer,
                                                      int *count);

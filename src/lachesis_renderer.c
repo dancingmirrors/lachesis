@@ -2849,6 +2849,17 @@ unsigned renderer_video_decode_caps(Renderer *renderer) {
     return 0;
 }
 
+unsigned renderer_video_decode_quirks(Renderer *renderer) {
+#if LACHESIS_HAVE_VULKAN
+    if (renderer && renderer->backend == RENDERER_API_VULKAN) {
+        return ((RendererContext *)renderer)->decode_quirks;
+    }
+#endif
+    (void)renderer;
+
+    return 0;
+}
+
 int renderer_maps_hw_frames(Renderer *renderer) {
     RendererContext *ctx = (RendererContext *)renderer;
 

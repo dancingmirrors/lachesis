@@ -249,6 +249,7 @@ typedef struct RendererContext {
     AVHWFramesConstraints *constraints;
     char device_request[256];
     unsigned decode_caps;
+    unsigned decode_quirks;
     // Not necessarily the requested mode.
     VkPresentModeKHR present_mode;
 
