@@ -137,6 +137,7 @@ int renderer_list_gpu_devices(void);
 
 unsigned renderer_video_decode_caps(Renderer *renderer);
 unsigned renderer_video_decode_quirks(Renderer *renderer);
+const char *renderer_video_decode_quirks_driver(Renderer *renderer);
 
 const enum AVPixelFormat *renderer_supported_pixfmts(Renderer *renderer,
                                                      int *count);

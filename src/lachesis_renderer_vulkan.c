@@ -747,6 +747,18 @@ static uint32_t nvidia_proprietary(PFN_vkGetInstanceProcAddr get_proc_addr,
     return props.properties.driverVersion;
 }
 
+static void nvidia_driver_name(uint32_t version, char *buf, size_t size) {
+    unsigned major = version >> 22;
+    unsigned minor = (version >> 14) & 0xff;
+    unsigned patch = (version >> 6) & 0xff;
+
+    if (patch) {
+        snprintf(buf, size, "NVIDIA driver %u.%02u.%02u", major, minor, patch);
+    } else {
+        snprintf(buf, size, "NVIDIA driver %u.%02u", major, minor);
+    }
+}
+
 // https://forums.developer.nvidia.com/t/378828
 static void note_decode_quirks(RendererContext *ctx, const AVDictionary *opt,
                                VkPhysicalDevice phys) {
@@ -754,6 +766,7 @@ static void note_decode_quirks(RendererContext *ctx, const AVDictionary *opt,
     uint32_t nvidia;
 
     ctx->decode_quirks = 0;
+    ctx->decode_quirks_driver[0] = '\0';
     if (!(ctx->decode_caps & RENDERER_DECODE_CAP_H264)) {
         return;
     }
@@ -768,8 +781,8 @@ static void note_decode_quirks(RendererContext *ctx, const AVDictionary *opt,
         return;
     }
     ctx->decode_quirks |= RENDERER_DECODE_QUIRK_H264_BASELINE;
-    log_warn("NVIDIA driver %u.%u.%u baseline profile hack is active.\n",
-             nvidia >> 22, (nvidia >> 14) & 0xff, (nvidia >> 6) & 0xff);
+    nvidia_driver_name(nvidia, ctx->decode_quirks_driver,
+                       sizeof(ctx->decode_quirks_driver));
 }
 
 #ifdef LACHESIS_HAVE_VK_DRM_NODE

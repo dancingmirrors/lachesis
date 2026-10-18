@@ -2860,6 +2860,19 @@ unsigned renderer_video_decode_quirks(Renderer *renderer) {
     return 0;
 }
 
+const char *renderer_video_decode_quirks_driver(Renderer *renderer) {
+#if LACHESIS_HAVE_VULKAN
+    if (renderer && renderer->backend == RENDERER_API_VULKAN) {
+        const char *driver = ((RendererContext *)renderer)->decode_quirks_driver;
+
+        return driver[0] ? driver : NULL;
+    }
+#endif
+    (void)renderer;
+
+    return NULL;
+}
+
 int renderer_maps_hw_frames(Renderer *renderer) {
     RendererContext *ctx = (RendererContext *)renderer;
 

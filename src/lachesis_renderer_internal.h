@@ -250,6 +250,7 @@ typedef struct RendererContext {
     char device_request[256];
     unsigned decode_caps;
     unsigned decode_quirks;
+    char decode_quirks_driver[32];
     // Not necessarily the requested mode.
     VkPresentModeKHR present_mode;
 

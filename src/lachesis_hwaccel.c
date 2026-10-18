@@ -718,6 +718,11 @@ static const char *vulkan_corrupts(const AVCodecContext *avctx) {
         avctx->codec_id == AV_CODEC_ID_H264 &&
         (avctx->profile & ~AV_PROFILE_H264_CONSTRAINED) ==
             AV_PROFILE_H264_BASELINE) {
+        const char *driver = renderer_video_decode_quirks_driver(renderer);
+
+        if (driver) {
+            log_warn("%s baseline profile hack is active.\n", driver);
+        }
         return "this driver exhibits H.264 baseline profile corruption with Vulkan "
                "acceleration (pass -gpu-params h264_baseline=1 to try anyway)";
     }
