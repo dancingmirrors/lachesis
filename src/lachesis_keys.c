@@ -696,21 +696,6 @@ void event_loop(VideoState **pis) {
                     cur_stream->force_refresh = 1;
                 }
                 break;
-            case SDLK_KP_1:
-                if (refuse_without_video(cur_stream)) {
-                    break;
-                }
-                if (!shader_count()) {
-                    osd_show_message("Shaders: none");
-                } else if (renderer_shaders_failed(renderer) >= shader_count()) {
-                    osd_show_message("Shaders: unavailable");
-                } else {
-                    shader_enabled = !shader_enabled;
-                    renderer_enable_shaders(renderer, shader_enabled);
-                    osd_show_message("Shaders: %s", shader_enabled ? "on" : "off");
-                }
-                cur_stream->force_refresh = 1;
-                break;
             case SDLK_KP_2: {
                 enum SupersampleLevel next;
 
@@ -742,6 +727,21 @@ void event_loop(VideoState **pis) {
                 if (renderer) {
                     renderer_enable_360(renderer, view360_layout,
                                         view360_projection);
+                }
+                cur_stream->force_refresh = 1;
+                break;
+            case SDLK_KP_5:
+                if (refuse_without_video(cur_stream)) {
+                    break;
+                }
+                if (!shader_count()) {
+                    osd_show_message("Shaders: none");
+                } else if (renderer_shaders_failed(renderer) >= shader_count()) {
+                    osd_show_message("Shaders: unavailable");
+                } else {
+                    shader_enabled = !shader_enabled;
+                    renderer_enable_shaders(renderer, shader_enabled);
+                    osd_show_message("Shaders: %s", shader_enabled ? "on" : "off");
                 }
                 cur_stream->force_refresh = 1;
                 break;
