@@ -297,6 +297,39 @@ static const char *select_device(const AVDictionary *opt) {
     return NULL;
 }
 
+static int on_kmsdrm(void) {
+    const char *driver = SDL_GetCurrentVideoDriver();
+
+    return driver && !strcmp(driver, "kmsdrm");
+}
+
+static int kmsdrm_gpu(const enum GpuClass *classes, int num) {
+    for (int i = 0; i < num; i++) {
+        if (classes[i] == GPU_CLASS_INTEGRATED ||
+            classes[i] == GPU_CLASS_DISCRETE) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int kmsdrm_elsewhere(const AVVulkanDeviceContext *hwctx) {
+    GpuDeviceNames names;
+    enum GpuClass classes[MAX_GPU_DEVICES];
+    VkPhysicalDevice handles[MAX_GPU_DEVICES];
+    int num, display;
+
+    if (!on_kmsdrm()) {
+        return 0;
+    }
+    num = list_vk_devices(hwctx->get_proc_addr, hwctx->inst, names, classes,
+                          handles);
+    display = kmsdrm_gpu(classes, num);
+
+    return display >= 0 && handles[display] != hwctx->phys_dev;
+}
+
 static struct {
     PFN_vkGetInstanceProcAddr real_proc_addr;
     PFN_vkEnumerateDeviceExtensionProperties real_enumerate;
@@ -946,7 +979,8 @@ static int create_vk_by_hwcontext(Renderer *renderer,
     dev = (AVHWDeviceContext *)ctx->hw_device_ref->data;
     hwctx = dev->hwctx;
 
-    if (hwctx->get_proc_addr != (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr()) {
+    if (hwctx->get_proc_addr != (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr() ||
+        kmsdrm_elsewhere(hwctx)) {
         av_buffer_unref(&ctx->hw_device_ref);
         ctx->inst = NULL;
         return create_vk_by_placebo(renderer, ext, num_ext, opt, present_timing);
@@ -1159,6 +1193,7 @@ static int create_vk_by_placebo(Renderer *renderer,
     AVHWDeviceContext *device_ctx;
     AVVulkanDeviceContext *vk_dev_ctx;
     PFN_vkGetInstanceProcAddr placebo_proc_addr;
+    VkPhysicalDevice phys_device = VK_NULL_HANDLE;
     const char *device_name;
     const char **opt_exts = NULL;
     const char **merged_exts = NULL;
@@ -1245,9 +1280,13 @@ static int create_vk_by_placebo(Renderer *renderer,
     {
         GpuDeviceNames names;
         enum GpuClass classes[MAX_GPU_DEVICES];
+        VkPhysicalDevice handles[MAX_GPU_DEVICES];
         int num = list_vk_devices(ctx->get_proc_addr,
                                   ctx->placebo_instance->instance, names,
-                                  classes, NULL);
+                                  classes, handles);
+        int display = ctx->offscreen || !on_kmsdrm()
+            ? -1
+            : kmsdrm_gpu(classes, num);
 
         renderer_report_gpu_devices("Vulkan", names, num, 1);
 
@@ -1265,6 +1304,21 @@ static int create_vk_by_placebo(Renderer *renderer,
                 device_name = ctx->device_request;
             }
         }
+        if (display >= 0) {
+            int want = device_name && device_name[0]
+                ? renderer_match_gpu_device(names, classes, num, device_name)
+                : display;
+
+            if (want >= 0 && want != display) {
+                log_warn("Ignoring the request for %s: SDL's kmsdrm can only "
+                         "present on %s.\n",
+                         names[want], names[display]);
+            } else {
+                log_verbose("SDL's kmsdrm can only present on %s.\n",
+                            names[display]);
+            }
+            phys_device = handles[display];
+        }
     }
 
     // clang-format off
@@ -1272,6 +1326,7 @@ static int create_vk_by_placebo(Renderer *renderer,
                                            pl_vulkan_params(
                                                .instance = ctx->placebo_instance->instance,
                                                .get_proc_addr = placebo_proc_addr,
+                                               .device = phys_device,
                                                .surface = ctx->vk_surface,
                                                .allow_software = renderer_allow_software_gpu,
                                                .opt_extensions = opt_exts,
