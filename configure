@@ -182,7 +182,18 @@ check(
     desc="Vulkan",
     fn=lambda: check_pkg_config("vulkan")
     and check_cc(include="vulkan/vulkan.h")
-    and check_cc(include="libplacebo/config.h", defined="PL_HAVE_VULKAN"),
+    and check_cc(include="libplacebo/config.h", defined="PL_HAVE_VULKAN")
+    and check_cc(
+        include="libavutil/hwcontext_vulkan.h",
+        decl=[
+            "#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(60, 20, 100)",
+            "const char **lachesis_vk_exts(int *n) {",
+            "    return av_vk_get_optional_device_extensions(n);",
+            "}",
+            "#endif",
+        ],
+        link=[],
+    ),
 )
 
 check(
