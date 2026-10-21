@@ -730,6 +730,30 @@ static const char *vulkan_corrupts(const AVCodecContext *avctx) {
     return NULL;
 }
 
+int hwaccel_skips_flush(const AVCodecContext *avctx) {
+    const AVHWDeviceContext *dev;
+    const char *driver;
+
+    if (!avctx->hw_device_ctx || avctx->codec_id != AV_CODEC_ID_AV1 ||
+        !(renderer_video_decode_quirks(renderer) &
+          RENDERER_DECODE_QUIRK_AV1_SEEK)) {
+        return 0;
+    }
+    dev = (const AVHWDeviceContext *)avctx->hw_device_ctx->data;
+    if (dev->type != AV_HWDEVICE_TYPE_VULKAN) {
+        return 0;
+    }
+
+    driver = renderer_video_decode_quirks_driver(renderer);
+    if (driver) {
+        log_verbose("%s AV1 seek hack is active (pass -gpu-params av1_seek=1 "
+                    "to disable).\n",
+                    driver);
+    }
+
+    return 1;
+}
+
 static double codec_decode_effort(enum AVCodecID codec_id) {
     switch (codec_id) {
     case AV_CODEC_ID_VVC:

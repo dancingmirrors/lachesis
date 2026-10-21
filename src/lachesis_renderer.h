@@ -110,6 +110,7 @@ typedef struct RenderParams {
 #define RENDERER_DECODE_CAP_VP9 (1u << 3)
 
 #define RENDERER_DECODE_QUIRK_H264_BASELINE (1u << 0)
+#define RENDERER_DECODE_QUIRK_AV1_SEEK (1u << 1)
 
 typedef struct RendererOpenParams {
     const char *title;

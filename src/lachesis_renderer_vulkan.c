@@ -759,30 +759,44 @@ static void nvidia_driver_name(uint32_t version, char *buf, size_t size) {
     }
 }
 
-// https://forums.developer.nvidia.com/t/378828
+static const struct {
+    const char *param;
+    unsigned cap;
+    unsigned quirk;
+} nvidia_decode_quirks[] = {
+    // https://forums.developer.nvidia.com/t/378828
+    {"h264_baseline", RENDERER_DECODE_CAP_H264, RENDERER_DECODE_QUIRK_H264_BASELINE},
+    // Crashes in the first AV1 decode after a seek.
+    {"av1_seek", RENDERER_DECODE_CAP_AV1, RENDERER_DECODE_QUIRK_AV1_SEEK},
+};
+
 static void note_decode_quirks(RendererContext *ctx, const AVDictionary *opt,
                                VkPhysicalDevice phys) {
-    const AVDictionaryEntry *entry = av_dict_get(opt, "h264_baseline", NULL, 0);
-    uint32_t nvidia;
+    uint32_t nvidia = nvidia_proprietary(ctx->get_proc_addr, ctx->inst, phys);
 
     ctx->decode_quirks = 0;
     ctx->decode_quirks_driver[0] = '\0';
-    if (!(ctx->decode_caps & RENDERER_DECODE_CAP_H264)) {
-        return;
+    if (nvidia) {
+        nvidia_driver_name(nvidia, ctx->decode_quirks_driver,
+                           sizeof(ctx->decode_quirks_driver));
     }
-    if (entry && entry->value && entry->value[0]) {
-        if (!strtol(entry->value, NULL, 10)) {
-            ctx->decode_quirks |= RENDERER_DECODE_QUIRK_H264_BASELINE;
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(nvidia_decode_quirks); i++) {
+        const AVDictionaryEntry *entry =
+            av_dict_get(opt, nvidia_decode_quirks[i].param, NULL, 0);
+
+        if (!(ctx->decode_caps & nvidia_decode_quirks[i].cap)) {
+            continue;
         }
-        return;
+        if (entry && entry->value && entry->value[0]) {
+            if (!strtol(entry->value, NULL, 10)) {
+                ctx->decode_quirks |= nvidia_decode_quirks[i].quirk;
+            }
+            continue;
+        }
+        if (nvidia) {
+            ctx->decode_quirks |= nvidia_decode_quirks[i].quirk;
+        }
     }
-    nvidia = nvidia_proprietary(ctx->get_proc_addr, ctx->inst, phys);
-    if (!nvidia) {
-        return;
-    }
-    ctx->decode_quirks |= RENDERER_DECODE_QUIRK_H264_BASELINE;
-    nvidia_driver_name(nvidia, ctx->decode_quirks_driver,
-                       sizeof(ctx->decode_quirks_driver));
 }
 
 #ifdef LACHESIS_HAVE_VK_DRM_NODE

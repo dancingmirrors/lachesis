@@ -28,6 +28,9 @@
 
 #include "lachesis_queue.h"
 
+#define DECODER_DRAIN_MAX 64
+#define DECODER_AWAIT_KEY_MAX 1200
+
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
     MyAVPacketList pkt1;
     int ret;
@@ -188,6 +191,27 @@ int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_Cond
     return 0;
 }
 
+void decoder_flush(Decoder *d) {
+    AVFrame *frame;
+
+    if (!d->skip_flush) {
+        avcodec_flush_buffers(d->avctx);
+        return;
+    }
+
+    frame = av_frame_alloc();
+    for (int i = 0; frame && i < DECODER_DRAIN_MAX; i++) {
+        int ret = avcodec_receive_frame(d->avctx, frame);
+
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        }
+        av_frame_unref(frame);
+    }
+    av_frame_free(&frame);
+    d->await_key = 1;
+}
+
 int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
     int ret = AVERROR(EAGAIN);
 
@@ -258,7 +282,7 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                 }
                 d->wait_us += av_gettime_relative() - wait_t0;
                 if (old_serial != d->pkt_serial) {
-                    avcodec_flush_buffers(d->avctx);
+                    decoder_flush(d);
                     d->finished = 0;
                     d->next_pts = d->start_pts;
                     d->next_pts_tb = d->start_pts_tb;
@@ -283,6 +307,19 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
             }
             av_packet_unref(d->pkt);
         } else {
+            if (d->skip_flush && !d->pkt->data && !d->pkt->side_data_elems) {
+                d->finished = d->pkt_serial;
+                av_packet_unref(d->pkt);
+                return 0;
+            }
+            if (d->await_key && d->pkt->data) {
+                if (!(d->pkt->flags & AV_PKT_FLAG_KEY) &&
+                    d->await_key++ <= DECODER_AWAIT_KEY_MAX) {
+                    av_packet_unref(d->pkt);
+                    continue;
+                }
+                d->await_key = 0;
+            }
             if (d->pkt->buf && !d->pkt->opaque_ref) {
                 FrameData *fd;
 

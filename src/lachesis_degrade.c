@@ -426,7 +426,7 @@ static void degrade_content_skip(VideoState *is, double lag) {
         is->viddec.packet_pending = 0;
         av_packet_unref(is->viddec.pkt);
     }
-    avcodec_flush_buffers(is->viddec.avctx);
+    decoder_flush(&is->viddec);
     is->decode_span_pts = LACHESIS_NAN;
     is->content_skips++;
 

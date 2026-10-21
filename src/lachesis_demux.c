@@ -373,6 +373,7 @@ static int component_open(VideoState *is, int stream_index) {
             goto fail;
         }
         is->viddec.hwaccel_probe = hwaccel_probe;
+        is->viddec.skip_flush = hwaccel_skips_flush(avctx);
         if (format_lacks_timestamps(is->ic)) {
             is->viddec.start_pts = is->video_st->start_time;
             is->viddec.start_pts_tb = is->video_st->time_base;

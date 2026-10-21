@@ -104,6 +104,8 @@ typedef struct Decoder {
     int exact_dropped_serial;
     int hwaccel_probe;
     int hwaccel_failed;
+    int skip_flush;
+    int await_key;
 } Decoder;
 
 int packet_queue_init(PacketQueue *q);
@@ -132,6 +134,7 @@ int decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue,
                  SDL_Condition *empty_queue_cond);
 int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void *arg);
 int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub);
+void decoder_flush(Decoder *d);
 void decoder_abort(Decoder *d, FrameQueue *fq);
 void decoder_destroy(Decoder *d);
 
