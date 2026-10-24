@@ -35,6 +35,7 @@ SDL_Window *wayland_create_window(const char *title, int w, int h,
                                   SDL_WindowFlags flags);
 void wayland_destroy_window(SDL_Window *window);
 int wayland_owns(SDL_Window *window);
+int wayland_undecorated(void);
 
 void wayland_set_fullscreen(SDL_Window *window, int fullscreen);
 int wayland_sync(SDL_Window *window);
@@ -62,6 +63,9 @@ static inline void wayland_destroy_window(SDL_Window *win) {
     SDL_DestroyWindow(win);
 }
 static inline int wayland_owns(SDL_Window *win av_unused) {
+    return 0;
+}
+static inline int wayland_undecorated(void) {
     return 0;
 }
 static inline void wayland_set_fullscreen(SDL_Window *win av_unused, int fullscreen av_unused) {

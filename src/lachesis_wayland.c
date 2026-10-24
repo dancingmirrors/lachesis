@@ -198,7 +198,7 @@ static int bind_globals(struct wl_display *display) {
     struct wl_registry *registry;
 
     if (wl.bound && wl.display == display) {
-        return wl.wm_base != NULL;
+        return wl.wm_base && wl.decoration_manager;
     }
     memset(&wl, 0, sizeof(wl));
     wl.display = display;
@@ -230,9 +230,11 @@ static int bind_globals(struct wl_display *display) {
 
     if (!wl.wm_base) {
         log_verbose("The compositor has no xdg_wm_base; SDL keeps the window.\n");
+    } else if (!wl.decoration_manager) {
+        log_verbose("The compositor draws no decorations; SDL keeps the window.\n");
     }
 
-    return wl.wm_base != NULL;
+    return wl.wm_base && wl.decoration_manager;
 }
 
 static void toplevel_configure(void *data, struct xdg_toplevel *xdg_toplevel av_unused,
@@ -729,6 +731,10 @@ void wayland_destroy_window(SDL_Window *window) {
 
 int wayland_owns(SDL_Window *window) {
     return owned(window) != NULL;
+}
+
+int wayland_undecorated(void) {
+    return wl.wm_base && !wl.decoration_manager;
 }
 
 void wayland_set_fullscreen(SDL_Window *window, int fullscreen) {

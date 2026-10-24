@@ -454,7 +454,36 @@ void finish_raise(void) {
     raise_spent();
 }
 
-void video_follow_content_size(VideoState *is) {
+static int window_shown_windowed;
+
+// A silly dance for GNOME.
+static void show_windowed_once(VideoState *is) {
+    int held;
+
+    if (window_shown_windowed || is_fullscreen || !wayland_undecorated()) {
+        return;
+    }
+    if (!window_content_sized &&
+        (is->video_st || !SDL_GetAtomicInt(&is->streams_selected))) {
+        return;
+    }
+    held = hold_output();
+    if (held) {
+        window_shown_windowed = 1;
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) {
+            SDL_RestoreWindow(window);
+            apply_window_geometry(default_width, default_height, 0);
+        }
+        sync_window();
+        SDL_HideWindow(window);
+        SDL_ShowWindow(window);
+        update_screen_size();
+        renderer_resize(renderer, screen_width, screen_height);
+    }
+    drop_output(held);
+}
+
+static void follow_content_size(VideoState *is) {
     int w, h;
     Frame *vp;
 
@@ -493,6 +522,11 @@ void video_follow_content_size(VideoState *is) {
     }
 }
 
+void video_follow_content_size(VideoState *is) {
+    follow_content_size(is);
+    show_windowed_once(is);
+}
+
 void note_window_resized(VideoState *is, int w, int h) {
     if (!window || !window_placed || !window_want_w) {
         return;
@@ -526,6 +560,7 @@ static void place_window(void) {
     }
     held = hold_output();
     window_placed = 1;
+    window_shown_windowed = 0;
     window_rotate = noted_rotate = video_rotate;
     request_fullscreen(is_fullscreen);
     if (!is_fullscreen) {
@@ -541,6 +576,7 @@ void window_open_bare(VideoState *is) {
     place_window();
     held = hold_output();
     sync_window();
+    show_windowed_once(is);
     present_update_display_mode();
 
     update_screen_size();
@@ -611,6 +647,7 @@ void note_fullscreen_state(VideoState *is) {
         (!window_content_sized || window_resize)) {
         size_default_for_content(frame_queue_peek_last(&is->pictq));
     }
+    show_windowed_once(is);
     update_screen_size();
     video_adopt_window_size(is);
     is->force_refresh = 1;
@@ -640,6 +677,7 @@ void toggle_fullscreen(VideoState *is) {
             is_fullscreen = fullscreen;
         }
     }
+    show_windowed_once(is);
     update_screen_size();
     video_adopt_window_size(is);
     is->force_refresh = 1;
