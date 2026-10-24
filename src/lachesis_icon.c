@@ -21,6 +21,7 @@
 #include <math.h>
 
 #include "lachesis_icon.h"
+#include "lachesis_wayland.h"
 
 #define ICON_VIEWBOX 256.0f
 #define FRAME_X 18.0f
@@ -173,6 +174,8 @@ void icon_set_window_icon(SDL_Window *window) {
         }
     }
 
-    SDL_SetWindowIcon(window, base);
+    if (!wayland_set_icon(window, base)) {
+        SDL_SetWindowIcon(window, base);
+    }
     SDL_DestroySurface(base);
 }

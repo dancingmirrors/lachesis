@@ -218,6 +218,39 @@ check(
     required="libplacebo: built without Vulkan, OpenGL, and Direct3D 11 support",
 )
 
+WAYLAND_PROTOCOLS = [
+    "stable/xdg-shell/xdg-shell.xml",
+    "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
+    "staging/xdg-activation/xdg-activation-v1.xml",
+    "staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml",
+    "staging/color-management/color-management-v1.xml",
+]
+
+
+def check_wayland_protocols():
+    data = get_pkg_config_variable("wayland-protocols", "pkgdatadir")
+    if not data:
+        return False
+    add_config_mak_var("WL_PROTO_DIR", data)
+    add_config_mak_var("WL_PROTOCOLS", " ".join(WAYLAND_PROTOCOLS))
+    return True
+
+
+check(
+    "-wayland*",
+    desc="Wayland",
+    deps="POSIX",
+    deps_neg="macOS",
+    fn=lambda: check_pkg_config("wayland-client >= 1.21.0", "wayland-protocols >= 1.41")
+    and check_program("WAYSCAN")
+    and check_wayland_protocols(),
+    sources=["src/lachesis_wayland.c"]
+    + [
+        "generated/wayland/%s.c" % os.path.basename(xml)[:-4]
+        for xml in WAYLAND_PROTOCOLS
+    ],
+)
+
 add_sources(
     "src/lachesis.c",
     "src/lachesis_alloc.c",

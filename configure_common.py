@@ -15,6 +15,7 @@ programs_info = [
     ("CC", "cc"),
     ("PKG_CONFIG", "pkg-config"),
     ("WINDRES", "windres"),
+    ("WAYSCAN", "wayland-scanner"),
     ("GIT", "git"),
     ("NINJA", "ninja"),
 ]
@@ -450,6 +451,11 @@ def check_pkg_config(*args):
     return True
 
 
+def get_pkg_config_variable(arg, varname):
+    res = _run_process([get_program("PKG_CONFIG"), "--variable=" + varname, arg])
+    return res.strip() if res is not None else None
+
+
 def check_program(env_name):
     for name, default in programs_info:
         if name != env_name:
@@ -597,6 +603,14 @@ def _python_command():
     return python
 
 
+def _config_mak_value(name):
+    for line in _G.config_mak.splitlines():
+        key, sep, val = line.partition(" = ")
+        if sep and key == name:
+            return val.strip()
+    return None
+
+
 def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
     cc = _G.programs.get("CC", "cc")
     windres = _G.programs.get("WINDRES", "windres")
@@ -651,6 +665,24 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
     n += "build always_run: phony\n"
     n += "build %s: genversion always_run\n\n" % version_h
 
+    wl_headers = []
+    wl_proto_dir = _config_mak_value("WL_PROTO_DIR")
+    if wl_proto_dir:
+        n += "wayscan = %s\n" % _G.programs.get("WAYSCAN", "wayland-scanner")
+        n += "wl_proto_dir = %s\n\n" % wl_proto_dir
+        n += "rule wayland_code\n"
+        n += "  command = $wayscan private-code $in $out\n"
+        n += "  description = WAYSCAN $out\n\n"
+        n += "rule wayland_header\n"
+        n += "  command = $wayscan client-header $in $out\n"
+        n += "  description = WAYSCAN $out\n\n"
+        for xml in _config_mak_value("WL_PROTOCOLS").split():
+            out = "$builddir/generated/wayland/%s" % os.path.basename(xml)[:-4]
+            n += "build %s.c: wayland_code $wl_proto_dir/%s\n" % (out, xml)
+            n += "build %s.h: wayland_header $wl_proto_dir/%s\n" % (out, xml)
+            wl_headers.append(out + ".h")
+        n += "\n"
+
     objects = []
     n += "# Object files\n"
     for src in sources:
@@ -667,7 +699,16 @@ def _generate_ninja_file(sources, cflags_str, ldflags_str, wrapper_ldflags_str):
             "$(BUILD)/", "$builddir/"
         )
         objects.append(obj_path)
-        n += "build %s: %s %s || %s\n" % (obj_path, rule, src_path, version_h)
+        implicit = ""
+        if wl_headers and "wayland" in src and src.startswith("$(ROOT)/"):
+            implicit = " | " + " ".join(wl_headers)
+        n += "build %s: %s %s%s || %s\n" % (
+            obj_path,
+            rule,
+            src_path,
+            implicit,
+            version_h,
+        )
     n += "\n"
 
     target = "$builddir/lachesis$exesuf"
@@ -759,7 +800,8 @@ def finish():
     sources = []
     for s in _G.sources:
         assert not s.startswith("$")
-        sources.append("$(ROOT)/%s" % s)
+        base = "$(BUILD)" if s.startswith("generated/") else "$(ROOT)"
+        sources.append("%s/%s" % (base, s))
     sources = sorted(set(sources))
     _G.config_mak += (
         "SOURCES = \\\n" + "".join("   %s \\\n" % s for s in sources) + "\n"

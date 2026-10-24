@@ -25,6 +25,7 @@
 #define LACHESIS_HAVE_VULKAN HAVE_VULKAN
 #define LACHESIS_HAVE_OPENGL HAVE_OPENGL
 #define LACHESIS_HAVE_D3D11 HAVE_D3D11
+#define LACHESIS_HAVE_WAYLAND HAVE_WAYLAND
 
 #if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__) || defined(__DragonFly__)
 #define LACHESIS_HAVE_DRM_NODES 1

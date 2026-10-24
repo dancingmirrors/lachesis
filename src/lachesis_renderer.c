@@ -36,6 +36,7 @@
 #include "lachesis_shader.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
+#include "lachesis_wayland.h"
 // clang-format on
 
 #include <inttypes.h>
@@ -2059,8 +2060,12 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     SDL_ClearError();
 
-    window = SDL_CreateWindow(params->title, params->width, params->height,
-                              params->window_flags | api_window_flag(api));
+    window = wayland_create_window(params->title, params->width, params->height,
+                                   params->window_flags | api_window_flag(api));
+    if (!window) {
+        window = SDL_CreateWindow(params->title, params->width, params->height,
+                                  params->window_flags | api_window_flag(api));
+    }
     if (!window) {
         note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
         return AVERROR_EXTERNAL;
@@ -2069,7 +2074,7 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     renderer = renderer_alloc(api);
     if (!renderer) {
-        SDL_DestroyWindow(window);
+        wayland_destroy_window(window);
         return AVERROR(ENOMEM);
     }
     ((RendererContext *)renderer)->window = window;
@@ -2085,6 +2090,7 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     if (show_before_test) {
         SDL_ShowWindow(window);
+        wayland_show(window);
     }
 
     SDL_GetWindowSizeInPixels(window, &w, &h);
@@ -2117,7 +2123,7 @@ fail:
     if (vo_stop((RendererContext *)renderer)) {
         destroy(renderer);
         av_free(renderer);
-        SDL_DestroyWindow(window);
+        wayland_destroy_window(window);
     }
 
     return ret;

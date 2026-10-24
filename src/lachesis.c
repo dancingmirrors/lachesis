@@ -121,6 +121,7 @@
 #include "lachesis_terminal.h"
 #include "lachesis_view.h"
 #include "lachesis_view360.h"
+#include "lachesis_wayland.h"
 #include "lachesis_window.h"
 
 const char program_name[] = "lachesis";
@@ -669,7 +670,7 @@ av_noreturn void do_exit(VideoState *is) {
         shutdown_step("destroying the renderer");
     }
     if (window && !stranded_renderer) {
-        SDL_DestroyWindow(window);
+        wayland_destroy_window(window);
     }
     if (stranded_renderer) {
         exit_now(status);
@@ -678,6 +679,7 @@ av_noreturn void do_exit(VideoState *is) {
     avformat_network_deinit();
     subtitles_uninit();
     osd_uninit();
+    wayland_uninit();
     SDL_Quit();
     shutdown_step("the rest of the teardown");
     alloc_track_complete();
@@ -1009,7 +1011,7 @@ void render_fault_fallback(VideoState **pis) {
     }
     av_freep(&renderer);
     if (window) {
-        SDL_DestroyWindow(window);
+        wayland_destroy_window(window);
         window = NULL;
     }
     osd_invalidate_textures();

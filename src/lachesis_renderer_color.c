@@ -27,6 +27,7 @@
 #include "lachesis_renderer.h"
 #include "lachesis_renderer_internal.h"
 #include "lachesis_tonemap.h"
+#include "lachesis_wayland.h"
 // clang-format on
 
 #include <math.h>
@@ -326,9 +327,26 @@ static int icc_load_file(RendererContext *ctx, const char *path) {
     return 1;
 }
 
+static void *display_icc_profile(SDL_Window *window, size_t *size) {
+    void *sdl_data;
+    void *data;
+
+    if (wayland_owns(window)) {
+        return wayland_icc_profile(window, size);
+    }
+    sdl_data = SDL_GetWindowICCProfile(window, size);
+    if (!sdl_data) {
+        *size = 0;
+        return NULL;
+    }
+    data = *size ? av_memdup(sdl_data, *size) : NULL;
+    SDL_free(sdl_data);
+
+    return data;
+}
+
 int icc_load_display(RendererContext *ctx, SDL_Window *window) {
     size_t size = 0;
-    void *sdl_data;
     void *data;
     int has_vcgt = 0;
 
@@ -336,9 +354,11 @@ int icc_load_display(RendererContext *ctx, SDL_Window *window) {
         return 0;
     }
 
-    sdl_data = SDL_GetWindowICCProfile(window, &size);
-    if (!sdl_data || !size) {
-        SDL_free(sdl_data);
+    data = display_icc_profile(window, &size);
+    if (!data && size) {
+        return 0;
+    }
+    if (!data) {
         if (!ctx->icc_data) {
             log_verbose("The display advertises no ICC profile.\n");
             return 0;
@@ -347,11 +367,6 @@ int icc_load_display(RendererContext *ctx, SDL_Window *window) {
         cal_build(ctx);
         log_verbose("The display no longer advertises an ICC profile.\n");
         return 1;
-    }
-    data = av_memdup(sdl_data, size);
-    SDL_free(sdl_data);
-    if (!data) {
-        return 0;
     }
 
     if (!icc_check(data, size, "The display's ICC profile", &has_vcgt)) {
@@ -460,20 +475,24 @@ int hdr_refresh(RendererContext *ctx, SDL_Window *window) {
         return 0;
     }
 
-    props = SDL_GetWindowProperties(window);
-    if (!props) {
-        return 0;
+    if (wayland_owns(window)) {
+        headroom = wayland_hdr_headroom(window);
+        sdr_white = 1.0f;
+    } else {
+        props = SDL_GetWindowProperties(window);
+        if (!props) {
+            return 0;
+        }
+        if (!SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false)) {
+            goto done;
+        }
+        headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
+        sdr_white = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
     }
-    if (!SDL_GetBooleanProperty(props, SDL_PROP_WINDOW_HDR_ENABLED_BOOLEAN, false)) {
-        goto done;
-    }
-
-    headroom = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_HDR_HEADROOM_FLOAT, 1.0f);
     if (!(headroom > 1.0f)) {
         goto done;
     }
 
-    sdr_white = SDL_GetFloatProperty(props, SDL_PROP_WINDOW_SDR_WHITE_LEVEL_FLOAT, 1.0f);
     sdr_white = sdr_white == 1.0f ? PL_COLOR_SDR_WHITE : sdr_white * SDL_SCRGB_NITS;
 
     max_luma = sdr_white * headroom;
