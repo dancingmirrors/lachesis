@@ -1765,11 +1765,74 @@ int parse_option(void *optctx, const char *opt, const char *arg,
     return consumed;
 }
 
-static const char *const removed_options[] = {"alwaysontop", "autofit", "recenter", "resize-window", "windowed", NULL};
+static const char *const removed_options[] = {
+    "alwaysontop",
+    "autoexit",
+    "autofit",
+    "autorotate",
+    "bsfs",
+    "buildconf",
+    "bytes",
+    "codec",
+    "codecs",
+    "colors",
+    "cpucount",
+    "cpuflags",
+    "decoders",
+    "demuxers",
+    "devices",
+    "dispositions",
+    "drp",
+    "enable_vulkan",
+    "encoders",
+    "exitonkeydown",
+    "exitonmousedown",
+    "fast",
+    "filter_threads",
+    "filters",
+    "find_stream_info",
+    "formats",
+    "framedrop",
+    "fs",
+    "genpts",
+    "hide_banner",
+    "i",
+    "infbuf",
+    "L",
+    "layouts",
+    "left",
+    "license",
+    "lowres",
+    "max_alloc",
+    "muxers",
+    "noborder",
+    "pix_fmts",
+    "protocols",
+    "rdftspeed",
+    "recenter",
+    "report",
+    "resize-window",
+    "sample_fmts",
+    "seek_interval",
+    "showmode",
+    "sinks",
+    "sources",
+    "stats",
+    "top",
+    "video_bg",
+    "vulkan_params",
+    "window_title",
+    "windowed",
+    "x",
+    "y",
+    NULL};
 
 static int option_was_removed(const char *opt) {
     for (int i = 0; removed_options[i]; i++) {
-        if (!strcmp(opt, removed_options[i])) {
+        const char *end;
+
+        // For example codec:v.
+        if (av_strstart(opt, removed_options[i], &end) && (!*end || *end == ':')) {
             return 1;
         }
     }
