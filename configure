@@ -151,7 +151,7 @@ check(
 
 check(
     desc="SDL3",
-    fn=lambda: check_pkg_config("sdl3 >= 3.2.0"),
+    fn=lambda: check_pkg_config("sdl3 >= 3.2.6"),
     required=True,
 )
 check(
@@ -219,11 +219,7 @@ check(
 )
 
 WAYLAND_PROTOCOLS = [
-    "stable/xdg-shell/xdg-shell.xml",
-    "unstable/xdg-decoration/xdg-decoration-unstable-v1.xml",
     "staging/xdg-activation/xdg-activation-v1.xml",
-    "staging/xdg-toplevel-icon/xdg-toplevel-icon-v1.xml",
-    "staging/color-management/color-management-v1.xml",
 ]
 
 
@@ -241,7 +237,7 @@ check(
     desc="Wayland",
     deps="POSIX",
     deps_neg="macOS",
-    fn=lambda: check_pkg_config("wayland-client >= 1.21.0", "wayland-protocols >= 1.41")
+    fn=lambda: check_pkg_config("wayland-client >= 1.21.0", "wayland-protocols >= 1.21")
     and check_program("WAYSCAN")
     and check_wayland_protocols(),
     sources=["src/lachesis_wayland.c"]

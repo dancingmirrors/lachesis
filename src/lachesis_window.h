@@ -27,10 +27,7 @@
 extern int window_placed;
 
 void init_default_window_size(void);
-void size_default_for_content(const Frame *vp);
-void video_follow_content_size(VideoState *is);
 
-int video_open(VideoState *is);
 void window_open_bare(VideoState *is);
 int window_occluded(void);
 

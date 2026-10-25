@@ -56,7 +56,6 @@
 #include "lachesis_subtitles.h"
 #include "lachesis_view.h"
 #include "lachesis_view360.h"
-#include "lachesis_wayland.h"
 #include "lachesis_window.h"
 
 #define AV_SYNC_SLEW_GAIN 0.1
@@ -282,7 +281,6 @@ static void video_image_display(VideoState *is) {
         // Can't be used to determine the renderer's health.
         if (!(SDL_GetWindowFlags(window) &
               (SDL_WINDOW_MINIMIZED | SDL_WINDOW_HIDDEN | SDL_WINDOW_OCCLUDED)) &&
-            !wayland_occluded(window) &&
             !render_fault_event_sent && ++render_fail_streak >= limit) {
             SDL_Event event;
             SDL_zero(event);
@@ -370,9 +368,7 @@ static int video_display(VideoState *is) {
 
     if (!is->window_opened || !window_placed) {
         is->window_opened = 1;
-        video_open(is);
-    } else {
-        video_follow_content_size(is);
+        window_open_bare(is);
     }
 
     if (window_occluded()) {

@@ -69,7 +69,7 @@ jobs:
         run: |
           set -x
 
-          git clone --depth 1 --branch release-3.2.0 \
+          git clone --depth 1 --branch release-3.2.6 \
               https://github.com/libsdl-org/SDL.git
           cmake -S SDL -B SDL/build -DCMAKE_INSTALL_PREFIX=/usr/local \
                 -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON
@@ -110,7 +110,7 @@ jobs:
             fi
           }
 
-          exact   sdl3          3.2.0
+          exact   sdl3          3.2.6
           exact   libass        0.17.2
 
           atleast libavutil     59.39.100

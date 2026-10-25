@@ -309,6 +309,11 @@ void event_loop(VideoState **pis) {
     for (;;) {
         cur_stream = *pis;
         refresh_loop_wait_event(cur_stream, &event);
+        if (event.type >= SDL_EVENT_WINDOW_FIRST &&
+            event.type <= SDL_EVENT_WINDOW_LAST &&
+            (!window || event.window.windowID != SDL_GetWindowID(window))) {
+            continue;
+        }
         switch (event.type) {
         case SDL_EVENT_MOUSE_MOTION:
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
@@ -348,6 +353,9 @@ void event_loop(VideoState **pis) {
                 break;
             }
             if (delete_confirm_pending) {
+                if (event.key.repeat) {
+                    break;
+                }
                 delete_confirm_pending = 0;
                 osd_hide_delete_prompt();
                 int was_paused = delete_prearm_paused;
@@ -427,7 +435,7 @@ void event_loop(VideoState **pis) {
             }
             switch (event.key.key) {
             case SDLK_F:
-                toggle_fullscreen(cur_stream);
+                enter_fullscreen(cur_stream);
                 cur_stream->force_refresh = 1;
                 break;
             case SDLK_P:
@@ -785,7 +793,7 @@ void event_loop(VideoState **pis) {
                 static int64_t last_mouse_left_click = 0;
                 if (av_gettime_relative() - last_mouse_left_click <= 500000) {
                     sbs360_drag = 0;
-                    toggle_fullscreen(cur_stream);
+                    enter_fullscreen(cur_stream);
                     cur_stream->force_refresh = 1;
                     last_mouse_left_click = 0;
                 } else {
@@ -853,10 +861,6 @@ void event_loop(VideoState **pis) {
             seek_relative(cur_stream, incr * notches);
             break;
         }
-        case SDL_EVENT_WINDOW_RESIZED:
-            note_window_resized(cur_stream, event.window.data1,
-                                event.window.data2);
-            break;
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
             if (note_window_pixel_size(event.window.data1, event.window.data2)) {
                 video_adopt_window_size(cur_stream);

@@ -23,32 +23,28 @@
 
 #include <math.h>
 #include <stdint.h>
-#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <libavutil/avstring.h>
 #include <libavutil/macros.h>
 #include <libavutil/mathematics.h>
 #include <libavutil/mem.h>
-#include <libavutil/rational.h>
 #include <libavutil/time.h>
 
 #include <SDL3/SDL.h>
 
 #include "lachesis_alloc.h"
-#include "lachesis_aspect.h"
 #include "lachesis_internal.h"
 #include "lachesis_log.h"
 #include "lachesis_options.h"
 #include "lachesis_playlist.h"
 #include "lachesis_present.h"
-#include "lachesis_queue.h"
 #include "lachesis_renderer.h"
 #include "lachesis_wayland.h"
 #include "lachesis_window.h"
 
-#define WINDOW_INSIST_US (2000 * 1000)
-#define WINDOW_INSIST_TRIES 3
+#define WINDOW_FALLBACK_FIT 0.85f
 #define RAISE_GRACE_US (300 * 1000)
 
 static char *window_title_path;
@@ -76,56 +72,24 @@ static float window_points_scale(void) {
     return density > 0.0f ? density : 1.0f;
 }
 
-static void window_size_for_content(int pic_width, int pic_height,
-                                    AVRational sar, int rotate, int *out_w,
-                                    int *out_h) {
-    AVRational aspect_ratio;
-    int64_t width, height;
-    int64_t max_width = INT64_MAX, max_height = INT64_MAX;
-    float density = window_points_scale();
+static void fallback_size_for_display(SDL_DisplayID id, int *out_w, int *out_h) {
+    const SDL_DisplayMode *mode = SDL_GetDesktopDisplayMode(id);
+    float density = mode && mode->pixel_density > 0.0f ? mode->pixel_density : 1.0f;
+    int64_t width = 1920, height = 1080;
     SDL_Rect display_bounds;
 
-    if (pic_width < 1) {
-        pic_width = 1;
-    }
-    if (pic_height < 1) {
-        pic_height = 1;
-    }
+    if (SDL_GetDisplayBounds(id, &display_bounds) && display_bounds.w > 0 &&
+        display_bounds.h > 0) {
+        int64_t max_width = (int64_t)(display_bounds.w * density * WINDOW_FALLBACK_FIT);
+        int64_t max_height = (int64_t)(display_bounds.h * density * WINDOW_FALLBACK_FIT);
 
-    aspect_ratio = sar;
-
-    if (rotate == 90 || rotate == 270) {
-        int tmp = pic_width;
-        pic_width = pic_height;
-        pic_height = tmp;
-        if (aspect_ratio.num > 0 && aspect_ratio.den > 0) {
-            aspect_ratio = av_make_q(aspect_ratio.den, aspect_ratio.num);
-        }
-    }
-
-    aspect_ratio = aspect_override_sar(pic_width, pic_height, aspect_ratio);
-
-    if (aspect_ratio.num <= 0 || aspect_ratio.den <= 0) {
-        aspect_ratio = av_make_q(1, 1);
-    }
-
-    aspect_ratio = av_mul_q(aspect_ratio, av_make_q(pic_width, pic_height));
-
-    height = pic_height;
-    width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
-
-    if (SDL_GetDisplayBounds(window ? SDL_GetDisplayForWindow(window)
-                                    : SDL_GetPrimaryDisplay(),
-                             &display_bounds)) {
-        max_width = (int64_t)(display_bounds.w * density * autofit_larger);
-        max_height = (int64_t)(display_bounds.h * density * autofit_larger);
-    }
-    if (width > max_width || height > max_height) {
-        height = max_height;
-        width = av_rescale(height, aspect_ratio.num, aspect_ratio.den) & ~1;
-        if (width > max_width) {
-            width = max_width;
-            height = av_rescale(width, aspect_ratio.den, aspect_ratio.num) & ~1;
+        if (width > max_width || height > max_height) {
+            height = max_height;
+            width = av_rescale(height, 16, 9) & ~1;
+            if (width > max_width) {
+                width = max_width;
+                height = av_rescale(width, 9, 16) & ~1;
+            }
         }
     }
 
@@ -133,44 +97,35 @@ static void window_size_for_content(int pic_width, int pic_height,
     *out_h = FFMAX((int)lrintf((float)height / density), 1);
 }
 
-static int sized_for_width;
-static int sized_for_height;
-static AVRational sized_for_sar;
-
-static int window_rotate;
-
-static int noted_rotate;
-
-static AVRational content_sar(const Frame *vp) {
-    return aspect_override_sar(vp->width, vp->height, vp->sar);
-}
-
-static int content_size_is_current(const Frame *vp) {
-    AVRational sar = content_sar(vp);
-
-    return vp->width == sized_for_width && vp->height == sized_for_height &&
-        sar.num == sized_for_sar.num && sar.den == sized_for_sar.den;
-}
-
-static void note_content_size(const Frame *vp) {
-    sized_for_width = vp->width;
-    sized_for_height = vp->height;
-    sized_for_sar = content_sar(vp);
-}
-
-static int window_content_sized;
-
-void size_default_for_content(const Frame *vp) {
-    window_content_sized = 1;
-    note_content_size(vp);
-    window_rotate = video_rotate;
-    window_size_for_content(vp->width, vp->height, vp->sar, window_rotate,
-                            &default_width, &default_height);
-}
-
 void init_default_window_size(void) {
-    window_size_for_content(1920, 1080, (AVRational){1, 1}, 0, &default_width,
-                            &default_height);
+    const char *driver = SDL_GetCurrentVideoDriver();
+    SDL_DisplayID *displays;
+
+    if (driver && !strcmp(driver, "kmsdrm")) {
+        const SDL_DisplayMode *mode = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+
+        if (mode && mode->w > 0 && mode->h > 0) {
+            default_width = mode->w;
+            default_height = mode->h;
+            return;
+        }
+    }
+
+    displays = SDL_GetDisplays(NULL);
+    default_width = 1920;
+    default_height = 1080;
+    for (int i = 0; displays && displays[i]; i++) {
+        int w, h;
+
+        fallback_size_for_display(displays[i], &w, &h);
+        if (i == 0 || w < default_width) {
+            default_width = w;
+            default_height = h;
+        }
+    }
+    SDL_free(displays);
+    log_verbose("Outside of fullscreen the window falls back to %dx%d.\n",
+                default_width, default_height);
 }
 
 int note_window_pixel_size(int w, int h) {
@@ -211,6 +166,13 @@ float window_pixel_density(void) {
 
 static const char *file_basename(const char *path) {
     const char *slash = strrchr(path, '/');
+#if defined(_WIN32)
+    const char *backslash = strrchr(path, '\\');
+
+    if (backslash && (!slash || backslash > slash)) {
+        slash = backslash;
+    }
+#endif
     return (slash && slash[1]) ? slash + 1 : path;
 }
 
@@ -230,16 +192,17 @@ static char *make_default_window_title(const char *path,
         display = strstr(path, "://") ? path : file_basename(path);
     }
 
-    char *title;
-    if (playlist_size > 1) {
-        title = av_asprintf("%s - %s [%d/%d]", program_name, display,
-                            playlist_pos + 1, playlist_size);
-    } else {
-        title = av_asprintf("%s - %s", program_name, display);
-    }
+    char *title = av_asprintf("%s - %s", program_name, display);
     av_free(owned);
 
     return title;
+}
+
+static void playlist_counter(char *buf, size_t size) {
+    buf[0] = '\0';
+    if (playlist_size > 1) {
+        snprintf(buf, size, " [%d/%d]", playlist_pos + 1, playlist_size);
+    }
 }
 
 void note_media_window_title(const char *path, const char *archive_path,
@@ -261,87 +224,32 @@ static const char *current_window_title(VideoState *is) {
 }
 
 void refresh_window_title(VideoState *is) {
-    const char *title = current_window_title(is);
+    const char *base = current_window_title(is);
+    char counter[32] = "";
+    char *title;
+    size_t len;
 
-    if (!window || !title ||
-        (window_title_shown && !strcmp(window_title_shown, title))) {
+    if (!window || !base) {
+        return;
+    }
+    if (base != window_title) {
+        playlist_counter(counter, sizeof(counter));
+    }
+    len = strlen(base);
+    if (window_title_shown && !strncmp(window_title_shown, base, len) &&
+        !strcmp(window_title_shown + len, counter)) {
+        return;
+    }
+    if (!(title = av_asprintf("%s%s", base, counter))) {
         return;
     }
     av_free(window_title_shown);
-    window_title_shown = av_strdup(title);
+    window_title_shown = title;
     SDL_SetWindowTitle(window, title);
-    wayland_set_title(window, title);
-}
-
-#define WINDOW_SIZE_SLACK 4
-
-static int window_is_ours_to_size(void) {
-    if (wayland_owns(window)) {
-        return !wayland_size_locked(window);
-    }
-
-    return !(SDL_GetWindowFlags(window) &
-             (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED |
-              SDL_WINDOW_MINIMIZED));
 }
 
 static int window_fullscreen_now(void) {
-    if (wayland_owns(window)) {
-        return wayland_fullscreen(window);
-    }
-
     return !!(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN);
-}
-
-static void request_fullscreen(int fullscreen) {
-    if (wayland_owns(window)) {
-        wayland_set_fullscreen(window, fullscreen);
-    } else {
-        SDL_SetWindowFullscreen(window, fullscreen);
-    }
-}
-
-static int sync_window(void) {
-    return wayland_owns(window) ? wayland_sync(window) : SDL_SyncWindow(window);
-}
-
-static void set_window_size(int w, int h) {
-    if (wayland_owns(window)) {
-        wayland_set_size(window, w, h);
-    } else {
-        SDL_SetWindowSize(window, w, h);
-    }
-}
-
-static int window_want_w;
-static int window_want_h;
-static int64_t window_want_us;
-static int window_want_tries;
-
-static void forget_window_size(void) {
-    window_want_w = 0;
-    window_want_h = 0;
-    window_want_us = 0;
-    window_want_tries = 0;
-}
-
-static void want_window_size(int w, int h) {
-    window_want_w = w;
-    window_want_h = h;
-    window_want_us = av_gettime_relative();
-    window_want_tries = 0;
-}
-
-static int window_size_still_wanted(void) {
-    return window_want_w > 0 && window_want_h > 0 &&
-        av_gettime_relative() - window_want_us <= WINDOW_INSIST_US;
-}
-
-static void insist_window_size(void) {
-    if (window_size_still_wanted() && !is_fullscreen &&
-        window_is_ours_to_size()) {
-        set_window_size(window_want_w, window_want_h);
-    }
 }
 
 static int hold_output(void) {
@@ -382,25 +290,6 @@ void note_display_info_change(VideoState *is) {
     refresh_display_info(is);
 }
 
-static int window_ever_windowed;
-
-static int recenter_wanted(void) {
-    return window_recenter || !window_ever_windowed;
-}
-
-static void apply_window_geometry(int w, int h, int recenter) {
-    window_ever_windowed = 1;
-    want_window_size(w, h);
-    set_window_size(w, h);
-    if (!recenter) {
-        return;
-    }
-    if (!SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED,
-                               SDL_WINDOWPOS_CENTERED)) {
-        SDL_ClearError();
-    }
-}
-
 void window_want_raise(const char *token) {
     av_freep(&raise_token);
     if (token && *token) {
@@ -436,9 +325,8 @@ void finish_raise(void) {
     }
     if (!raise_asked) {
         raise_asked = 1;
-        if (wayland_owns(window)) {
-            wayland_activate(window, raise_token);
-        } else {
+        if ((SDL_GetWindowFlags(window) & SDL_WINDOW_HIDDEN) ||
+            !wayland_activate(window, raise_token)) {
             raise_arm();
         }
         SDL_RaiseWindow(window);
@@ -454,118 +342,15 @@ void finish_raise(void) {
     raise_spent();
 }
 
-static int window_shown_windowed;
-
-// A silly dance for GNOME.
-static void show_windowed_once(VideoState *is) {
-    int held;
-
-    if (window_shown_windowed || is_fullscreen || !wayland_undecorated()) {
-        return;
-    }
-    if (!window_content_sized &&
-        (is->video_st || !SDL_GetAtomicInt(&is->streams_selected))) {
-        return;
-    }
-    held = hold_output();
-    if (held) {
-        window_shown_windowed = 1;
-        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) {
-            SDL_RestoreWindow(window);
-            apply_window_geometry(default_width, default_height, 0);
-        }
-        sync_window();
-        SDL_HideWindow(window);
-        SDL_ShowWindow(window);
-        update_screen_size();
-        renderer_resize(renderer, screen_width, screen_height);
-    }
-    drop_output(held);
-}
-
-static void follow_content_size(VideoState *is) {
-    int w, h;
-    Frame *vp;
-
-    if (!is->video_st) {
-        return;
-    }
-
-    vp = frame_queue_peek_last(&is->pictq);
-    if (video_rotate == noted_rotate && content_size_is_current(vp)) {
-        return;
-    }
-    noted_rotate = window_rotate = video_rotate;
-    note_content_size(vp);
-
-    if (window_content_sized && !window_resize) {
-        return;
-    }
-    window_content_sized = 1;
-
-    window_size_for_content(vp->width, vp->height, vp->sar, window_rotate, &w,
-                            &h);
-
-    if (w != default_width || h != default_height) {
-        default_width = w;
-        default_height = h;
-        if (!is_fullscreen) {
-            int held = hold_output();
-
-            apply_window_geometry(default_width, default_height,
-                                  recenter_wanted());
-            sync_window();
-            update_screen_size();
-            video_adopt_window_size(is);
-            drop_output(held);
-        }
-    }
-}
-
-void video_follow_content_size(VideoState *is) {
-    follow_content_size(is);
-    show_windowed_once(is);
-}
-
-void note_window_resized(VideoState *is, int w, int h) {
-    if (!window || !window_placed || !window_want_w) {
-        return;
-    }
-    if (wayland_owns(window) || is_fullscreen || !window_is_ours_to_size() ||
-        !window_size_still_wanted()) {
-        forget_window_size();
-        return;
-    }
-    if (abs(w - window_want_w) <= WINDOW_SIZE_SLACK &&
-        abs(h - window_want_h) <= WINDOW_SIZE_SLACK) {
-        return;
-    }
-    if (window_want_tries >= WINDOW_INSIST_TRIES) {
-        forget_window_size();
-        return;
-    }
-    window_want_tries++;
-    insist_window_size();
-    if (is) {
-        update_screen_size();
-        video_adopt_window_size(is);
-    }
-}
-
 static void place_window(void) {
     int held;
 
     if (window_placed) {
         return;
     }
+    // Asking again can move it to another output on Wayland.
     held = hold_output();
     window_placed = 1;
-    window_shown_windowed = 0;
-    window_rotate = noted_rotate = video_rotate;
-    request_fullscreen(is_fullscreen);
-    if (!is_fullscreen) {
-        apply_window_geometry(default_width, default_height, recenter_wanted());
-    }
     SDL_ShowWindow(window);
     drop_output(held);
 }
@@ -575,8 +360,8 @@ void window_open_bare(VideoState *is) {
 
     place_window();
     held = hold_output();
-    sync_window();
-    show_windowed_once(is);
+    SDL_SyncWindow(window);
+    is_fullscreen = window_fullscreen_now();
     present_update_display_mode();
 
     update_screen_size();
@@ -589,40 +374,35 @@ void window_open_bare(VideoState *is) {
     drop_output(held);
 }
 
-int video_open(VideoState *is) {
-    if (!window_placed) {
-        if (is->video_st) {
-            size_default_for_content(frame_queue_peek_last(&is->pictq));
-        }
-    } else {
-        video_follow_content_size(is);
-    }
-    window_open_bare(is);
-
-    return 0;
-}
-
 int window_occluded(void) {
-    return window && ((SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED) || wayland_occluded(window));
+    return window && (SDL_GetWindowFlags(window) & SDL_WINDOW_OCCLUDED);
 }
 
 char *startup_window_title(const char *fallback_path) {
+    const char *base = window_title_auto;
     const PlaylistEntry *e;
+    char counter[32];
+    char *owned = NULL;
+    char *title;
 
     if (window_title) {
         return av_strdup(window_title);
     }
-    if (window_title_auto) {
-        return av_strdup(window_title_auto);
+    if (!base) {
+        e = playlist_get(playlist_pos);
+        owned = e ? make_default_window_title(e->display_path, e->archive_path,
+                                              e->entry_name)
+                  : make_default_window_title(fallback_path, NULL, NULL);
+        base = owned;
     }
-
-    e = playlist_get(playlist_pos);
-    if (e) {
-        return make_default_window_title(e->display_path, e->archive_path,
-                                         e->entry_name);
+    if (!base) {
+        return NULL;
     }
+    playlist_counter(counter, sizeof(counter));
+    title = av_asprintf("%s%s", base, counter);
+    av_free(owned);
 
-    return make_default_window_title(fallback_path, NULL, NULL);
+    return title;
 }
 
 void note_fullscreen_state(VideoState *is) {
@@ -640,14 +420,6 @@ void note_fullscreen_state(VideoState *is) {
                 fullscreen ? "into" : "out of");
     held = hold_output();
     is_fullscreen = fullscreen;
-    if (!is_fullscreen) {
-        window_ever_windowed = 1;
-    }
-    if (!is_fullscreen && is->video_st && is->pictq.rindex_shown &&
-        (!window_content_sized || window_resize)) {
-        size_default_for_content(frame_queue_peek_last(&is->pictq));
-    }
-    show_windowed_once(is);
     update_screen_size();
     video_adopt_window_size(is);
     is->force_refresh = 1;
@@ -656,28 +428,24 @@ void note_fullscreen_state(VideoState *is) {
     drop_output(held);
 }
 
-void toggle_fullscreen(VideoState *is) {
-    int fullscreen;
+// On Windows SDL doesn't refit a fullscreen window when the display's resolution changes.
+void enter_fullscreen(VideoState *is) {
+    const char *driver = SDL_GetCurrentVideoDriver();
+    int refit = driver && !strcmp(driver, "windows");
+    int synced;
     int held;
 
-    if (!window) {
+    if (!window || (window_fullscreen_now() && !refit)) {
         return;
     }
     held = hold_output();
-    is_fullscreen = !is_fullscreen;
-    request_fullscreen(is_fullscreen);
-    if (!is_fullscreen) {
-        apply_window_geometry(default_width, default_height, recenter_wanted());
+    SDL_SetWindowFullscreen(window, true);
+    synced = SDL_SyncWindow(window);
+    if (!window_fullscreen_now()) {
+        log_verbose(synced ? "The compositor kept the window out of fullscreen.\n"
+                           : "The window is not fullscreen yet.\n");
     }
-    if (sync_window()) {
-        fullscreen = window_fullscreen_now();
-        if (fullscreen != is_fullscreen) {
-            log_verbose("The compositor kept the window %s fullscreen.\n",
-                        fullscreen ? "in" : "out of");
-            is_fullscreen = fullscreen;
-        }
-    }
-    show_windowed_once(is);
+    is_fullscreen = window_fullscreen_now();
     update_screen_size();
     video_adopt_window_size(is);
     is->force_refresh = 1;

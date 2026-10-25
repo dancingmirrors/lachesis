@@ -121,7 +121,6 @@
 #include "lachesis_terminal.h"
 #include "lachesis_view.h"
 #include "lachesis_view360.h"
-#include "lachesis_wayland.h"
 #include "lachesis_window.h"
 
 const char program_name[] = "lachesis";
@@ -670,7 +669,7 @@ av_noreturn void do_exit(VideoState *is) {
         shutdown_step("destroying the renderer");
     }
     if (window && !stranded_renderer) {
-        wayland_destroy_window(window);
+        SDL_DestroyWindow(window);
     }
     if (stranded_renderer) {
         exit_now(status);
@@ -679,7 +678,6 @@ av_noreturn void do_exit(VideoState *is) {
     avformat_network_deinit();
     subtitles_uninit();
     osd_uninit();
-    wayland_uninit();
     SDL_Quit();
     shutdown_step("the rest of the teardown");
     alloc_track_complete();
@@ -829,14 +827,8 @@ static VideoState *stream_open_playlist_entry(int pos) {
 }
 
 static int startup_window_flags(void) {
-    int win_flags = SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY |
+    return SDL_WINDOW_HIDDEN | SDL_WINDOW_HIGH_PIXEL_DENSITY |
         SDL_WINDOW_RESIZABLE | SDL_WINDOW_FULLSCREEN;
-
-    if (alwaysontop) {
-        win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
-    }
-
-    return win_flags;
 }
 
 int display_max_texture_size(void) {
@@ -1011,7 +1003,7 @@ void render_fault_fallback(VideoState **pis) {
     }
     av_freep(&renderer);
     if (window) {
-        wayland_destroy_window(window);
+        SDL_DestroyWindow(window);
         window = NULL;
     }
     osd_invalidate_textures();
@@ -1741,10 +1733,6 @@ int main(int argc, char **argv) {
     }
 
     terminal_input_init();
-
-    if (start_windowed) {
-        is_fullscreen = 0;
-    }
 
     if (gpu_api_name) {
         if (!strcmp(gpu_api_name, "auto")) {

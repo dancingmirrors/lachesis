@@ -124,9 +124,6 @@ extern float seek_interval;
 extern int display_disable;
 extern const char *output_filename;
 extern int benchmark;
-extern int alwaysontop;
-extern int window_resize;
-extern int window_recenter;
 extern int startup_volume;
 extern int av_sync_type;
 extern int av_sync_type_explicit;
@@ -189,16 +186,11 @@ extern int enable_360tb;
 extern int enable_360eq;
 extern int enable_360eqtb;
 extern int is_fullscreen;
-extern int start_windowed;
 
 int parse_video_background(const char *value, uint8_t rgba[4]);
 
 // For -video-bg.
 int video_background_translucent(void);
-
-#define AUTOFIT_MIN 0.05
-#define AUTOFIT_MAX 10.0
-extern float autofit_larger;
 
 extern int global_muted;
 extern int ytdl_disable;

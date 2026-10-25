@@ -21,8 +21,6 @@
 #ifndef LACHESIS_WAYLAND_H
 #define LACHESIS_WAYLAND_H
 
-#include <stddef.h>
-
 #include <libavutil/attributes.h>
 
 #include <SDL3/SDL.h>
@@ -31,75 +29,12 @@
 
 #if LACHESIS_HAVE_WAYLAND
 
-SDL_Window *wayland_create_window(const char *title, int w, int h,
-                                  SDL_WindowFlags flags);
-void wayland_destroy_window(SDL_Window *window);
-int wayland_owns(SDL_Window *window);
-int wayland_undecorated(void);
-
-void wayland_set_fullscreen(SDL_Window *window, int fullscreen);
-int wayland_sync(SDL_Window *window);
-int wayland_fullscreen(SDL_Window *window);
-int wayland_size_locked(SDL_Window *window);
-int wayland_occluded(SDL_Window *window);
-
-void wayland_set_size(SDL_Window *window, int w, int h);
-void wayland_set_title(SDL_Window *window, const char *title);
-void wayland_activate(SDL_Window *window, const char *token);
-void wayland_show(SDL_Window *window);
-int wayland_set_icon(SDL_Window *window, SDL_Surface *icon);
-
-void *wayland_icc_profile(SDL_Window *window, size_t *size);
-float wayland_hdr_headroom(SDL_Window *window);
-
-void wayland_uninit(void);
+int wayland_activate(SDL_Window *window, const char *token);
 
 #else
 
-static inline SDL_Window *wayland_create_window(const char *title av_unused, int w av_unused, int h av_unused, SDL_WindowFlags flags av_unused) {
-    return NULL;
-}
-static inline void wayland_destroy_window(SDL_Window *win) {
-    SDL_DestroyWindow(win);
-}
-static inline int wayland_owns(SDL_Window *win av_unused) {
+static inline int wayland_activate(SDL_Window *win av_unused, const char *token av_unused) {
     return 0;
-}
-static inline int wayland_undecorated(void) {
-    return 0;
-}
-static inline void wayland_set_fullscreen(SDL_Window *win av_unused, int fullscreen av_unused) {
-}
-static inline int wayland_sync(SDL_Window *win av_unused) {
-    return 0;
-}
-static inline int wayland_fullscreen(SDL_Window *win av_unused) {
-    return 0;
-}
-static inline int wayland_size_locked(SDL_Window *win av_unused) {
-    return 0;
-}
-static inline int wayland_occluded(SDL_Window *win av_unused) {
-    return 0;
-}
-static inline void wayland_set_size(SDL_Window *win av_unused, int w av_unused, int h av_unused) {
-}
-static inline void wayland_set_title(SDL_Window *win av_unused, const char *title av_unused) {
-}
-static inline void wayland_activate(SDL_Window *win av_unused, const char *token av_unused) {
-}
-static inline void wayland_show(SDL_Window *win av_unused) {
-}
-static inline int wayland_set_icon(SDL_Window *win av_unused, SDL_Surface *icon av_unused) {
-    return 0;
-}
-static inline void *wayland_icc_profile(SDL_Window *win av_unused, size_t *size av_unused) {
-    return NULL;
-}
-static inline float wayland_hdr_headroom(SDL_Window *win av_unused) {
-    return 1.0f;
-}
-static inline void wayland_uninit(void) {
 }
 
 #endif

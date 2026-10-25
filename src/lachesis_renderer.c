@@ -36,7 +36,6 @@
 #include "lachesis_shader.h"
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
-#include "lachesis_wayland.h"
 // clang-format on
 
 #include <inttypes.h>
@@ -2060,21 +2059,19 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     SDL_ClearError();
 
-    window = wayland_create_window(params->title, params->width, params->height,
-                                   params->window_flags | api_window_flag(api));
-    if (!window) {
-        window = SDL_CreateWindow(params->title, params->width, params->height,
-                                  params->window_flags | api_window_flag(api));
-    }
+    window = SDL_CreateWindow(params->title, params->width, params->height,
+                              params->window_flags | api_window_flag(api));
     if (!window) {
         note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
         return AVERROR_EXTERNAL;
     }
     icon_set_window_icon(window);
+    // An icon the compositor can't show isn't why a renderer failed.
+    SDL_ClearError();
 
     renderer = renderer_alloc(api);
     if (!renderer) {
-        wayland_destroy_window(window);
+        SDL_DestroyWindow(window);
         return AVERROR(ENOMEM);
     }
     ((RendererContext *)renderer)->window = window;
@@ -2090,7 +2087,8 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
 
     if (show_before_test) {
         SDL_ShowWindow(window);
-        wayland_show(window);
+        // So the first frame is already fullscreen.
+        SDL_SyncWindow(window);
     }
 
     SDL_GetWindowSizeInPixels(window, &w, &h);
@@ -2123,7 +2121,7 @@ fail:
     if (vo_stop((RendererContext *)renderer)) {
         destroy(renderer);
         av_free(renderer);
-        wayland_destroy_window(window);
+        SDL_DestroyWindow(window);
     }
 
     return ret;
