@@ -44,6 +44,9 @@ int hwaccel_glob_match(const char *pattern, const char *text);
 
 int hwaccel_method_takes_node(const char *name);
 
+const char *hwaccel_node_method(void);
+int hwaccel_works_on_node(const char *path);
+
 #define HWACCEL_EXTRA_FRAMES 6
 
 int hwaccel_open_device(AVBufferRef **device_ctx, const AVCodec **codec,

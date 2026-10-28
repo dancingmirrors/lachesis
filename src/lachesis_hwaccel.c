@@ -524,6 +524,43 @@ static int open_on_node(AVBufferRef **device_ctx, enum AVHWDeviceType type,
     return ret;
 }
 
+const char *hwaccel_node_method(void) {
+    return !no_hwaccel && !video_disable && hwaccel_method_takes_node(hwaccel)
+        ? hwaccel
+        : NULL;
+}
+
+#ifdef LACHESIS_HAVE_DRM_NODES
+
+int hwaccel_works_on_node(const char *path) {
+    const char *method = hwaccel_node_method();
+    HwaccelGpuNode node = {0};
+    AVBufferRef *device_ctx = NULL;
+    int saved_level;
+    int ret;
+
+    if (!method) {
+        return 0;
+    }
+    av_strlcpy(node.path, path, sizeof(node.path));
+    if (drm_node_driver(path, node.driver, sizeof(node.driver)) < 0) {
+        node.driver[0] = '\0';
+    }
+
+    saved_level = av_log_get_level();
+    if (saved_level < AV_LOG_VERBOSE) {
+        av_log_set_level(AV_LOG_QUIET);
+    }
+    ret = open_on_node(&device_ctx, av_hwdevice_find_type_by_name(method),
+                       &node);
+    av_log_set_level(saved_level);
+    av_buffer_unref(&device_ctx);
+
+    return ret >= 0;
+}
+
+#endif // LACHESIS_HAVE_DRM_NODES
+
 static int keep_best_error(int best, int ret) {
     if (!best || (best == AVERROR(ENOSYS) && ret != AVERROR(ENOSYS))) {
         return ret;

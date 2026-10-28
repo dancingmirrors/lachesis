@@ -926,6 +926,103 @@ int vk_wanted_render_node(const char *want, char *buf, size_t size) {
     return ret;
 }
 
+static int vk_gpu_usable(PFN_vkGetInstanceProcAddr get_proc_addr,
+                         VkInstance inst, VkPhysicalDevice phys, int presents) {
+    PFN_vkGetPhysicalDeviceProperties get_props;
+    PFN_vkGetPhysicalDeviceQueueFamilyProperties get_qfs;
+    VkQueueFamilyProperties qfs[16];
+    VkPhysicalDeviceProperties props;
+    uint32_t num = FF_ARRAY_ELEMS(qfs);
+
+    get_props = (PFN_vkGetPhysicalDeviceProperties)
+        get_proc_addr(inst, "vkGetPhysicalDeviceProperties");
+    get_qfs = (PFN_vkGetPhysicalDeviceQueueFamilyProperties)
+        get_proc_addr(inst, "vkGetPhysicalDeviceQueueFamilyProperties");
+    if (!get_props || !get_qfs) {
+        return 0;
+    }
+    get_props(phys, &props);
+    if (props.apiVersion < PL_VK_MIN_VERSION) {
+        return 0;
+    }
+    if (!presents) {
+        return 1;
+    }
+    get_qfs(phys, &num, qfs);
+    for (uint32_t i = 0; i < num; i++) {
+        if ((qfs[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) &&
+            SDL_Vulkan_GetPresentationSupport(inst, phys, i)) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static int hwaccel_gpu(PFN_vkGetInstanceProcAddr get_proc_addr, VkInstance inst,
+                       const GpuDeviceNames names,
+                       const VkPhysicalDevice *handles, int num, int def,
+                       int presents) {
+    char nodes[MAX_GPU_DEVICES][64];
+    int others = 0;
+
+    if (def < 0 || def >= num) {
+        return -1;
+    }
+    for (int i = 0; i < num; i++) {
+        if (vk_render_node(get_proc_addr, inst, handles[i], nodes[i],
+                           sizeof(nodes[i])) < 0 ||
+            (i != def &&
+             !vk_gpu_usable(get_proc_addr, inst, handles[i], presents))) {
+            nodes[i][0] = '\0';
+        } else if (i != def) {
+            others++;
+        }
+    }
+    if (!others || !nodes[def][0] || hwaccel_works_on_node(nodes[def])) {
+        return -1;
+    }
+    for (int i = 0; i < num; i++) {
+        if (i != def && nodes[i][0] && hwaccel_works_on_node(nodes[i])) {
+            log_verbose("Rendering on %s because -hwaccel %s does not work on "
+                        "%s. Pass -gpu-device to choose.\n",
+                        names[i], hwaccel_node_method(), names[def]);
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static const char *hwaccel_device_name(const char **ext, unsigned num_ext,
+                                       char *buf, size_t size) {
+    VkPhysicalDevice handles[MAX_GPU_DEVICES];
+    GpuDeviceNames names;
+    // With SDL's extensions to ask whether a GPU can present.
+    // clang-format off
+    pl_vk_inst inst = pl_vk_inst_create(NULL, pl_vk_inst_params(
+        .get_proc_addr = (PFN_vkGetInstanceProcAddr)SDL_Vulkan_GetVkGetInstanceProcAddr(),
+        .extensions = ext,
+        .num_extensions = num_ext));
+    // clang-format on
+    int num, pick;
+
+    if (!inst) {
+        return NULL;
+    }
+    num = list_vk_devices(inst->get_proc_addr, inst->instance, names, NULL,
+                          handles);
+    // FFmpeg's default is the first device.
+    pick = hwaccel_gpu(inst->get_proc_addr, inst->instance, names, handles, num,
+                       0, 1);
+    if (pick >= 0) {
+        av_strlcpy(buf, names[pick], size);
+    }
+    pl_vk_inst_destroy(&inst);
+
+    return pick >= 0 ? buf : NULL;
+}
+
 #endif // LACHESIS_HAVE_VK_DRM_NODE
 
 static int create_vk_by_hwcontext(Renderer *renderer,
@@ -969,6 +1066,13 @@ static int create_vk_by_hwcontext(Renderer *renderer,
             }
         }
     }
+#ifdef LACHESIS_HAVE_VK_DRM_NODE
+    if (!renderer_want_device && !raw_device && !on_kmsdrm() &&
+        hwaccel_node_method()) {
+        raw_device = hwaccel_device_name(ext, num_ext, ctx->device_request,
+                                         sizeof(ctx->device_request));
+    }
+#endif
     ret = av_hwdevice_ctx_create(&ctx->hw_device_ref, AV_HWDEVICE_TYPE_VULKAN,
                                  raw_device, dict, 0);
     av_dict_free(&dict);
@@ -1319,6 +1423,30 @@ static int create_vk_by_placebo(Renderer *renderer,
             }
             phys_device = handles[display];
         }
+#ifdef LACHESIS_HAVE_VK_DRM_NODE
+        if (!renderer_want_device && !device_name && display < 0 && num > 1 &&
+            hwaccel_node_method()) {
+            // clang-format off
+            VkPhysicalDevice def = pl_vulkan_choose_device(ctx->log_ctx,
+                                                           pl_vulkan_device_params(
+                                                               .instance = ctx->placebo_instance->instance,
+                                                               .get_proc_addr = placebo_proc_addr,
+                                                               .allow_software = renderer_allow_software_gpu, ));
+            // clang-format on
+            int pick = -1;
+
+            for (int i = 0; i < num; i++) {
+                if (handles[i] == def) {
+                    pick = hwaccel_gpu(ctx->get_proc_addr,
+                                       ctx->placebo_instance->instance, names,
+                                       handles, num, i, !ctx->offscreen);
+                    break;
+                }
+            }
+            // Either way, so libplacebo doesn't choose all over again.
+            phys_device = pick >= 0 ? handles[pick] : def;
+        }
+#endif
     }
 
     // clang-format off
