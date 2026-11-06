@@ -634,13 +634,30 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
     return AVERROR_BUG;
 }
 
+static int hwaccel_built(enum AVHWDeviceType want) {
+    enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
+
+    while ((type = av_hwdevice_iterate_types(type)) != AV_HWDEVICE_TYPE_NONE) {
+        if (type == want) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static void hwaccel_report_failure(const char *name, const HwaccelGpus *gpus,
-                                   int err) {
+                                   int err, const char *reason) {
     enum AVHWDeviceType type = av_hwdevice_find_type_by_name(name);
     char tried[256] = "";
+    char code[AV_ERROR_MAX_STRING_SIZE];
 
+    if (!reason || !*reason) {
+        av_strerror(err, code, sizeof(code));
+        reason = code;
+    }
     if (!hwaccel_takes_node(type) || !gpus->num) {
-        log_dead("hwaccel %s is not available! (%s)\n", name, av_err2str(err));
+        log_dead("hwaccel %s is not available! (%s)\n", name, reason);
         return;
     }
 
@@ -652,7 +669,7 @@ static void hwaccel_report_failure(const char *name, const HwaccelGpus *gpus,
         }
     }
     log_dead("hwaccel %s is not available on %s! (%s)\n", name, tried,
-             av_err2str(err));
+             reason);
 }
 
 static int hwaccel_codec_allowed(enum AVCodecID codec_id) {
@@ -889,8 +906,19 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
         const char *corrupts = hw_codec && type == AV_HWDEVICE_TYPE_VULKAN
             ? vulkan_corrupts(avctx)
             : NULL;
+        char reason[256];
         int why = 0;
 
+        if (!hwaccel_built(type)) {
+            char methods[256];
+
+            av_log_set_level(saved_level);
+            hwaccel_method_list(methods, sizeof(methods));
+            log_dead("hwaccel %s is not available! (FFmpeg was built without "
+                     "it. Available methods: %s.)\n",
+                     hwaccel, *methods ? methods : "none");
+            return AVERROR(ENOSYS);
+        }
         if (corrupts) {
             av_log_set_level(saved_level);
             log_warn("Not using hwaccel %s for %s: %s.\n",
@@ -898,10 +926,12 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
             return 0;
         }
 
+        log_capture_begin(reason, sizeof(reason));
         for (enum HwaccelLocality loc = HWACCEL_ON_RENDERER;
              loc <= HWACCEL_ON_ANY_GPU; loc++) {
             ret = try_hwaccel(device_ctx, hwaccel, loc, &gpus, 1, &off_gpu);
             if (ret >= 0) {
+                log_capture_end();
                 av_log_set_level(saved_level);
                 if (!hw_codec) {
                     av_buffer_unref(device_ctx);
@@ -916,8 +946,9 @@ static int create_hwaccel(AVBufferRef **device_ctx, const AVCodec **codec,
             why = keep_best_error(why, ret);
             *device_ctx = NULL;
         }
+        log_capture_end();
         av_log_set_level(saved_level);
-        hwaccel_report_failure(hwaccel, &gpus, why);
+        hwaccel_report_failure(hwaccel, &gpus, why, reason);
 
         return why;
     }

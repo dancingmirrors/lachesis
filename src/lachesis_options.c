@@ -407,7 +407,7 @@ static int opt_vulkan_swap_mode(void *optctx av_unused, const char *opt,
     return store_string((const char **)&vulkan_swap_mode, arg);
 }
 
-static const char *hwaccel_method_list(char *buf, size_t size) {
+const char *hwaccel_method_list(char *buf, size_t size) {
     enum AVHWDeviceType type = AV_HWDEVICE_TYPE_NONE;
 
     buf[0] = '\0';

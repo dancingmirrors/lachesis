@@ -38,6 +38,8 @@ void log_finish_line(void);
 void log_set_skip_repeated(int skip);
 void log_interrupt_begin(int (*cb)(void *), void *ctx);
 void log_interrupt_end(void);
+void log_capture_begin(char *buf, size_t size);
+void log_capture_end(void);
 
 int log_status_available(void);
 void log_status_set(const char *text);

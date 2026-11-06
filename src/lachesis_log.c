@@ -290,6 +290,8 @@ void log_vline(const char *tag, const char *fmt, va_list ap) {
 
 static _Thread_local int (*log_interrupt_cb)(void *);
 static _Thread_local void *log_interrupt_ctx;
+static _Thread_local char *log_capture_buf;
+static _Thread_local size_t log_capture_size;
 
 static av_printf_format(3, 4) void log_av_default(void *avcl, int level,
                                                   const char *fmt, ...) {
@@ -300,11 +302,34 @@ static av_printf_format(3, 4) void log_av_default(void *avcl, int level,
     va_end(ap);
 }
 
+static void log_capture_line(const char *fmt, va_list ap) {
+    size_t len;
+
+    if (vsnprintf(log_capture_buf, log_capture_size, fmt, ap) < 0) {
+        log_capture_buf[0] = '\0';
+        return;
+    }
+    len = strlen(log_capture_buf);
+    while (len && strchr("\n .", log_capture_buf[len - 1])) {
+        len--;
+    }
+    log_capture_buf[len] = '\0';
+    log_sanitize(log_capture_buf, len);
+}
+
 static void log_av_callback(void *avcl, int level, const char *fmt, va_list ap) {
     int plain = level & 0xff;
     char line[LOG_LINE_MAX];
     int n;
 
+    if (log_capture_buf && !log_capture_buf[0] && level >= 0 &&
+        plain <= AV_LOG_ERROR) {
+        va_list copy;
+
+        va_copy(copy, ap);
+        log_capture_line(fmt, copy);
+        va_end(copy);
+    }
     if (level >= 0 && plain >= AV_LOG_ERROR && plain <= AV_LOG_WARNING &&
         log_interrupt_cb && log_interrupt_cb(log_interrupt_ctx)) {
         level = (level & ~0xff) | AV_LOG_VERBOSE;
@@ -366,4 +391,17 @@ void log_interrupt_begin(int (*cb)(void *), void *ctx) {
 void log_interrupt_end(void) {
     log_interrupt_cb = NULL;
     log_interrupt_ctx = NULL;
+}
+
+void log_capture_begin(char *buf, size_t size) {
+    log_capture_buf = size ? buf : NULL;
+    log_capture_size = size;
+    if (log_capture_buf) {
+        log_capture_buf[0] = '\0';
+    }
+}
+
+void log_capture_end(void) {
+    log_capture_buf = NULL;
+    log_capture_size = 0;
 }

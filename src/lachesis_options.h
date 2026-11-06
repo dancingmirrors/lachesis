@@ -99,6 +99,8 @@ void parse_all_files(int argc, char **argv, const OptionDef *defs);
 int opt_loglevel(void *optctx, const char *opt, const char *arg);
 int opt_quiet(void *optctx, const char *opt, const char *arg);
 
+const char *hwaccel_method_list(char *buf, size_t size);
+
 // clang-format off
 #define CMDUTILS_COMMON_OPTIONS \
     {"h", OPT_TYPE_FUNC, OPT_EXIT, {.func_arg = opt_help}, "show help"}, \
