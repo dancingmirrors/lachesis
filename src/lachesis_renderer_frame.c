@@ -339,6 +339,13 @@ int convert_frame(Renderer *renderer, AVFrame *frame) {
     }
 #endif
 
+#if LACHESIS_HAVE_CUDA_GL
+    if (renderer->backend == RENDERER_API_OPENGL && !ctx->zero_copy_failed &&
+        cuda_gl_takes(ctx, frame)) {
+        return 0;
+    }
+#endif
+
     if (!ctx->zero_copy_failed && pl_test_pixfmt(ctx->gpu, frame->format)) {
         return 0;
     }
@@ -429,7 +436,14 @@ static bool map_avframe(RendererContext *ctx, const AVFrame *frame,
                         pl_tex *tex, struct pl_frame *out) {
 #if PL_API_VER <= 360
     const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
+#endif
 
+#if LACHESIS_HAVE_CUDA_GL
+    if (frame->format == AV_PIX_FMT_CUDA && ctx->cuda_gl) {
+        return cuda_gl_map(ctx, frame, tex, out);
+    }
+#endif
+#if PL_API_VER <= 360
     if (desc && !(desc->flags & AV_PIX_FMT_FLAG_HWACCEL) &&
         callbacks_leak(ctx)) {
         return map_avframe_without_callbacks(ctx, frame, tex, out);

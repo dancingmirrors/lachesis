@@ -848,7 +848,7 @@ static int open_renderer(const VideoState *is, const Frame *vp, AVFrame **probe)
     char details[WORK_NB][ENCODE_WORK_DETAIL] = {{0}};
     char work[512];
     const char *device;
-    char why[512];
+    char why[1024];
     int ret;
 
     if (!want) {

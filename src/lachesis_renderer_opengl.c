@@ -34,22 +34,194 @@
 #include <libavutil/avstring.h>
 #include <libavutil/macros.h>
 
+#ifdef _WIN32
+#define LACHESIS_APIENTRY __stdcall
+#else
+#define LACHESIS_APIENTRY
+#endif
+
+enum {
+    LACHESIS_GL_VENDOR = 0x1F00,
+    LACHESIS_GL_RENDERER = 0x1F01,
+    LACHESIS_GL_VERSION = 0x1F02,
+    LACHESIS_GL_SHADING_LANGUAGE_VERSION = 0x8B8C,
+    LACHESIS_EGL_NONE = 0x3038,
+    LACHESIS_EGL_VENDOR = 0x3053,
+    LACHESIS_EGL_VERSION = 0x3054,
+};
+
+typedef const unsigned char *(LACHESIS_APIENTRY *gl_get_string_fn)(unsigned);
+typedef const char *(LACHESIS_APIENTRY *egl_query_string_fn)(void *, int32_t);
+typedef void(LACHESIS_APIENTRY *egl_debug_fn)(unsigned, const char *, int32_t,
+                                              void *, void *, const char *);
+typedef int32_t(LACHESIS_APIENTRY *egl_debug_control_fn)(egl_debug_fn,
+                                                         const intptr_t *);
+
 static const struct gl_profile {
     const char *name;
     int profile;
     int major;
     int minor;
+    int newest_first;
     int prefer_egl;
     int angle;
 } gl_profiles[] = {
-    {"OpenGL 3.3 core (EGL)", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 1, 0},
-    {"OpenGL 3.3 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 0, 0},
-    {"OpenGL 3.2 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 2, 0, 0},
-    {"OpenGL ES 3.0", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 0},
-    {"OpenGL ES 3.0 (ANGLE)", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 1, 1},
+    {"OpenGL 3.3 core (EGL)", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 1, 1, 0},
+    {"OpenGL 3.3 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 3, 1, 0, 0},
+    {"OpenGL 3.2 core", SDL_GL_CONTEXT_PROFILE_CORE, 3, 2, 0, 0, 0},
+    {"OpenGL ES 3.0", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 0, 1, 0},
+    {"OpenGL ES 3.0 (ANGLE)", SDL_GL_CONTEXT_PROFILE_ES, 3, 0, 0, 1, 1},
 };
 
 #define GL_NUM_PROFILES ((int)FF_ARRAY_ELEMS(gl_profiles))
+
+static const int gl_core_versions[][2] = {
+    {4, 6},
+    {4, 5},
+    {4, 4},
+    {4, 3},
+    {4, 2},
+    {4, 1},
+    {4, 0},
+};
+
+static const struct gl_profile *gl_attempt;
+static SDL_AtomicInt egl_listening;
+static SDL_SpinLock egl_error_lock;
+static char egl_error[384];
+
+static const char *egl_error_name(unsigned error) {
+    static const char *const names[] = {
+        "EGL_SUCCESS",
+        "EGL_NOT_INITIALIZED",
+        "EGL_BAD_ACCESS",
+        "EGL_BAD_ALLOC",
+        "EGL_BAD_ATTRIBUTE",
+        "EGL_BAD_CONFIG",
+        "EGL_BAD_CONTEXT",
+        "EGL_BAD_CURRENT_SURFACE",
+        "EGL_BAD_DISPLAY",
+        "EGL_BAD_MATCH",
+        "EGL_BAD_NATIVE_PIXMAP",
+        "EGL_BAD_NATIVE_WINDOW",
+        "EGL_BAD_PARAMETER",
+        "EGL_BAD_SURFACE",
+        "EGL_CONTEXT_LOST",
+    };
+
+    if (error >= 0x3000 && error - 0x3000 < FF_ARRAY_ELEMS(names)) {
+        return names[error - 0x3000];
+    }
+    switch (error) {
+    case 0x321B:
+        return "EGL_BAD_STREAM_KHR";
+    case 0x321C:
+        return "EGL_BAD_STATE_KHR";
+    case 0x322B:
+        return "EGL_BAD_DEVICE_EXT";
+    default:
+        return NULL;
+    }
+}
+
+static void egl_forget_error(void) {
+    SDL_LockSpinlock(&egl_error_lock);
+    egl_error[0] = '\0';
+    SDL_UnlockSpinlock(&egl_error_lock);
+}
+
+static void LACHESIS_APIENTRY egl_debug(unsigned error, const char *command,
+                                        int32_t type av_unused,
+                                        void *thread_label av_unused,
+                                        void *object_label av_unused,
+                                        const char *message) {
+    const char *name = egl_error_name(error);
+    char code[16];
+    char line[sizeof(egl_error)];
+    size_t len;
+
+    if (!SDL_GetAtomicInt(&egl_listening)) {
+        return;
+    }
+    if (!command || !*command) {
+        command = "EGL";
+    }
+    if (!strncmp(command, "eglQuery", 8) ||
+        !strcmp(command, "eglGetConfigAttrib")) {
+        return;
+    }
+    if (!name) {
+        snprintf(code, sizeof(code), "0x%x", error);
+        name = code;
+    }
+    if (message && *message && strcmp(message, command)) {
+        snprintf(line, sizeof(line), "%s from %s: %s", name, command, message);
+    } else {
+        snprintf(line, sizeof(line), "%s from %s", name, command);
+    }
+    len = strlen(line);
+    while (len && strchr("\n. ", line[len - 1])) {
+        line[--len] = '\0';
+    }
+    log_verbose("EGL: %s.\n", line);
+
+    SDL_LockSpinlock(&egl_error_lock);
+    memcpy(egl_error, line, len + 1);
+    SDL_UnlockSpinlock(&egl_error_lock);
+}
+
+static void egl_listen(void) {
+    egl_debug_control_fn control =
+        (egl_debug_control_fn)SDL_EGL_GetProcAddress("eglDebugMessageControlKHR");
+
+    if (control) {
+        control(egl_debug, NULL);
+    }
+}
+
+static SDL_EGLAttrib *SDLCALL egl_platform_attribs(void *userdata av_unused) {
+    SDL_EGLAttrib *attribs = SDL_malloc(sizeof(*attribs));
+
+    egl_listen();
+    if (attribs) {
+        attribs[0] = LACHESIS_EGL_NONE;
+    }
+
+    return attribs;
+}
+
+static SDL_EGLint *SDLCALL egl_surface_attribs(void *userdata av_unused,
+                                               SDL_EGLDisplay display av_unused,
+                                               SDL_EGLConfig config av_unused) {
+    SDL_EGLint *attribs = SDL_malloc(sizeof(*attribs));
+
+    egl_listen();
+    egl_forget_error();
+    if (attribs) {
+        attribs[0] = LACHESIS_EGL_NONE;
+    }
+
+    return attribs;
+}
+
+const char *gl_window_error(const char *detail, char *buf, size_t size) {
+    char last[sizeof(egl_error)];
+
+    SDL_LockSpinlock(&egl_error_lock);
+    memcpy(last, egl_error, sizeof(last));
+    SDL_UnlockSpinlock(&egl_error_lock);
+
+    if (!last[0]) {
+        return detail;
+    }
+    if (detail && *detail) {
+        snprintf(buf, size, "%s (the EGL driver's last error was %s)", detail, last);
+    } else {
+        snprintf(buf, size, "the EGL driver's last error was %s", last);
+    }
+
+    return buf;
+}
 
 static int gl_video_driver_is(const char *name) {
     const char *driver = SDL_GetCurrentVideoDriver();
@@ -103,6 +275,7 @@ const char *gl_apply_profile_hints(int attempt, const AVDictionary *opt) {
 
     gl_profile_order(order, opt);
     p = &gl_profiles[order[attempt]];
+    gl_attempt = p;
 
     if (!SDL_getenv(SDL_HINT_VIDEO_FORCE_EGL)) {
         SDL_SetHint(SDL_HINT_VIDEO_FORCE_EGL, p->prefer_egl ? "1" : "0");
@@ -111,7 +284,12 @@ const char *gl_apply_profile_hints(int attempt, const AVDictionary *opt) {
         SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, p->angle ? "1" : "0");
     }
 
+    egl_forget_error();
+    SDL_SetAtomicInt(&egl_listening, 1);
+
     SDL_GL_ResetAttributes();
+    SDL_EGL_SetAttributeCallbacks(egl_platform_attribs, egl_surface_attribs,
+                                  NULL, NULL);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, p->profile);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, p->major);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, p->minor);
@@ -256,14 +434,103 @@ static int gl_render_node(RendererContext *ctx, char *buf, size_t size) {
 
 #endif // LACHESIS_HAVE_DRM_NODES
 
+static const char *gl_string(unsigned name) {
+    gl_get_string_fn get_string =
+        (gl_get_string_fn)SDL_GL_GetProcAddress("glGetString");
+    const unsigned char *s = get_string ? get_string(name) : NULL;
+
+    return s && *s ? (const char *)s : NULL;
+}
+
+static int gl_current_version(void) {
+    const char *version = gl_string(LACHESIS_GL_VERSION);
+    int major, minor;
+
+    if (!version || sscanf(version, "%d.%d", &major, &minor) != 2) {
+        return 0;
+    }
+
+    return major * 10 + minor;
+}
+
+static SDL_GLContext gl_create_context(SDL_Window *window, int *major,
+                                       int *minor) {
+    const struct gl_profile *p = gl_attempt;
+    SDL_GLContext context, newer;
+
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major);
+    SDL_GL_GetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor);
+    context = SDL_GL_CreateContext(window);
+    if (!context || !p || !p->newest_first ||
+        gl_current_version() != *major * 10 + *minor) {
+        return context;
+    }
+
+    for (size_t i = 0; i < FF_ARRAY_ELEMS(gl_core_versions); i++) {
+        int want_major = gl_core_versions[i][0];
+        int want_minor = gl_core_versions[i][1];
+
+        if (want_major * 10 + want_minor <= *major * 10 + *minor) {
+            break;
+        }
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, want_major);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, want_minor);
+        newer = SDL_GL_CreateContext(window);
+        if (newer) {
+            SDL_GL_DestroyContext(context);
+            context = newer;
+            *major = want_major;
+            *minor = want_minor;
+            break;
+        }
+        log_verbose("OpenGL: no %d.%d core context: %s.\n", want_major,
+                    want_minor, SDL_GetError());
+    }
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, *major);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, *minor);
+    SDL_ClearError();
+
+    return context;
+}
+
+static void gl_log_context(SDL_EGLDisplay egl_display, int major, int minor) {
+    const char *version = gl_string(LACHESIS_GL_VERSION);
+    const char *glsl = gl_string(LACHESIS_GL_SHADING_LANGUAGE_VERSION);
+    const char *vendor = gl_string(LACHESIS_GL_VENDOR);
+    char asked[32];
+
+    if (gl_attempt && gl_attempt->profile == SDL_GL_CONTEXT_PROFILE_ES) {
+        snprintf(asked, sizeof(asked), "ES %d.%d", major, minor);
+    } else {
+        snprintf(asked, sizeof(asked), "%d.%d core", major, minor);
+    }
+    log_verbose("OpenGL: asked for %s and got %s (GLSL %s) from %s.\n", asked,
+                version ? version : "an unknown version",
+                glsl ? glsl : "unknown", vendor ? vendor : "an unknown vendor");
+
+    if (egl_display) {
+        egl_query_string_fn query =
+            (egl_query_string_fn)SDL_EGL_GetProcAddress("eglQueryString");
+        const char *egl_version = query ? query(egl_display, LACHESIS_EGL_VERSION) : NULL;
+        const char *egl_vendor = query ? query(egl_display, LACHESIS_EGL_VENDOR) : NULL;
+
+        log_verbose("OpenGL: through EGL %s from %s.\n",
+                    egl_version ? egl_version : "of an unknown version",
+                    egl_vendor ? egl_vendor : "an unknown vendor");
+    } else if (gl_video_driver_is("x11")) {
+        log_verbose("OpenGL: through GLX.\n");
+    }
+}
+
 int gl_backend_create(RendererContext *ctx, SDL_Window *window,
                       AVDictionary *opt) {
     AVDictionaryEntry *entry;
     SDL_EGLDisplay egl_display;
     int max_glsl = 0;
+    int major = 0, minor = 0;
     int w, h;
 
-    ctx->gl_context = SDL_GL_CreateContext(window);
+    ctx->gl_context = gl_create_context(window, &major, &minor);
     if (!ctx->gl_context) {
         log_verbose("Failed to create a GL context: %s.\n", SDL_GetError());
         return AVERROR_EXTERNAL;
@@ -292,6 +559,11 @@ int gl_backend_create(RendererContext *ctx, SDL_Window *window,
         SDL_ClearError();
     }
     ctx->gl_egl_display = egl_display;
+    gl_log_context(egl_display, major, minor);
+    SDL_SetAtomicInt(&egl_listening, 0);
+#if LACHESIS_HAVE_CUDA_GL
+    cuda_gl_init(ctx, gl_string(LACHESIS_GL_VENDOR));
+#endif
 
     // clang-format off
     ctx->placebo_gl = pl_opengl_create(ctx->log_ctx,
@@ -348,15 +620,7 @@ int gl_backend_create(RendererContext *ctx, SDL_Window *window,
              ctx->placebo_gl->major, ctx->placebo_gl->minor);
 
     if (SDL_GL_MakeCurrent(window, ctx->gl_context)) {
-        enum { LACHESIS_GL_RENDERER = 0x1F01 };
-#ifdef _WIN32
-        typedef const unsigned char *(__stdcall * gl_get_string_fn)(unsigned);
-#else
-        typedef const unsigned char *(*gl_get_string_fn)(unsigned);
-#endif
-        gl_get_string_fn get_string =
-            (gl_get_string_fn)SDL_GL_GetProcAddress("glGetString");
-        const unsigned char *name = get_string ? get_string(LACHESIS_GL_RENDERER) : NULL;
+        const char *name = gl_string(LACHESIS_GL_RENDERER);
 
         if (name) {
             snprintf(ctx->device_name, sizeof(ctx->device_name), "%s", name);
@@ -394,6 +658,13 @@ int gl_backend_create(RendererContext *ctx, SDL_Window *window,
 }
 
 void gl_backend_destroy(RendererContext *ctx) {
+#if LACHESIS_HAVE_CUDA_GL
+    if (ctx->cuda_gl) {
+        gl_pin_current(ctx);
+        cuda_gl_uninit(ctx);
+        gl_unpin_current(ctx);
+    }
+#endif
     pl_swapchain_destroy(&ctx->swapchain);
     pl_opengl_destroy(&ctx->placebo_gl);
 

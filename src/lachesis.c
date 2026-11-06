@@ -906,7 +906,7 @@ static void open_renderer(enum RendererApi api) {
     RendererOpenParams params = {0};
     AVDictionary *dict = build_renderer_options(0);
     char *title = startup_window_title(input_filename);
-    char why[512];
+    char why[1024];
     int ret;
 
     params.title = title ? title : program_name;

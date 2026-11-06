@@ -585,7 +585,7 @@ static int try_hwaccel(AVBufferRef **device_ctx, const char *name,
 
     switch (locality) {
     case HWACCEL_ON_RENDERER:
-        if (renderer_get_hw_dev(renderer, &render_dev) < 0) {
+        if (renderer_get_hw_dev(renderer, type, &render_dev) < 0) {
             return AVERROR(ENOSYS);
         }
         return av_hwdevice_ctx_create_derived(device_ctx, type, render_dev, 0);

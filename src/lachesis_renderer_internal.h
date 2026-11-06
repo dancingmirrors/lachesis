@@ -273,6 +273,9 @@ typedef struct RendererContext {
     SDL_EGLDisplay gl_egl_display;
     SDL_ThreadID gl_pinned_by;
     char gl_drm_node[64];
+#if LACHESIS_HAVE_CUDA_GL
+    struct CudaGl *cuda_gl;
+#endif
 #endif
 
 #if LACHESIS_HAVE_D3D11
@@ -476,6 +479,19 @@ void gl_pin_current(RendererContext *ctx);
 void gl_unpin_current(RendererContext *ctx);
 int gl_num_attempts(const AVDictionary *opt);
 const char *gl_apply_profile_hints(int attempt, const AVDictionary *opt);
+const char *gl_window_error(const char *detail, char *buf, size_t size);
+#endif
+
+#if LACHESIS_HAVE_CUDA_GL
+typedef struct CudaGl CudaGl;
+
+void cuda_gl_init(RendererContext *ctx, const char *gl_vendor);
+void cuda_gl_uninit(RendererContext *ctx);
+int cuda_gl_device(RendererContext *ctx, AVBufferRef **dev);
+int cuda_gl_takes(RendererContext *ctx, const AVFrame *frame);
+void cuda_gl_release_frames(RendererContext *ctx);
+bool cuda_gl_map(RendererContext *ctx, const AVFrame *frame, const pl_tex *key,
+                 struct pl_frame *out);
 #endif
 
 #if LACHESIS_HAVE_D3D11

@@ -942,6 +942,9 @@ static void gpu_quiesce(RendererContext *ctx) {
     }
     pl_gpu_finish(ctx->gpu);
     release_mix_slots(ctx);
+#if LACHESIS_HAVE_CUDA_GL
+    cuda_gl_release_frames(ctx);
+#endif
     pl_gpu_finish(ctx->gpu);
 }
 
@@ -2026,10 +2029,24 @@ static const char *api_prepare_attempt(enum RendererApi api, int attempt,
     return api_label(api);
 }
 
+static const char *api_window_error(enum RendererApi api, const char *detail,
+                                    char *buf, size_t size) {
+#if LACHESIS_HAVE_OPENGL
+    if (api == RENDERER_API_OPENGL) {
+        return gl_window_error(detail, buf, size);
+    }
+#endif
+    (void)api;
+    (void)buf;
+    (void)size;
+
+    return detail;
+}
+
 static void note_failure(char *why, size_t why_size, const char *what,
                          const char *detail, int ret) {
     char errbuf[AV_ERROR_MAX_STRING_SIZE];
-    char line[256];
+    char line[512];
     size_t len = strlen(why);
 
     if (!detail || !*detail) {
@@ -2062,7 +2079,11 @@ static int renderer_try(const RendererOpenParams *params, enum RendererApi api,
     window = SDL_CreateWindow(params->title, params->width, params->height,
                               params->window_flags | api_window_flag(api));
     if (!window) {
-        note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
+        char detail[512];
+
+        note_failure(why, why_size, what,
+                     api_window_error(api, SDL_GetError(), detail, sizeof(detail)),
+                     AVERROR_EXTERNAL);
         return AVERROR_EXTERNAL;
     }
     icon_set_window_icon(window);
@@ -2144,7 +2165,11 @@ static int offscreen_try(const RendererOpenParams *params, enum RendererApi api,
                                   LACHESIS_SELF_TEST_SIZE,
                                   SDL_WINDOW_HIDDEN | SDL_WINDOW_OPENGL);
         if (!window) {
-            note_failure(why, why_size, what, SDL_GetError(), AVERROR_EXTERNAL);
+            char detail[512];
+
+            note_failure(why, why_size, what,
+                         api_window_error(api, SDL_GetError(), detail, sizeof(detail)),
+                         AVERROR_EXTERNAL);
             return AVERROR_EXTERNAL;
         }
     }
@@ -2646,9 +2671,21 @@ int renderer_device_node_for(const char *want, char *buf, size_t size) {
     return AVERROR(ENOSYS);
 }
 
-int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev) {
+int renderer_get_hw_dev(Renderer *renderer, enum AVHWDeviceType type,
+                        AVBufferRef **dev) {
     RendererContext *ctx = (RendererContext *)renderer;
 
+#if LACHESIS_HAVE_CUDA_GL
+    if (renderer && ctx->api.backend == RENDERER_API_OPENGL) {
+        if (type != AV_HWDEVICE_TYPE_CUDA) {
+            *dev = NULL;
+            return AVERROR(ENOSYS);
+        }
+        return cuda_gl_device(ctx, dev);
+    }
+#else
+    (void)type;
+#endif
     if (renderer && ctx->hw_device_ref) {
         *dev = ctx->hw_device_ref;
         return 0;
@@ -2702,7 +2739,13 @@ int renderer_capture(Renderer *renderer, AVFrame *frame, RenderParams *render_pa
     if (!vo_borrow(ctx, VO_CAPTURE_WAIT_MS)) {
         return AVERROR(EAGAIN);
     }
+#if LACHESIS_HAVE_OPENGL
+    gl_pin_current(ctx);
+#endif
     ret = capture(renderer, frame, render_params, width, height, out, out_stride);
+#if LACHESIS_HAVE_OPENGL
+    gl_unpin_current(ctx);
+#endif
     vo_release(ctx);
 
     return ret;

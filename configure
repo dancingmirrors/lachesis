@@ -203,6 +203,14 @@ check(
 )
 
 check(
+    "-cuda-gl*",
+    desc="CUDA to OpenGL interop",
+    deps="opengl",
+    deps_neg="macOS",
+    sources=["src/lachesis_renderer_cuda_gl.c"],
+)
+
+check(
     "-d3d11*",
     desc="Direct3D 11",
     deps="Windows",

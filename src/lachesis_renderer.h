@@ -26,6 +26,7 @@
 
 #include <libavutil/dict.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
 
 #include "lachesis_supersample.h"
 #include "lachesis_view360.h"
@@ -156,7 +157,8 @@ int renderer_frame_stats(Renderer *renderer, double *acquire_ms,
                          double *present_ms);
 
 // NULL unless the backend can decode into its own memory.
-int renderer_get_hw_dev(Renderer *renderer, AVBufferRef **dev);
+int renderer_get_hw_dev(Renderer *renderer, enum AVHWDeviceType type,
+                        AVBufferRef **dev);
 
 // Safe to call with a NULL renderer.
 int renderer_can_refine_hw_frames(Renderer *renderer);
